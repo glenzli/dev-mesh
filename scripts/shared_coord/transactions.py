@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import argparse
 import json
-import time
-from collections import Counter
 from pathlib import Path
 
 from . import git_backend as git
-from .arbitration import claim_intent, recommend_decision, record_paths
+from .activation import activate_transaction_group, load_claims
+from .arbitration import recommend_decision, record_paths
 from .group_abort import (
     authorize_group_abort,
     reconcile_group_abort,
@@ -24,21 +23,26 @@ from .maintenance import (
     reauthorize_discard,
     reconcile_cleanups,
 )
+from .observability import hotspot_report
 from .recovery import (
     active_groups,
-    create_group,
-    group_declared_paths,
     mark_group_member_terminal,
-    materialize_group,
     reconcile_groups,
     require_transaction_group_active,
 )
+from .scheduler import (
+    active_requests,
+    assert_manual_activation_allowed,
+    cancel_request,
+    create_request,
+    reconcile_request_activations,
+    refresh_queue_states,
+    schedule_ready_requests,
+)
 from .state import (
-    TRANSACTION_MODES,
     active_claims,
     active_transactions,
     archive_transaction,
-    claim_path,
     coordination_guard,
     crash_if_testing,
     emit_event,
@@ -86,25 +90,6 @@ def require_canonical_branch(location: Path, root: Path) -> str:
             f"canonical workspace is on branch {current!r}, expected {expected!r}"
         )
     return expected
-
-
-def load_claims(location: Path, scopes: list[str]) -> list[tuple[Path, dict[str, object]]]:
-    loaded: list[tuple[Path, dict[str, object]]] = []
-    for scope in scopes:
-        path = claim_path(location, validate_slug(scope, "scope"))
-        if not path.exists():
-            raise ValueError(f"active claim does not exist: {scope}")
-        record = read_json(path)
-        if record.get("status", "active") not in {"active", "pending-arbitration"}:
-            raise ValueError(f"claim {scope!r} is not eligible for arbitration")
-        loaded.append((path, record))
-    return loaded
-
-
-def make_transaction_id(scope: str) -> str:
-    suffix = f"{time.time_ns():x}"[-10:]
-    prefix = scope[:51].rstrip("-")
-    return validate_slug(f"{prefix}-{suffix}", "transaction id")
 
 
 def transaction_checkout(record: dict[str, object]) -> Path:
@@ -173,104 +158,21 @@ def command_begin(arguments: argparse.Namespace) -> int:
     git.ensure_local_exclude(arguments.root, arguments.state_dir)
     steward = require_steward(location, arguments.steward)
     canonical_branch = require_canonical_branch(location, arguments.root)
-    mode = arguments.mode
-    if mode not in TRANSACTION_MODES:
-        raise ValueError(f"mode must be one of {', '.join(sorted(TRANSACTION_MODES))}")
     reason = require_text(arguments.reason, "arbitration reason")
-    if len(arguments.scopes) < 2:
-        raise ValueError("a contention transaction group requires at least two scopes")
 
     with coordination_guard(location, "tx-begin"):
-        claims = load_claims(location, arguments.scopes)
-        selected_paths = sorted(
-            {path for _, record in claims for path in record_paths(record)}
-        )
-        dirty_overlap = [
-            path
-            for path in git.status_paths(arguments.root)
-            if any(paths_overlap(path, declared) for declared in selected_paths)
-        ]
-        if dirty_overlap:
-            raise ValueError(
-                "cannot promote claims after overlapping writes started: "
-                + ", ".join(dirty_overlap)
+        assert_manual_activation_allowed(location, arguments.scopes)
+        print_json(
+            activate_transaction_group(
+                arguments.root,
+                location,
+                arguments.scopes,
+                arguments.mode,
+                steward,
+                canonical_branch,
+                reason,
             )
-        selected_scopes = set(arguments.scopes)
-        for _, other in active_claims(location):
-            other_scope = str(other.get("scope", ""))
-            if other_scope in selected_scopes:
-                continue
-            overlaps = overlapping_pairs(selected_paths, record_paths(other))
-            if overlaps:
-                raise ValueError(
-                    f"unselected active claim {other_scope!r} overlaps the transaction group: "
-                    + ", ".join(overlaps)
-                )
-        for _, other in active_transactions(location):
-            overlaps = overlapping_pairs(selected_paths, record_paths(other))
-            if overlaps:
-                raise ValueError(
-                    f"active transaction {other.get('transaction_id')!r} overlaps: "
-                    + ", ".join(overlaps)
-                )
-        for _, group in active_groups(location):
-            overlaps = overlapping_pairs(selected_paths, group_declared_paths(group))
-            if overlaps:
-                raise ValueError(
-                    f"active transaction group {group.get('group_id')!r} overlaps: "
-                    + ", ".join(overlaps)
-                )
-
-        base = git.current_head(arguments.root)
-        records: list[dict[str, object]] = []
-        prior_transaction: str | None = None
-        for _, claim in claims:
-            scope = str(claim["scope"])
-            transaction_id = make_transaction_id(scope)
-            checkout = location / "checkouts" / transaction_id
-            branch = f"agent-tx/{transaction_id}"
-            publish_after = (
-                [prior_transaction]
-                if mode == "ordered-tx" and prior_transaction is not None
-                else []
-            )
-            record: dict[str, object] = {
-                "schema": 1,
-                "transaction_id": transaction_id,
-                "scope": scope,
-                "owner": claim["owner"],
-                "task": claim["task"],
-                "intent": claim_intent(claim),
-                "paths": record_paths(claim),
-                "semantic_writes": string_list(claim, "semantic_writes"),
-                "sensitive_to": string_list(claim, "sensitive_to"),
-                "validation_plan": string_list(claim, "validation"),
-                "first_release": claim.get("first_release", ""),
-                "source_claim_status": claim.get("status", "active"),
-                "decision": mode,
-                "decision_reason": reason,
-                "steward": steward,
-                "canonical_branch": canonical_branch,
-                "base_revision": base,
-                "branch": branch,
-                "checkout": str(checkout),
-                "publish_after": publish_after,
-                "status": "materializing",
-                "created_at": now(),
-            }
-            records.append(record)
-            prior_transaction = transaction_id
-
-        group_path, group = create_group(
-            location,
-            mode,
-            reason,
-            steward,
-            canonical_branch,
-            base,
-            records,
         )
-        print_json(materialize_group(arguments.root, location, group_path, group))
     return 0
 
 
@@ -279,14 +181,26 @@ def command_status(arguments: argparse.Namespace) -> int:
     groups = [record for _, record in active_groups(location)]
     records = [record for _, record in active_transactions(location)]
     cleanups = [record for _, record in active_cleanups(location)]
+    requests = [record for _, record in active_requests(location)]
     if arguments.json:
         print_json(
-            {"groups": groups, "transactions": records, "cleanups": cleanups}
+            {
+                "requests": requests,
+                "groups": groups,
+                "transactions": records,
+                "cleanups": cleanups,
+            }
         )
         return 0
-    if not groups and not records and not cleanups:
-        print("no active transaction groups, transactions, or cleanups")
+    if not requests and not groups and not records and not cleanups:
+        print("no active requests, transaction groups, transactions, or cleanups")
         return 0
+    for request in requests:
+        print(
+            f"request {request.get('request_id')}: status={request.get('status')} "
+            f"mode={request.get('mode')} scopes={request.get('scopes')} "
+            f"blockers={request.get('blockers', [])}"
+        )
     for group in groups:
         print(
             f"group {group.get('group_id')}: status={group.get('status')} "
@@ -305,6 +219,61 @@ def command_status(arguments: argparse.Namespace) -> int:
             f"cleanup {cleanup.get('cleanup_id')}: status={cleanup.get('status')} "
             f"disposition={cleanup.get('disposition')} issue={cleanup.get('issue')}"
         )
+    return 0
+
+
+def command_enqueue(arguments: argparse.Namespace) -> int:
+    git.ensure_repository(arguments.root)
+    location = initialize(arguments.root, arguments.state_dir)
+    steward = require_steward(location, arguments.steward)
+    reason = require_text(arguments.reason, "scheduling reason")
+    with coordination_guard(location, "tx-enqueue"):
+        _, request = create_request(
+            location,
+            arguments.scopes,
+            arguments.mode,
+            steward,
+            reason,
+        )
+        print_json(request)
+    return 0
+
+
+def command_schedule(arguments: argparse.Namespace) -> int:
+    if arguments.limit < 0:
+        raise ValueError("schedule limit cannot be negative")
+    git.ensure_repository(arguments.root)
+    location = initialize(arguments.root, arguments.state_dir)
+    steward = require_steward(location, arguments.steward)
+    canonical_branch = require_canonical_branch(location, arguments.root)
+    with coordination_guard(location, "tx-schedule"):
+        print_json(
+            schedule_ready_requests(
+                arguments.root,
+                location,
+                steward,
+                canonical_branch,
+                arguments.limit,
+            )
+        )
+    return 0
+
+
+def command_cancel_request(arguments: argparse.Namespace) -> int:
+    location = initialize(arguments.root, arguments.state_dir)
+    steward = require_steward(location, arguments.steward)
+    owners = {validate_slug(owner, "owner") for owner in arguments.owners}
+    reason = require_text(arguments.reason, "request cancellation reason")
+    with coordination_guard(location, "tx-cancel-request"):
+        cancelled = cancel_request(
+            location,
+            arguments.request,
+            steward,
+            owners,
+            reason,
+        )
+        queue_updates = refresh_queue_states(arguments.root, location)
+        print_json({"cancelled": cancelled, "queue": queue_updates})
     return 0
 
 
@@ -644,11 +613,13 @@ def command_publish(arguments: argparse.Namespace) -> int:
         archive, record, cleanup_result = archive_committed_and_cleanup(
             arguments.root, location, path, record
         )
+        queue_updates = refresh_queue_states(arguments.root, location)
         print_json(
             {
                 "archive": str(archive),
                 "transaction": record,
                 "cleanup": cleanup_result,
+                "queue": queue_updates,
             }
         )
     return 0
@@ -732,11 +703,13 @@ def command_abort(arguments: argparse.Namespace) -> int:
             str(record["transaction_id"]),
             {"reason": reason},
         )
+        queue_updates = refresh_queue_states(arguments.root, location)
         print_json(
             {
                 "archive": str(archive),
                 "transaction": record,
                 "cleanup": cleanup_result,
+                "queue": queue_updates,
             }
         )
     return 0
@@ -763,6 +736,8 @@ def command_abort_group(arguments: argparse.Namespace) -> int:
             reason,
         )
         update, _ = reconcile_group_abort(arguments.root, location, path, group)
+        queue_updates = refresh_queue_states(arguments.root, location)
+        update["queue"] = queue_updates
         print_json(update)
     return 0
 
@@ -773,7 +748,11 @@ def command_reconcile(arguments: argparse.Namespace) -> int:
     require_steward(location, arguments.steward)
     require_canonical_branch(location, arguments.root)
     with coordination_guard(location, "tx-reconcile"):
-        updates, processed_cleanups = reconcile_group_aborts(arguments.root, location)
+        updates = reconcile_request_activations(location)
+        group_abort_updates, processed_cleanups = reconcile_group_aborts(
+            arguments.root, location
+        )
+        updates.extend(group_abort_updates)
         updates.extend(reconcile_groups(arguments.root, location))
         for path, record in active_transactions(location):
             if record.get("status") in {"aborted", "committed"}:
@@ -852,24 +831,12 @@ def command_reconcile(arguments: argparse.Namespace) -> int:
                 excluded_transactions=processed_cleanups,
             )
         )
+        updates.extend(refresh_queue_states(arguments.root, location))
     print_json(updates)
     return 0
 
 
 def command_hotspots(arguments: argparse.Namespace) -> int:
     location = initialize(arguments.root, arguments.state_dir)
-    event_counts: Counter[str] = Counter()
-    transaction_counts: Counter[str] = Counter()
-    for path in sorted((location / "events").glob("*.json")):
-        record = read_json(path)
-        event_counts[str(record.get("event", "unknown"))] += 1
-        transaction_id = record.get("transaction_id")
-        if isinstance(transaction_id, str):
-            transaction_counts[transaction_id] += 1
-    print_json(
-        {
-            "events": dict(event_counts.most_common()),
-            "transactions_by_activity": dict(transaction_counts.most_common()),
-        }
-    )
+    print_json(hotspot_report(location))
     return 0

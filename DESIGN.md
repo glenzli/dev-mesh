@@ -1,6 +1,6 @@
 # Shared Workspace Semantic Microtransactions
 
-- 状态：阶段三原型已实现，进入调度与公平性设计
+- 状态：阶段四原型已实现，核心并发协议闭环
 - 日期：2026-08-05
 - 暂定中文名：争用触发的语义微事务
 - 暂定英文名：Contention-Triggered Semantic Microtransactions
@@ -409,7 +409,10 @@ checkout_cost
 
 ### 9.6 公平性与无死锁要求
 
-- 较早排队的 exclusive 请求阻止新的重叠 optimistic 请求无限插队；
+- waiting request 本身不授予写权限，也不物化 checkout；
+- 同一重叠范围按 durable sequence 执行 FIFO，无关范围可以越过；
+- 较早排队的 exclusive 请求阻止新的重叠 optimistic claim、claim expansion 或 transaction
+  无限插队；
 - 无关资源不受 exclusive queue 影响；
 - `publish_after` 必须构成无环图；
 - 全部初始资源一次性原子授予；
@@ -537,6 +540,32 @@ discard snapshot 绑定 branch head、dirty paths、Git operation 和 checkout �
 事实变化都必须停止自动删除并取得新的 owner 授权。published cleanup 则必须证明 candidate 已
 包含在 canonical `HEAD` 中。重复执行 reconcile 只能继续已有 journal，不得发明新的 discard
 授权。
+
+### 11.4 Scheduling request 状态机
+
+queue 是争用决策与实际 grant 之间的持久层，不是另一种 claim。request snapshot 绑定 scope、
+owner、path、intent、semantic resources 和依赖；claim 后续发生语义变化时，request 必须进入
+`needs-attention`，不能静默沿用旧仲裁。
+
+```mermaid
+flowchart LR
+    A["Queued"] --> B["Blocked"]
+    B -->|"Overlapping blockers clear"| C["Ready"]
+    C --> D["Activating intent persisted"]
+    D -->|"Transaction group planned"| E["Activated / Archived"]
+    D -->|"Exclusive claim granted"| E
+    D -->|"No grant facts after crash"| A
+    A -->|"Exact owners cancel"| F["Cancelled / Archived"]
+    B -->|"Claim snapshot changed"| G["Needs attention"]
+```
+
+调度器按请求 sequence 扫描。较早请求只阻塞路径相交的后续请求，因此全局吞吐不被单个热点
+拖住。transaction request 在 activation intent 落盘后创建 group plan；exclusive request 则把
+唯一 pending claim 原子切换为 Active。进程在 grant 与 request archive 之间退出时，reconcile
+通过 `request_id` 关联 group 或 claim，补齐 archive，而不是重复授权。
+
+`begin` 仍保留为无排队争用的显式快速入口，但只要存在重叠 active request 就必须拒绝旁路，
+由 `schedule` 决定顺序。
 
 ## 12. GitWorktreeBackend
 
@@ -721,6 +750,8 @@ event 和 materialized transaction snapshot。
 ├── events/
 ├── checkouts/
 ├── waiting/
+│   ├── active/
+│   └── archive/
 ├── handoffs/
 ├── messages/
 ├── acks/
@@ -737,6 +768,7 @@ event 和 materialized transaction snapshot。
 - transaction branch/candidate：未发布代码内容；
 - active group plan：materialization 的完整预期成员、共同 base 与授权 barrier；
 - active cleanup journal：已授权处置目标、精确 Git 事实和逐步完成状态；
+- active scheduling request：尚未授予的争用顺序、claim snapshot 和 blocker；
 - immutable event log：协调状态转换；
 - materialized JSON snapshot：可由 event 重建的快速查询视图；
 - messages/acks/handoffs：授权、协商与连续性证据。
@@ -794,6 +826,16 @@ group-abort-authorized(exact member owners)
     → group-aborted / archived
 ```
 
+scheduler grant 的顺序为：
+
+```text
+queue-requested(claim snapshots, sequence)
+    → queue-blocked / ready
+    → queue-activating
+    → group-planned(request_id) | exclusive-claim-granted(request_id)
+    → queue-activated / archived
+```
+
 ## 17. 崩溃恢复
 
 ### 17.1 Materializing 中断
@@ -841,6 +883,15 @@ terminal，group 才移动到 archive。group closure 不改变已经发生的�
 
 如果进程在写入 group Closed 后、移动 archive 前退出，`reconcile` 只能完成 archive move；
 不得再次进入 materialize，也不得重新创建已终止 member 的 branch 或 checkout。
+
+### 17.4 Scheduler 中断
+
+- request 为 Activating 且存在匹配 `request_id` 的 group：grant 已发生，归档 request，再按 group
+  recovery 规则继续；
+- request 为 Activating 且 exclusive claim 已记录同一 `request_id`：补齐 request archive；
+- request 为 Activating 但不存在任何 grant facts：退回 Queued/Ready，允许显式 schedule 重试；
+- claim snapshot、owner 或 path 已变化：进入 `needs-attention`，不得使用新事实自动改写旧请求；
+- 取消要求 request 的精确 owner 集，Activating 状态必须先 reconcile，避免取消已经发生的 grant。
 
 ## 18. Handoff 与连续性
 
@@ -935,6 +986,9 @@ claim status         查看 direct、waiting 和冲突关系
 arbitrate            记录 wait/handoff/parallel/ordered/exclusive 决策
 
 tx activate          为已授权请求物化 shadow checkout
+tx enqueue           持久化 transaction 或 exclusive scheduling request
+tx schedule          按 overlap-local FIFO 授予 ready request
+tx cancel-request    由精确 owner 集取消尚未 grant 的 request
 tx status            查看 base、owner、状态、路径和 blocker
 tx prepare           生成并检查 candidate commit
 tx validate          绑定 validation evidence
@@ -995,7 +1049,8 @@ A 申请 refactor 并覆盖相关 contract。协调器授予 scoped exclusive，
 - shadow checkout 内 refresh/rebase；
 - 共享 dirty workspace 下的严格 fast-forward publish；
 - handoff、abort、cleanup 和 reconcile；
-- 基础 contention metrics 和 hotspot 输出。
+- overlap-local FIFO、exclusive fairness 和 dependency DAG；
+- 结构化 contention metrics 和 hotspot 输出。
 
 第一版不包含 VFS、warm pool、AST-aware merge、structured patch replay、跨仓库事务或自动重构。
 
@@ -1028,7 +1083,11 @@ A 申请 refactor 并覆盖相关 contract。协调器授予 scoped exclusive，
 23. discard 授权后的内容变化会保留现场并要求新 owner 授权；
 24. orphan branch、worktree 和 checkout path 只被 doctor 报告，不被删除；
 25. activation barrier 前的 partial-group abort 要求精确的全体 owner 确认；
-26. partial-group abort 不得在缺少 member cleanup snapshot 时自行生成删除授权。
+26. partial-group abort 不得在缺少 member cleanup snapshot 时自行生成删除授权；
+27. blocked exclusive request 不阻塞无关路径的 transaction；
+28. scheduler 在 group plan 或 exclusive grant 后中断能够幂等补记 request；
+29. claim snapshot 变化不会被 queued request 静默接受；
+30. 结构化 hotspot 同时按 path、semantic resource、等待和冲突聚合。
 
 ## 26. 已确定的设计决策
 
@@ -1092,6 +1151,17 @@ validation binding、shadow refresh、fast-forward publish、handoff、abort 和
 - activation barrier 前、全体 owner 精确确认的 partial-group abort；
 - cleanup、transaction archive 和 claim restoration 跨原子边界的故障注入测试。
 
-下一阶段聚焦 pending request queue、exclusive writer 公平性、publish dependency 环检测和更
-结构化的 hotspot 指标。仍不默认实现 VFS、warm pool 或 AST-aware merge；先用真实多 Agent
-工作流的等待、refresh、attention 与回收数据校准调度策略。
+阶段四已经实现：
+
+- durable pending request queue 与 overlap-local FIFO；
+- 较早 exclusive request 对新 claim、claim expansion 和 transaction activation 的防插队屏障；
+- disjoint request 越过热点 blocker 的并行调度；
+- recoverable Activating grant，覆盖 group plan 与 exclusive claim 两类原子边界；
+- scope 与 transaction 两层 publish dependency DAG 校验；
+- 精确 owner 集授权的 request cancellation；
+- 按 path 和 semantic resource 聚合的 queue wait、exclusive、conflict 和 attention 指标。
+
+至此 direct claim、semantic arbitration、temporary checkout、publish、cleanup、recovery、queue 和
+fairness 已形成第一版核心闭环。下一阶段应以真实多 Agent 工作流验证和协议 hardening 为主：
+schema migration、事件压缩、长队列性能、跨平台 Git 行为与可替换 checkout backend。仍不默认
+实现 VFS、warm pool 或 AST-aware merge。

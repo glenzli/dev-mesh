@@ -139,6 +139,34 @@ in the canonical workspace.
 A queued or merely requested task must not own a checkout. A transaction belongs to one contention
 slice, not to an agent's whole task.
 
+When work must wait, may contend with later requests, or needs exclusive fairness, persist the
+decision before granting anything:
+
+```bash
+python3 <skill>/scripts/tx.py enqueue --root <workspace> \
+  --scopes route-health route-metrics --mode parallel-tx \
+  --steward coordinator-a \
+  --reason "Independent entries should activate when the current owner releases"
+
+python3 <skill>/scripts/tx.py schedule --root <workspace> \
+  --steward coordinator-a
+```
+
+Use `exclusive` with exactly one pending claim whose intent is `contract`, `refactor`, `move`,
+`delete`, or `generated`. Requests are FIFO only where their paths overlap; a blocked hotspot must
+not stop disjoint work. Once an exclusive request is queued, do not grant a newer overlapping
+claim, claim expansion, or transaction ahead of it. `begin` rejects any attempt to bypass an
+overlapping queue.
+
+Cancel an ungranted request only with the exact owner set recorded by it:
+
+```bash
+python3 <skill>/scripts/tx.py cancel-request --root <workspace> \
+  --request <request-id> --steward <steward-id> \
+  --owners <owner-a> <owner-b> \
+  --reason "Both owners chose a different decomposition"
+```
+
 ## Prepare, validate, and publish
 
 Let the helper create the one semantic candidate commit; do not manually accumulate feature-branch
@@ -241,6 +269,13 @@ Treat reconcile output as follows:
   remain current;
 - `needs-attention` means Git facts are ambiguous or a checkout contains unexpected work. Preserve
   it and obtain owner or user direction; never reset, clean, remove, or rematerialize over it.
+- request `blocked` reports its exact work, dependency, or earlier-request blockers; it grants no
+  write authority;
+- request `ready` is eligible but still grants no authority until `schedule` persists Activating;
+- request `activated` means a matching group plan or exclusive claim grant exists and the queue
+  record was archived;
+- `activation-retryable` means an Activating record had no grant facts after recovery and safely
+  returned to the queue.
 
 `doctor` is read-only. It reports orphan transaction branches, registered worktrees, unmanaged
 checkout paths, missing expected resources, and cleanup journals requiring attention. It never
@@ -271,6 +306,10 @@ python3 <skill>/scripts/tx.py hotspots --root <workspace>
 Repeated same-path transactions, ordered refreshes, conflicts, or scope expansion are architecture
 and task-decomposition signals. Prefer improving semantic ownership over making automatic merge
 more aggressive.
+
+`hotspots` reports queue counts and average wait plus ranked path and semantic-resource metrics.
+Repeated exclusive requests, refresh conflicts, or attention events should trigger a boundary or
+task-slicing review; metrics never authorize an automatic refactor or takeover.
 
 ## Use direct coordination for non-transaction work
 

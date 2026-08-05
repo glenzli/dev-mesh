@@ -75,7 +75,8 @@ def initialize(root: Path, state_directory: str) -> Path:
         "messages",
         "acks",
         "tasks",
-        "waiting",
+        "waiting/active",
+        "waiting/archive",
         "handoffs",
         "archive/claims",
         "archive/messages",
@@ -357,6 +358,55 @@ def claim_conflicts(
     return conflicts
 
 
+def exclusive_queue_overlaps(
+    location: Path,
+    requested_paths: list[str],
+) -> list[tuple[str, list[str]]]:
+    conflicts: list[tuple[str, list[str]]] = []
+    for path in sorted((location / "waiting" / "active").glob("*.json")):
+        request = read_json(path)
+        if request.get("mode") != "exclusive":
+            continue
+        queued_paths = request.get("paths", [])
+        if not isinstance(queued_paths, list):
+            continue
+        overlapping = sorted(
+            {
+                f"{requested} ↔ {queued}"
+                for requested in requested_paths
+                for queued in queued_paths
+                if isinstance(queued, str) and paths_overlap(requested, queued)
+            }
+        )
+        if overlapping:
+            conflicts.append(
+                (str(request.get("request_id", path.stem)), overlapping)
+            )
+    return conflicts
+
+
+def exclusive_queue_conflicts(
+    location: Path,
+    requested_paths: list[str],
+) -> list[str]:
+    return [
+        f"older exclusive request {request_id}: " + ", ".join(overlapping)
+        for request_id, overlapping in exclusive_queue_overlaps(
+            location, requested_paths
+        )
+    ]
+
+
+def exclusive_queue_request_ids(
+    location: Path,
+    requested_paths: list[str],
+) -> set[str]:
+    return {
+        request_id
+        for request_id, _ in exclusive_queue_overlaps(location, requested_paths)
+    }
+
+
 def validate_overlap(arguments: argparse.Namespace, conflicts: list[str]) -> int:
     if conflicts and not arguments.allow_overlap:
         print("claim conflicts with active work:", file=sys.stderr)
@@ -611,6 +661,17 @@ def command_claim(arguments: argparse.Namespace) -> int:
                 f"claim {scope!r} already belongs to {existing.get('owner')!r}"
             )
         conflicts = claim_conflicts(location, requested_paths)
+        exclusive_barriers = (
+            exclusive_queue_conflicts(location, requested_paths)
+            if arguments.intent != "read"
+            else []
+        )
+        if exclusive_barriers and not arguments.pending_on_conflict:
+            raise ValueError(
+                "an older exclusive request blocks new overlapping write authority; "
+                "record this claim with --pending-on-conflict"
+            )
+        conflicts.extend(exclusive_barriers)
         validation = validate_overlap(arguments, conflicts)
         if validation != 0:
             return validation
@@ -666,6 +727,18 @@ def command_update(arguments: argparse.Namespace) -> int:
                 "update requires task, path, or coordination-metadata changes"
             )
 
+        if (
+            record.get("status", "active") == "active"
+            and record.get("intent", "local-edit") != "read"
+        ):
+            new_exclusive_barriers = exclusive_queue_request_ids(
+                location, requested_paths
+            ) - exclusive_queue_request_ids(location, list(existing_paths))
+            if new_exclusive_barriers:
+                raise ValueError(
+                    "claim expansion would bypass older exclusive requests: "
+                    + ", ".join(sorted(new_exclusive_barriers))
+                )
         conflicts = claim_conflicts(location, requested_paths, ignored_claim=claim_path)
         validation = validate_overlap(arguments, conflicts)
         if validation != 0:

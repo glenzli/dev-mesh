@@ -72,6 +72,7 @@ def create_group(
     canonical_branch: str,
     base_revision: str,
     transactions: list[dict[str, object]],
+    request_id: str | None = None,
 ) -> tuple[Path, dict[str, object]]:
     group_id = make_group_id()
     members: list[dict[str, object]] = []
@@ -100,13 +101,35 @@ def create_group(
         "members": members,
         "created_at": now(),
     }
+    if request_id is not None:
+        group["request_id"] = request_id
     path = group_path(location, group_id)
     write_json_exclusive(path, group)
     emit_event(
         location,
         "group-planned",
         None,
-        {"group_id": group_id, "transactions": [item["transaction_id"] for item in members]},
+        {
+            "group_id": group_id,
+            "request_id": request_id,
+            "mode": mode,
+            "transactions": [item["transaction_id"] for item in members],
+            "paths": sorted(
+                {
+                    path
+                    for transaction in transactions
+                    for path in record_paths(transaction)
+                }
+            ),
+            "semantic_resources": sorted(
+                {
+                    resource
+                    for transaction in transactions
+                    for resource in transaction.get("semantic_writes", [])
+                    if isinstance(resource, str)
+                }
+            ),
+        },
     )
     crash_if_testing("group-planned")
     return path, group

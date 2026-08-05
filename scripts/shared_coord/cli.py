@@ -6,13 +6,16 @@ import argparse
 import sys
 
 from . import git_backend as git
+from .scheduler import REQUEST_MODES
 from .state import TRANSACTION_MODES, root_path
 from .transactions import (
     command_abort,
     command_abort_group,
     command_begin,
+    command_cancel_request,
     command_cleanup_authorize,
     command_doctor,
+    command_enqueue,
     command_handoff,
     command_hotspots,
     command_init,
@@ -21,6 +24,7 @@ from .transactions import (
     command_publish,
     command_reconcile,
     command_resume,
+    command_schedule,
     command_status,
     command_validate,
 )
@@ -56,6 +60,28 @@ def parser() -> argparse.ArgumentParser:
     add_root(status_parser)
     status_parser.add_argument("--json", action="store_true")
     status_parser.set_defaults(handler=command_status)
+
+    enqueue_parser = subparsers.add_parser("enqueue")
+    add_root(enqueue_parser)
+    enqueue_parser.add_argument("--scopes", nargs="+", required=True)
+    enqueue_parser.add_argument("--mode", choices=sorted(REQUEST_MODES), required=True)
+    enqueue_parser.add_argument("--steward", required=True)
+    enqueue_parser.add_argument("--reason", required=True)
+    enqueue_parser.set_defaults(handler=command_enqueue)
+
+    schedule_parser = subparsers.add_parser("schedule")
+    add_root(schedule_parser)
+    schedule_parser.add_argument("--steward", required=True)
+    schedule_parser.add_argument("--limit", type=int, default=0)
+    schedule_parser.set_defaults(handler=command_schedule)
+
+    cancel_request_parser = subparsers.add_parser("cancel-request")
+    add_root(cancel_request_parser)
+    cancel_request_parser.add_argument("--request", required=True)
+    cancel_request_parser.add_argument("--steward", required=True)
+    cancel_request_parser.add_argument("--owners", nargs="+", required=True)
+    cancel_request_parser.add_argument("--reason", required=True)
+    cancel_request_parser.set_defaults(handler=command_cancel_request)
 
     doctor_parser = subparsers.add_parser("doctor")
     add_root(doctor_parser)
