@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-import os
 import shutil
 import time
 from pathlib import Path
@@ -12,6 +11,7 @@ from . import git_backend as git
 from .arbitration import record_paths
 from .state import (
     archive_claim,
+    crash_if_testing,
     emit_event,
     now,
     read_json,
@@ -22,18 +22,11 @@ from .state import (
 )
 
 
-TEST_CRASH_ENV = "SHARED_COORD_TEST_CRASH_POINT"
 TERMINAL_TRANSACTION_STATES = {"aborted", "committed"}
 
 
 class RecoveryAttention(RuntimeError):
     """Automatic recovery stopped because ownership or content is uncertain."""
-
-
-def crash_if_testing(point: str) -> None:
-    """Terminate only when an integration test explicitly selects this boundary."""
-    if os.environ.get(TEST_CRASH_ENV) == point:
-        os._exit(86)
 
 
 def make_group_id() -> str:
@@ -288,6 +281,7 @@ def _promote_claims(
                 raise RecoveryAttention(
                     f"claim {scope!r} no longer matches transaction {transaction_id!r}"
                 )
+            record["status_before_promotion"] = record.get("status", "active")
             record["status"] = "promoted"
             record["transaction_id"] = transaction_id
             record["group_id"] = group["group_id"]
@@ -421,6 +415,8 @@ def reconcile_groups(
     updates: list[dict[str, object]] = []
     for path, group in active_groups(location):
         group_id = str(group.get("group_id", path.stem))
+        if group.get("status") in {"aborted", "aborting", "abort-needs-attention"}:
+            continue
         if group.get("status") == "closed":
             archive = _archive_closed_group(location, path, group)
             updates.append(

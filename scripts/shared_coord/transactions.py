@@ -10,9 +10,22 @@ from pathlib import Path
 
 from . import git_backend as git
 from .arbitration import claim_intent, recommend_decision, record_paths
+from .group_abort import (
+    authorize_group_abort,
+    reconcile_group_abort,
+    reconcile_group_aborts,
+)
+from .maintenance import (
+    active_cleanups,
+    attach_transaction_archive,
+    doctor,
+    execute_cleanup,
+    plan_cleanup,
+    reauthorize_discard,
+    reconcile_cleanups,
+)
 from .recovery import (
     active_groups,
-    crash_if_testing,
     create_group,
     group_declared_paths,
     mark_group_member_terminal,
@@ -27,6 +40,7 @@ from .state import (
     archive_transaction,
     claim_path,
     coordination_guard,
+    crash_if_testing,
     emit_event,
     initialize,
     now,
@@ -37,6 +51,7 @@ from .state import (
     replace_json,
     require_text,
     string_list,
+    state_root,
     transaction_is_committed,
     validate_slug,
     write_json_exclusive,
@@ -231,6 +246,7 @@ def command_begin(arguments: argparse.Namespace) -> int:
                 "sensitive_to": string_list(claim, "sensitive_to"),
                 "validation_plan": string_list(claim, "validation"),
                 "first_release": claim.get("first_release", ""),
+                "source_claim_status": claim.get("status", "active"),
                 "decision": mode,
                 "decision_reason": reason,
                 "steward": steward,
@@ -262,11 +278,14 @@ def command_status(arguments: argparse.Namespace) -> int:
     location = initialize(arguments.root, arguments.state_dir)
     groups = [record for _, record in active_groups(location)]
     records = [record for _, record in active_transactions(location)]
+    cleanups = [record for _, record in active_cleanups(location)]
     if arguments.json:
-        print_json({"groups": groups, "transactions": records})
+        print_json(
+            {"groups": groups, "transactions": records, "cleanups": cleanups}
+        )
         return 0
-    if not groups and not records:
-        print("no active transaction groups or transactions")
+    if not groups and not records and not cleanups:
+        print("no active transaction groups, transactions, or cleanups")
         return 0
     for group in groups:
         print(
@@ -281,6 +300,39 @@ def command_status(arguments: argparse.Namespace) -> int:
             f"scope={record.get('scope')} "
             f"base={record.get('base_revision')} paths={record.get('paths')}"
         )
+    for cleanup in cleanups:
+        print(
+            f"cleanup {cleanup.get('cleanup_id')}: status={cleanup.get('status')} "
+            f"disposition={cleanup.get('disposition')} issue={cleanup.get('issue')}"
+        )
+    return 0
+
+
+def command_doctor(arguments: argparse.Namespace) -> int:
+    git.ensure_repository(arguments.root)
+    location = state_root(arguments.root, arguments.state_dir)
+    if not location.exists():
+        raise ValueError("coordination state does not exist; run tx init")
+    print_json(doctor(arguments.root, location))
+    return 0
+
+
+def command_cleanup_authorize(arguments: argparse.Namespace) -> int:
+    if not arguments.discard:
+        raise ValueError("cleanup authorization requires --discard")
+    git.ensure_repository(arguments.root)
+    location = initialize(arguments.root, arguments.state_dir)
+    owner = validate_slug(arguments.owner, "owner")
+    reason = require_text(arguments.reason, "cleanup authorization reason")
+    with coordination_guard(location, "tx-cleanup-authorize"):
+        path, cleanup = reauthorize_discard(
+            arguments.root,
+            location,
+            arguments.transaction,
+            owner,
+            reason,
+        )
+        print_json(execute_cleanup(arguments.root, location, path, cleanup))
     return 0
 
 
@@ -399,26 +451,62 @@ def archive_committed_and_cleanup(
     location: Path,
     path: Path,
     record: dict[str, object],
-) -> tuple[Path, dict[str, object]]:
+) -> tuple[Path, dict[str, object], dict[str, object]]:
     mark_group_member_terminal(location, record, "committed")
+    cleanup_path, cleanup = plan_cleanup(
+        root,
+        location,
+        record,
+        "published",
+        str(record.get("steward", "unknown")),
+        "Published candidate is contained in canonical HEAD",
+    )
     archive = archive_transaction(location, path, record)
-    try:
-        git.cleanup_published(
-            root,
-            transaction_checkout(record),
-            str(record["branch"]),
-        )
-    except (OSError, ValueError, git.GitError) as error:
+    attach_transaction_archive(cleanup_path, cleanup, archive)
+    crash_if_testing("transaction-archived-before-cleanup")
+    result = execute_cleanup(root, location, cleanup_path, cleanup)
+    if result["action"] != "completed":
         record["cleanup_pending"] = True
-        record["cleanup_error"] = str(error)
+        record["cleanup_error"] = result.get("issue")
+        record["cleanup_id"] = cleanup["cleanup_id"]
         replace_json(archive, record)
-        emit_event(
-            location,
-            "cleanup-pending",
-            str(record["transaction_id"]),
-            {"error": str(error)},
-        )
-    return archive, record
+    else:
+        record["cleanup_completed_at"] = now()
+        record["cleanup_archive"] = result["archive"]
+        replace_json(archive, record)
+    return archive, record, result
+
+
+def archive_aborted_and_cleanup(
+    root: Path,
+    location: Path,
+    path: Path,
+    record: dict[str, object],
+    owner: str,
+    reason: str,
+) -> tuple[Path, dict[str, object], dict[str, object]]:
+    mark_group_member_terminal(location, record, "aborted")
+    cleanup_path, cleanup = plan_cleanup(
+        root,
+        location,
+        record,
+        "discard",
+        owner,
+        reason,
+    )
+    archive = archive_transaction(location, path, record)
+    attach_transaction_archive(cleanup_path, cleanup, archive)
+    crash_if_testing("transaction-archived-before-cleanup")
+    result = execute_cleanup(root, location, cleanup_path, cleanup)
+    if result["action"] != "completed":
+        record["cleanup_pending"] = True
+        record["cleanup_error"] = result.get("issue")
+        record["cleanup_id"] = cleanup["cleanup_id"]
+    else:
+        record["cleanup_completed_at"] = now()
+        record["cleanup_archive"] = result["archive"]
+    replace_json(archive, record)
+    return archive, record, result
 
 
 def command_publish(arguments: argparse.Namespace) -> int:
@@ -553,10 +641,16 @@ def command_publish(arguments: argparse.Namespace) -> int:
             {"candidate": candidate},
         )
         crash_if_testing("publish-committed")
-        archive, record = archive_committed_and_cleanup(
+        archive, record, cleanup_result = archive_committed_and_cleanup(
             arguments.root, location, path, record
         )
-        print_json({"archive": str(archive), "transaction": record})
+        print_json(
+            {
+                "archive": str(archive),
+                "transaction": record,
+                "cleanup": cleanup_result,
+            }
+        )
     return 0
 
 
@@ -623,25 +717,53 @@ def command_abort(arguments: argparse.Namespace) -> int:
         record["status"] = "aborted"
         record["abort_reason"] = reason
         record["aborted_at"] = now()
-        mark_group_member_terminal(location, record, "aborted")
-        archive = archive_transaction(location, path, record)
-        try:
-            git.discard_transaction(
-                arguments.root,
-                transaction_checkout(record),
-                str(record["branch"]),
-            )
-        except (OSError, ValueError, git.GitError) as error:
-            record["cleanup_pending"] = True
-            record["cleanup_error"] = str(error)
-            replace_json(archive, record)
+        replace_json(path, record)
+        archive, record, cleanup_result = archive_aborted_and_cleanup(
+            arguments.root,
+            location,
+            path,
+            record,
+            str(record["owner"]),
+            reason,
+        )
         emit_event(
             location,
             "transaction-aborted",
             str(record["transaction_id"]),
             {"reason": reason},
         )
-        print_json({"archive": str(archive), "transaction": record})
+        print_json(
+            {
+                "archive": str(archive),
+                "transaction": record,
+                "cleanup": cleanup_result,
+            }
+        )
+    return 0
+
+
+def command_abort_group(arguments: argparse.Namespace) -> int:
+    if not arguments.discard:
+        raise ValueError(
+            "group abort requires --discard to explicitly authorize data deletion"
+        )
+    git.ensure_repository(arguments.root)
+    location = initialize(arguments.root, arguments.state_dir)
+    steward = require_steward(location, arguments.steward)
+    require_canonical_branch(location, arguments.root)
+    owners = {validate_slug(owner, "owner") for owner in arguments.owners}
+    reason = require_text(arguments.reason, "group abort reason")
+    with coordination_guard(location, "tx-abort-group"):
+        path, group = authorize_group_abort(
+            arguments.root,
+            location,
+            arguments.group,
+            steward,
+            owners,
+            reason,
+        )
+        update, _ = reconcile_group_abort(arguments.root, location, path, group)
+        print_json(update)
     return 0
 
 
@@ -651,12 +773,25 @@ def command_reconcile(arguments: argparse.Namespace) -> int:
     require_steward(location, arguments.steward)
     require_canonical_branch(location, arguments.root)
     with coordination_guard(location, "tx-reconcile"):
-        updates = reconcile_groups(arguments.root, location)
+        updates, processed_cleanups = reconcile_group_aborts(arguments.root, location)
+        updates.extend(reconcile_groups(arguments.root, location))
         for path, record in active_transactions(location):
-            if record.get("status") == "committed":
-                archive, record = archive_committed_and_cleanup(
-                    arguments.root, location, path, record
-                )
+            if record.get("status") in {"aborted", "committed"}:
+                transaction_id = str(record["transaction_id"])
+                if record.get("status") == "committed":
+                    archive, record, cleanup_result = archive_committed_and_cleanup(
+                        arguments.root, location, path, record
+                    )
+                else:
+                    archive, record, cleanup_result = archive_aborted_and_cleanup(
+                        arguments.root,
+                        location,
+                        path,
+                        record,
+                        str(record.get("owner", "unknown")),
+                        str(record.get("abort_reason", "Interrupted authorized abort")),
+                    )
+                processed_cleanups.add(transaction_id)
                 updates.append(
                     {
                         "kind": "transaction",
@@ -664,6 +799,7 @@ def command_reconcile(arguments: argparse.Namespace) -> int:
                         "archive": str(archive),
                     }
                 )
+                updates.append(cleanup_result)
                 continue
             if record.get("status") != "publishing":
                 continue
@@ -675,9 +811,10 @@ def command_reconcile(arguments: argparse.Namespace) -> int:
                 record["committed_revision"] = candidate
                 record["committed_at"] = now()
                 replace_json(path, record)
-                archive, record = archive_committed_and_cleanup(
+                archive, record, cleanup_result = archive_committed_and_cleanup(
                     arguments.root, location, path, record
                 )
+                processed_cleanups.add(str(record["transaction_id"]))
                 updates.append(
                     {
                         "kind": "transaction",
@@ -685,6 +822,7 @@ def command_reconcile(arguments: argparse.Namespace) -> int:
                         "archive": str(archive),
                     }
                 )
+                updates.append(cleanup_result)
             elif head == expected:
                 record["status"] = "ready"
                 record.pop("expected_head", None)
@@ -707,6 +845,13 @@ def command_reconcile(arguments: argparse.Namespace) -> int:
                         "transaction": record["transaction_id"],
                     }
                 )
+        updates.extend(
+            reconcile_cleanups(
+                arguments.root,
+                location,
+                excluded_transactions=processed_cleanups,
+            )
+        )
     print_json(updates)
     return 0
 

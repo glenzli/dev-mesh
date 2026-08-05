@@ -203,8 +203,18 @@ class TransactionRecoveryIntegrationTest(TransactionRepositoryCase):
         self.assertEqual(self.run_git("rev-parse", "HEAD").stdout.strip(), candidate)
 
         updates = json.loads(self.run_tx("reconcile", "--steward", "central").stdout)
-        completed = [item for item in updates if item.get("action") == "completed"]
-        self.assertEqual(len(completed), 1)
+        completed_transactions = [
+            item
+            for item in updates
+            if item.get("kind") == "transaction" and item.get("action") == "completed"
+        ]
+        completed_cleanups = [
+            item
+            for item in updates
+            if item.get("kind") == "cleanup" and item.get("action") == "completed"
+        ]
+        self.assertEqual(len(completed_transactions), 1)
+        self.assertEqual(len(completed_cleanups), 1)
         self.assertFalse(transaction_path.exists())
         self.assertIn("health=on", (self.repo / "src" / "router.txt").read_text())
 

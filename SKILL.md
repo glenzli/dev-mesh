@@ -170,8 +170,9 @@ evidence to the exact candidate and canonical base.
 Publication requires an empty canonical index. Unrelated unstaged dirty files may remain, but any
 dirty or direct-claimed path overlapping the actual transaction diff blocks publication.
 
-After a successful fast-forward, the helper archives the transaction and removes its clean merged
-branch and checkout. Cleanup failure records `cleanup_pending` without repeating publication.
+After a successful fast-forward, the helper writes a durable cleanup intent before archiving the
+transaction, then removes its clean merged checkout and branch step by step. Recovery can resume
+between any of those boundaries without repeating publication.
 
 ## Hand off or abort safely
 
@@ -196,6 +197,21 @@ python3 <skill>/scripts/tx.py abort --root <workspace> \
 
 Never use abort as stale-claim takeover.
 
+If group activation was interrupted before every source claim was promoted, abort the incomplete
+group only after every listed owner explicitly agrees:
+
+```bash
+python3 <skill>/scripts/tx.py abort-group --root <workspace> \
+  --group <group-id> --steward <steward-id> \
+  --owners <owner-a> <owner-b> \
+  --reason "All owners approved rollback of the incomplete group" --discard
+```
+
+The owner list must exactly match the group. This command persists an exact discard snapshot for
+every member before deleting anything, completes cleanup, restores any claim archived before the
+activation barrier, and then archives the group. Do not use it for a fully active group; each
+transaction owner must use normal `abort` there.
+
 ## Recover and observe
 
 Inspect current work:
@@ -203,6 +219,7 @@ Inspect current work:
 ```bash
 python3 <skill>/scripts/coord.py status --root <workspace>
 python3 <skill>/scripts/tx.py status --root <workspace>
+python3 <skill>/scripts/tx.py doctor --root <workspace>
 ```
 
 Reconcile interrupted group materialization, claim promotion, or publication:
@@ -224,6 +241,22 @@ Treat reconcile output as follows:
   remain current;
 - `needs-attention` means Git facts are ambiguous or a checkout contains unexpected work. Preserve
   it and obtain owner or user direction; never reset, clean, remove, or rematerialize over it.
+
+`doctor` is read-only. It reports orphan transaction branches, registered worktrees, unmanaged
+checkout paths, missing expected resources, and cleanup journals requiring attention. It never
+deletes or repairs them.
+
+If a discard target changed after authorization, inspect the preserved checkout and obtain fresh
+approval from its owner. Refresh only that cleanup authorization:
+
+```bash
+python3 <skill>/scripts/tx.py cleanup-authorize --root <workspace> \
+  --transaction <tx-id> --owner <owner-id> \
+  --reason "Owner reviewed the current checkout and approved discard" --discard
+```
+
+Then run `reconcile` again. Automatic recovery may consume a persisted cleanup snapshot, but it
+must never create missing discard authority or broaden an earlier snapshot to include later work.
 
 If `begin` exits before returning transaction records, do not edit any created checkout. Run
 `reconcile`; write authority exists only when the group is Active and all source claims are marked

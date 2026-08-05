@@ -1,6 +1,6 @@
 # Shared Workspace Semantic Microtransactions
 
-- 状态：阶段二原型已实现，进入真实工作流验证
+- 状态：阶段三原型已实现，进入调度与公平性设计
 - 日期：2026-08-05
 - 暂定中文名：争用触发的语义微事务
 - 暂定英文名：Contention-Triggered Semantic Microtransactions
@@ -473,6 +473,12 @@ member 的 transaction snapshot。只有同时满足以下条件，member 才能
 这使组级激活成为显式 barrier。即使进程在逐 member 写 snapshot 时退出，`prepare`、handoff、
 resume、abort 和 publish 也会拒绝尚未跨过 barrier 的 member。
 
+如果 group 尚未跨过 claim promotion barrier，可以由 steward 发起 partial-group abort，但必须
+同时提供所有 member owner 的精确确认。撤销首先持久化逐 member 的 discard cleanup snapshot，
+然后回收 transaction 资源；只有全部 cleanup 完成后才恢复被提前归档的 direct claims，并把
+group 归档为 Aborted。完整 Active group 不允许走这条捷径，必须由每个 transaction owner 分别
+执行正常 abort，避免中心节点扩大已经授予的独立写权限。
+
 ### 11.2 Member transaction 状态机
 
 ```mermaid
@@ -512,6 +518,26 @@ flowchart LR
 - **Committed**：共享 `HEAD` 已到 candidate；清理失败只标记 `cleanup_pending`。
 - **Aborted**：只有 owner、明确 handoff 决策或用户授权可以放弃未发布修改。
 
+### 11.3 Cleanup 状态机
+
+cleanup 是独立于 transaction archive 的持久状态机。Committed 或显式 Aborted 只决定业务
+结果，不能代替 Git 资源回收记录。
+
+```mermaid
+flowchart LR
+    A["Cleanup planned + exact Git facts"] --> B["Transaction archived"]
+    B --> C["Worktree removed"]
+    C --> D["Branch removed"]
+    D --> E["Cleanup completed / archived"]
+    A -->|"Identity, head, or content changed"| F["Needs attention"]
+    F -->|"Fresh owner discard authorization"| A
+```
+
+discard snapshot 绑定 branch head、dirty paths、Git operation 和 checkout 内容指纹。授权后任一
+事实变化都必须停止自动删除并取得新的 owner 授权。published cleanup 则必须证明 candidate 已
+包含在 canonical `HEAD` 中。重复执行 reconcile 只能继续已有 journal，不得发明新的 discard
+授权。
+
 ## 12. GitWorktreeBackend
 
 ### 12.1 Materialize
@@ -548,8 +574,8 @@ owner 对声明 write scope 的修改发生在 shadow checkout。prepare 必须�
 
 ### 12.4 Dispose
 
-Committed transaction 可以自动删除已合并 branch 和 clean checkout。未发布、dirty、conflicted
-或 owner 不明的资源不得自动强制删除。
+Committed transaction 可以通过 durable cleanup journal 自动删除已合并 branch 和 clean
+checkout。未发布、dirty、conflicted 或 owner 不明的资源不得自动强制删除。
 
 清理前必须验证目标位于协调器管理目录、record 匹配、branch 已发布或存在显式 discard 授权，
 且目标不是 workspace root、用户目录或模糊路径。
@@ -683,6 +709,9 @@ event 和 materialized transaction snapshot。
 ```text
 .agent-coordination/
 ├── claims/
+├── cleanups/
+│   ├── active/
+│   └── archive/
 ├── groups/
 │   ├── active/
 │   └── archive/
@@ -707,6 +736,7 @@ event 和 materialized transaction snapshot。
 - canonical Git `HEAD`：已发布代码内容；
 - transaction branch/candidate：未发布代码内容；
 - active group plan：materialization 的完整预期成员、共同 base 与授权 barrier；
+- active cleanup journal：已授权处置目标、精确 Git 事实和逐步完成状态；
 - immutable event log：协调状态转换；
 - materialized JSON snapshot：可由 event 重建的快速查询视图；
 - messages/acks/handoffs：授权、协商与连续性证据。
@@ -743,6 +773,27 @@ group-planned(all member snapshots)
 观察 branch ref、worktree registry、checkout path、checkout `HEAD`、dirty paths 和进行中的
 Git 操作。
 
+cleanup 的持久化顺序为：
+
+```text
+cleanup-planned(identity, branch-head, content-fingerprint, authorization)
+    → transaction-archived
+    → worktree-removed
+    → branch-removed
+    → cleanup-completed / archived
+```
+
+partial-group abort 的顺序为：
+
+```text
+group-abort-authorized(exact member owners)
+    → cleanup-authorized(all members)
+    → transactions-aborted / archived
+    → cleanups-completed(all members)
+    → promoted-claims-restored
+    → group-aborted / archived
+```
+
 ## 17. 崩溃恢复
 
 ### 17.1 Materializing 中断
@@ -774,9 +825,15 @@ Git 操作。
 
 ### 17.3 Cleanup、owner 与 orphan
 
-Committed 是不可逆的业务结果。清理失败只标记 `cleanup_pending`，不得重复发布。owner 失联时
-保留 checkout、candidate 和 checkpoint，只发送 takeover request。无法匹配 transaction record
-的 worktree 或 branch 只报告，不自动删除。
+Committed 是不可逆的业务结果。清理失败保留 active cleanup journal，不得重复发布。恢复时
+必须重新验证 managed checkout path、worktree/branch 双向身份、branch head 和处置授权；discard
+还必须匹配授权时的精确内容指纹。任何变化进入 `needs-attention`，只有原 owner 的新 discard
+授权才能刷新 snapshot。
+
+`doctor` 只读比对 active transaction、group plan、cleanup journal 与实际 Git branches、worktree
+registry、managed checkout paths。无法匹配的 branch、worktree、目录或缺失资源只报告，不自动
+删除、重建或接管。owner 失联时保留 checkout、candidate 和 checkpoint，只发送 takeover
+request。
 
 每个 member 进入 Committed 或 Aborted 时更新 group terminal snapshot；只有所有 member 都已
 terminal，group 才移动到 archive。group closure 不改变已经发生的业务提交，也不能授权删除
@@ -886,10 +943,12 @@ tx publish           检查发布谓词并 fast-forward canonical HEAD
 tx pause             保存 checkpoint
 tx handoff           转移责任与 capability
 tx abort             显式放弃但默认保留可恢复证据
-tx cleanup           清理已发布或明确 discard 的资源
+tx abort-group       在激活 barrier 前由全部 owner 显式确认组撤销
+tx cleanup-authorize 对变化后的 discard 目标提供新的 owner 授权
 
-coord reconcile      根据 Git 和 event 恢复中断状态
-coord hotspots       输出争用统计和结构审查建议
+tx reconcile         根据 Git 和 event 恢复中断状态
+tx doctor            只读报告受管资源与 orphan，不执行修复
+tx hotspots          输出争用统计和结构审查建议
 ```
 
 状态查询应该同时支持紧凑人类输出和稳定 JSON 输出，便于 Agent 低 token 成本地读取。
@@ -964,6 +1023,12 @@ A 申请 refactor 并覆盖相关 contract。协调器授予 scoped exclusive，
 18. 较早 exclusive 请求不会被新的重叠 optimistic 请求无限插队；
 19. publish dependency 图拒绝环；
 20. 重复争用能够形成 hotspot 报告。
+21. transaction 归档后中断能够从 cleanup journal 继续回收；
+22. worktree 已移除但 branch 尚未移除时，cleanup 能幂等完成；
+23. discard 授权后的内容变化会保留现场并要求新 owner 授权；
+24. orphan branch、worktree 和 checkout path 只被 doctor 报告，不被删除；
+25. activation barrier 前的 partial-group abort 要求精确的全体 owner 确认；
+26. partial-group abort 不得在缺少 member cleanup snapshot 时自行生成删除授权。
 
 ## 26. 已确定的设计决策
 
@@ -1018,5 +1083,15 @@ validation binding、shadow refresh、fast-forward publish、handoff、abort 和
 - claim archive 与 group snapshot 跨原子边界的幂等补记；
 - 所有 member terminal 后的 group closure。
 
-下一阶段仍不默认实现 VFS、warm pool 或 AST-aware merge。进入调度和性能优化前，应先在真实
-多 Agent 工作流中收集 group 恢复、等待时间、refresh 频率和人工 attention 的证据。
+阶段三已经实现：
+
+- terminal cleanup journal 与逐步、幂等的 worktree/branch 回收；
+- discard checkout 的精确内容指纹和 fresh owner reauthorization；
+- published candidate ancestry、managed path 与 Git 双向身份校验；
+- 只读 orphan/missing-resource doctor；
+- activation barrier 前、全体 owner 精确确认的 partial-group abort；
+- cleanup、transaction archive 和 claim restoration 跨原子边界的故障注入测试。
+
+下一阶段聚焦 pending request queue、exclusive writer 公平性、publish dependency 环检测和更
+结构化的 hotspot 指标。仍不默认实现 VFS、warm pool 或 AST-aware merge；先用真实多 Agent
+工作流的等待、refresh、attention 与回收数据校准调度策略。

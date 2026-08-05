@@ -38,6 +38,13 @@ INTENTS = {
 MERGEABLE_INTENTS = {"additive", "local-edit"}
 EXCLUSIVE_INTENTS = {"contract", "delete", "generated", "move", "refactor"}
 TRANSACTION_MODES = {"ordered-tx", "parallel-tx"}
+TEST_CRASH_ENV = "SHARED_COORD_TEST_CRASH_POINT"
+
+
+def crash_if_testing(point: str) -> None:
+    """Terminate only when an integration test explicitly selects this boundary."""
+    if os.environ.get(TEST_CRASH_ENV) == point:
+        os._exit(86)
 
 
 def now() -> str:
@@ -72,6 +79,8 @@ def initialize(root: Path, state_directory: str) -> Path:
     location = state_root(root, state_directory)
     for relative in (
         "claims",
+        "cleanups/active",
+        "cleanups/archive",
         "groups/active",
         "groups/archive",
         "transactions/active",

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import os
 import subprocess
 from pathlib import Path
 
@@ -100,6 +102,39 @@ def status_paths(root: Path) -> list[str]:
     return paths
 
 
+def checkout_fingerprint(root: Path) -> str:
+    status = run_git(
+        root,
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "--untracked-files=all",
+        binary=True,
+    )
+    diff = run_git(root, "diff", "--binary", "HEAD", binary=True)
+    assert isinstance(status, bytes)
+    assert isinstance(diff, bytes)
+    digest = hashlib.sha256()
+    digest.update(status)
+    digest.update(diff)
+    for relative in sorted(status_paths(root)):
+        digest.update(relative.encode("utf-8", errors="surrogateescape"))
+        path = root / relative
+        if path.is_symlink():
+            digest.update(b"symlink\0")
+            digest.update(os.readlink(path).encode("utf-8", errors="surrogateescape"))
+        elif path.is_file():
+            digest.update(b"file\0")
+            with path.open("rb") as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(chunk)
+        elif path.is_dir():
+            digest.update(b"directory\0")
+        else:
+            digest.update(b"missing\0")
+    return digest.hexdigest()
+
+
 def diff_paths(root: Path, base: str, candidate: str) -> list[str]:
     output = run_git(
         root,
@@ -179,6 +214,18 @@ def branch_head(root: Path, branch: str) -> str | None:
     return str(run_git(root, "rev-parse", f"refs/heads/{branch}^{{commit}}")).strip()
 
 
+def branches(root: Path, prefix: str) -> list[str]:
+    output = str(
+        run_git(
+            root,
+            "for-each-ref",
+            "--format=%(refname:short)",
+            f"refs/heads/{prefix}",
+        )
+    )
+    return [line for line in output.splitlines() if line]
+
+
 def worktrees(root: Path) -> list[dict[str, str | bool]]:
     output = run_git(root, "worktree", "list", "--porcelain", "-z", binary=True)
     assert isinstance(output, bytes)
@@ -256,6 +303,18 @@ def materialize_existing(root: Path, checkout: Path, branch: str) -> None:
     run_git(root, "worktree", "add", str(checkout), branch)
 
 
+def remove_worktree(root: Path, checkout: Path, force: bool = False) -> None:
+    arguments = ["worktree", "remove"]
+    if force:
+        arguments.append("--force")
+    arguments.append(str(checkout))
+    run_git(root, *arguments)
+
+
+def delete_branch(root: Path, branch: str, force: bool = False) -> None:
+    run_git(root, "branch", "-D" if force else "-d", branch)
+
+
 def stage_and_commit(
     checkout: Path,
     declared_paths: list[str],
@@ -302,11 +361,11 @@ def fast_forward(root: Path, branch: str) -> None:
 
 
 def cleanup_published(root: Path, checkout: Path, branch: str) -> None:
-    run_git(root, "worktree", "remove", str(checkout))
-    run_git(root, "branch", "-d", branch)
+    remove_worktree(root, checkout)
+    delete_branch(root, branch)
 
 
 def discard_transaction(root: Path, checkout: Path, branch: str) -> None:
     """Discard only an explicitly authorized coordinator-owned transaction."""
-    run_git(root, "worktree", "remove", "--force", str(checkout))
-    run_git(root, "branch", "-D", branch)
+    remove_worktree(root, checkout, force=True)
+    delete_branch(root, branch, force=True)

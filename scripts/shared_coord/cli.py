@@ -9,7 +9,10 @@ from . import git_backend as git
 from .state import TRANSACTION_MODES, root_path
 from .transactions import (
     command_abort,
+    command_abort_group,
     command_begin,
+    command_cleanup_authorize,
+    command_doctor,
     command_handoff,
     command_hotspots,
     command_init,
@@ -54,6 +57,18 @@ def parser() -> argparse.ArgumentParser:
     status_parser.add_argument("--json", action="store_true")
     status_parser.set_defaults(handler=command_status)
 
+    doctor_parser = subparsers.add_parser("doctor")
+    add_root(doctor_parser)
+    doctor_parser.set_defaults(handler=command_doctor)
+
+    cleanup_authorize_parser = subparsers.add_parser("cleanup-authorize")
+    add_root(cleanup_authorize_parser)
+    cleanup_authorize_parser.add_argument("--transaction", required=True)
+    cleanup_authorize_parser.add_argument("--owner", required=True)
+    cleanup_authorize_parser.add_argument("--reason", required=True)
+    cleanup_authorize_parser.add_argument("--discard", action="store_true")
+    cleanup_authorize_parser.set_defaults(handler=command_cleanup_authorize)
+
     prepare_parser = subparsers.add_parser("prepare")
     add_root(prepare_parser)
     prepare_parser.add_argument("--transaction", required=True)
@@ -95,6 +110,15 @@ def parser() -> argparse.ArgumentParser:
     abort_parser.add_argument("--reason", required=True)
     abort_parser.add_argument("--discard", action="store_true")
     abort_parser.set_defaults(handler=command_abort)
+
+    abort_group_parser = subparsers.add_parser("abort-group")
+    add_root(abort_group_parser)
+    abort_group_parser.add_argument("--group", required=True)
+    abort_group_parser.add_argument("--steward", required=True)
+    abort_group_parser.add_argument("--owners", nargs="+", required=True)
+    abort_group_parser.add_argument("--reason", required=True)
+    abort_group_parser.add_argument("--discard", action="store_true")
+    abort_group_parser.set_defaults(handler=command_abort_group)
 
     reconcile_parser = subparsers.add_parser("reconcile")
     add_root(reconcile_parser)
