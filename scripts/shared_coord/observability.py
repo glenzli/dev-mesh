@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import Counter
 from pathlib import Path
 
+from .audit import workflow_report
 from .state import read_json
 
 
@@ -24,6 +25,10 @@ def _resource_metrics() -> dict[str, int]:
         "activations": 0,
         "refresh_conflicts": 0,
         "attention_events": 0,
+        "decision_rejections": 0,
+        "coordinator_changes": 0,
+        "completed_contentions": 0,
+        "coordination_duration_ms": 0,
         "wait_duration_ms": 0,
     }
 
@@ -34,6 +39,7 @@ def _record_resource_event(
     event: str,
     mode: object,
     wait_ms: int,
+    coordination_ms: int,
 ) -> None:
     for resource in resources:
         entry = metrics.setdefault(resource, _resource_metrics())
@@ -49,6 +55,16 @@ def _record_resource_event(
             entry["wait_duration_ms"] += wait_ms
         elif event == "refresh-conflicted":
             entry["refresh_conflicts"] += 1
+        elif event == "contention-decision-rejected":
+            entry["decision_rejections"] += 1
+        elif event in {
+            "contention-coordinator-acquired",
+            "contention-coordinator-handed-off",
+        }:
+            entry["coordinator_changes"] += 1
+        elif event == "contention-completed":
+            entry["completed_contentions"] += 1
+            entry["coordination_duration_ms"] += coordination_ms
         elif event in {
             "cleanup-needs-attention",
             "group-needs-attention",
@@ -66,6 +82,8 @@ def _ranked_metrics(metrics: dict[str, dict[str, int]]) -> list[dict[str, object
             + values["exclusive_requests"] * 3
             + values["refresh_conflicts"] * 4
             + values["attention_events"] * 3
+            + values["decision_rejections"] * 2
+            + values["coordinator_changes"] * 2
         )
         recommendation = None
         if (
@@ -73,6 +91,8 @@ def _ranked_metrics(metrics: dict[str, dict[str, int]]) -> list[dict[str, object
             or values["exclusive_requests"] >= 2
             or values["refresh_conflicts"] >= 2
             or values["attention_events"] >= 2
+            or values["decision_rejections"] >= 2
+            or values["coordinator_changes"] >= 2
         ):
             recommendation = "review semantic ownership and task decomposition"
         ranked.append(
@@ -110,21 +130,36 @@ def hotspot_report(location: Path) -> dict[str, object]:
             request_counts[request_id] += 1
         wait_value = record.get("wait_duration_ms", 0)
         wait_ms = wait_value if isinstance(wait_value, int) and wait_value >= 0 else 0
+        coordination_value = record.get("coordination_duration_ms", 0)
+        coordination_ms = (
+            coordination_value
+            if isinstance(coordination_value, int) and coordination_value >= 0
+            else 0
+        )
         if event == "queue-activated":
             total_wait_ms += wait_ms
             activated_requests += 1
         paths = _string_values(record, "paths")
         if event == "refresh-conflicted":
             paths.extend(_string_values(record, "conflicts"))
-        _record_resource_event(path_metrics, sorted(set(paths)), event, record.get("mode"), wait_ms)
+        _record_resource_event(
+            path_metrics,
+            sorted(set(paths)),
+            event,
+            record.get("mode"),
+            wait_ms,
+            coordination_ms,
+        )
         _record_resource_event(
             semantic_metrics,
             sorted(set(_string_values(record, "semantic_resources"))),
             event,
             record.get("mode"),
             wait_ms,
+            coordination_ms,
         )
 
+    workflows = workflow_report(location)
     return {
         "events": dict(event_counts.most_common()),
         "transactions_by_activity": dict(transaction_counts.most_common()),
@@ -140,4 +175,6 @@ def hotspot_report(location: Path) -> dict[str, object]:
         },
         "path_hotspots": _ranked_metrics(path_metrics),
         "semantic_hotspots": _ranked_metrics(semantic_metrics),
+        "coordination": workflows["summary"],
+        "stalled_contentions": workflows["stalled_contentions"],
     }

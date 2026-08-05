@@ -16,6 +16,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Iterator
 
+from shared_coord.contention import drive_ready_requests, open_or_join_contention
+from shared_coord.contention_store import active_contentions
+from shared_coord.state import emit_event as emit_coordination_event
+
 try:  # POSIX, including the supported macOS development environment.
     import fcntl
 except ImportError:  # pragma: no cover - Windows uses the msvcrt fallback below.
@@ -70,8 +74,14 @@ def initialize(root: Path, state_directory: str) -> Path:
         "claims",
         "cleanups/active",
         "cleanups/archive",
+        "contentions/active",
+        "contentions/archive",
         "groups/active",
         "groups/archive",
+        "transactions/active",
+        "transactions/archive",
+        "events",
+        "checkouts",
         "messages",
         "acks",
         "tasks",
@@ -81,6 +91,8 @@ def initialize(root: Path, state_directory: str) -> Path:
         "archive/claims",
         "archive/messages",
         "guard-events",
+        "metrics",
+        "locks",
     ):
         (location / relative).mkdir(parents=True, exist_ok=True)
     return location
@@ -650,6 +662,7 @@ def command_claim(arguments: argparse.Namespace) -> int:
     if not requested_paths:
         raise ValueError("at least one likely write path is required")
     claim_path = location / "claims" / f"{scope}.json"
+    contention: dict[str, object] | None = None
     with claim_guard(location, "claim"):
         if claim_path.exists():
             existing = read_json(claim_path)
@@ -691,7 +704,38 @@ def command_claim(arguments: argparse.Namespace) -> int:
             record["overlap_reason"] = arguments.reason
             record["overlaps"] = conflicts
         write_json_exclusive(claim_path, record)
+        emit_coordination_event(
+            location,
+            "claim-created",
+            None,
+            {
+                "scope": scope,
+                "owner": owner,
+                "status": record.get("status", "active"),
+                "intent": record.get("intent", "local-edit"),
+                "paths": requested_paths,
+                "semantic_resources": sorted(
+                    set(record.get("semantic_writes", []))
+                    | set(record.get("sensitive_to", []))
+                ),
+                "conflicts": conflicts,
+            },
+        )
+        if record.get("status") == "pending-arbitration":
+            contention = open_or_join_contention(
+                arguments.root,
+                location,
+                scope,
+            )
     print(claim_path)
+    if contention is not None:
+        coordinator = contention.get("coordinator", {})
+        print(
+            "contention "
+            f"{contention.get('contention_id')} coordinator="
+            f"{coordinator.get('owner') if isinstance(coordinator, dict) else '?'} "
+            f"epoch={coordinator.get('epoch') if isinstance(coordinator, dict) else '?'}"
+        )
     return 0
 
 
@@ -755,6 +799,22 @@ def command_update(arguments: argparse.Namespace) -> int:
             record.pop("overlap_reason", None)
             record.pop("overlaps", None)
         replace_json(claim_path, record)
+        emit_coordination_event(
+            location,
+            "claim-updated",
+            None,
+            {
+                "scope": scope,
+                "owner": owner,
+                "status": record.get("status", "active"),
+                "intent": record.get("intent", "local-edit"),
+                "paths": requested_paths,
+                "semantic_resources": sorted(
+                    set(record.get("semantic_writes", []))
+                    | set(record.get("sensitive_to", []))
+                ),
+            },
+        )
     print(claim_path)
     return 0
 
@@ -789,6 +849,14 @@ def command_status(arguments: argparse.Namespace) -> int:
             f"intent={claim.get('intent', 'local-edit')} "
             f"heartbeat={claim.get('heartbeat_at')} paths=[{joined}] "
             f"semantic_writes={claim.get('semantic_writes', [])}"
+        )
+    for _, contention in active_contentions(location):
+        coordinator = contention.get("coordinator", {})
+        print(
+            f"contention {contention.get('contention_id')}: "
+            f"status={contention.get('status')} scopes={contention.get('scopes')} "
+            f"coordinator={coordinator.get('owner') if isinstance(coordinator, dict) else '?'} "
+            f"epoch={coordinator.get('epoch') if isinstance(coordinator, dict) else '?'}"
         )
     return 0
 
@@ -846,6 +914,19 @@ def command_message(arguments: argparse.Namespace) -> int:
         requires_ack=arguments.requires_ack,
         reply_to=arguments.reply_to,
     )
+    emit_coordination_event(
+        location,
+        "message-sent",
+        None,
+        {
+            "message_id": path.stem,
+            "scope": recipient,
+            "owner": sender,
+            "message_type": arguments.type,
+            "requires_ack": arguments.requires_ack,
+            "reply_to": arguments.reply_to,
+        },
+    )
     print(path)
     return 0
 
@@ -884,6 +965,12 @@ def command_pause(arguments: argparse.Namespace) -> int:
         record["paused_at"] = now()
         record["heartbeat_at"] = now()
         replace_json(path, record)
+        emit_coordination_event(
+            location,
+            "claim-paused",
+            None,
+            {"scope": scope, "owner": owner, "paths": claimed_paths},
+        )
     print(path)
     return 0
 
@@ -903,6 +990,16 @@ def command_resume(arguments: argparse.Namespace) -> int:
         record["resumed_at"] = now()
         record["heartbeat_at"] = now()
         replace_json(path, record)
+        emit_coordination_event(
+            location,
+            "claim-resumed",
+            None,
+            {
+                "scope": scope,
+                "owner": owner,
+                "paths": record.get("paths", []),
+            },
+        )
     print(path)
     return 0
 
@@ -1077,6 +1174,17 @@ def command_ack(arguments: argparse.Namespace) -> int:
                 "note": arguments.note.strip(),
             },
         )
+        emit_coordination_event(
+            location,
+            "message-acknowledged",
+            None,
+            {
+                "message_id": message_id,
+                "owner": owner,
+                "message_type": metadata.get("type", "info"),
+                "scope": metadata.get("to"),
+            },
+        )
     print(destination)
     return 0
 
@@ -1119,6 +1227,7 @@ def command_release(arguments: argparse.Namespace) -> int:
     scope = validate_slug(arguments.scope, "scope")
     owner = validate_slug(arguments.owner, "owner")
     path = location / "claims" / f"{scope}.json"
+    scheduling_updates: list[dict[str, object]] = []
     with claim_guard(location, "release"):
         record = read_json(path)
         if record.get("owner") != owner:
@@ -1129,7 +1238,35 @@ def command_release(arguments: argparse.Namespace) -> int:
         archive_name = f"{time.time_ns()}-{scope}.json"
         destination = location / "archive" / "claims" / archive_name
         shutil.move(path, destination)
+        emit_coordination_event(
+            location,
+            "claim-released",
+            None,
+            {
+                "scope": scope,
+                "owner": owner,
+                "paths": record.get("paths", []),
+                "semantic_resources": sorted(
+                    set(record.get("semantic_writes", []))
+                    | set(record.get("sensitive_to", []))
+                ),
+                "summary": arguments.summary,
+                "archive": str(destination),
+            },
+        )
+        try:
+            scheduling_updates = drive_ready_requests(arguments.root, location)
+        except (OSError, ValueError, RuntimeError) as error:
+            emit_coordination_event(
+                location,
+                "cooperative-schedule-deferred",
+                None,
+                {"scope": scope, "owner": owner, "reason": str(error)},
+            )
+            scheduling_updates = [{"action": "deferred", "reason": str(error)}]
     print(destination)
+    if scheduling_updates:
+        print(json.dumps({"scheduler": scheduling_updates}, ensure_ascii=False))
     return 0
 
 

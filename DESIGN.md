@@ -1,7 +1,7 @@
 # Shared Workspace Semantic Microtransactions
 
-- 状态：阶段四原型已实现，核心并发协议闭环
-- 日期：2026-08-05
+- 状态：阶段五原型已实现，分布式争用协调与审计闭环
+- 日期：2026-08-06
 - 暂定中文名：争用触发的语义微事务
 - 暂定英文名：Contention-Triggered Semantic Microtransactions
 
@@ -51,7 +51,8 @@ microtransaction 绑定一次小型语义修改，不绑定 Agent 的完整任�
 - Git commit 提供不可变版本快照；
 - linked worktree 提供当前可用的临时物理隔离；
 - semantic claim 描述物理写集、语义写集和失效依赖；
-- 中心协调 Agent 负责不确定情形下的语义与成本仲裁；
+- 冲突发现者默认成为该争用切片的临时协调 proposer；
+- contention-local lease 与 fencing epoch 允许安全换届，不转移代码所有权；
 - 确定性协调器负责状态转换、范围检查、Git 操作和恢复；
 - 共享 index/HEAD 只在最终发布窗口内短暂串行化；
 - 高频争用被视为架构或任务拆分问题，而不是自动合并能力不足。
@@ -208,9 +209,10 @@ flowchart TB
     I --> J["Canonical workspace HEAD"]
 ```
 
-### 7.1 语义协调 Agent
+### 7.1 争用级语义协调 Agent
 
-负责：
+系统不要求一个常驻中心 Agent。后到并检测出冲突的 Agent 默认成为该 contention 的 proposer，
+只负责这一次局部争用：
 
 - 判断任务是否真的独立；
 - 比较等待成本与 checkout、refresh、验证和返工成本；
@@ -220,6 +222,11 @@ flowchart TB
 - 识别高争用背后的结构问题。
 
 它不直接充当锁文件，不以模型上下文作为唯一权威状态，也不绕过确定性检查发布代码。
+参与者必须确认会改变其写权限或工作形态的 decision revision。协调 lease 可以心跳、显式 handoff，
+或在过期后由 contention participant 获取新的 fencing epoch；旧 epoch 不能继续写协调状态。
+
+协调权与工作所有权严格分离。lease 过期只允许继续 proposal、ack 收集和 scheduler 驱动，不得
+transfer、discard、publish 或删除任何 participant 的 claim、checkout 或未发布修改。
 
 ### 7.2 确定性协调器
 
@@ -419,6 +426,25 @@ checkout_cost
 - 资源 expansion 不能进入 hold-and-wait；
 - TTL 只触发诊断，不触发自动 takeover 或删除。
 
+### 9.7 Contention-local 选主与活性
+
+当新 claim 因路径或语义重叠进入 `pending-arbitration` 时，确定性协调器必须同时创建或加入一个
+durable contention record。冲突发现者成为初始 proposer，并获得 epoch 1 的短时 coordination
+lease。该角色不是仓库级 leader，也不获得其他 owner 的数据权限。
+
+contention record 至少保存 participants、claim digest、paths、semantic resources、当前
+coordinator、epoch、lease deadline、decision revision、participant responses、request id 和状态。
+
+- 明确兼容矩阵可以作为默认 proposal，但仍需受影响 participants 确认；
+- 新 participant 加入尚未 enact 的 contention 时，旧 decision 失效并重新仲裁；
+- claim digest 在 decision 后变化时，enact 必须停止，不创建 checkout；
+- coordinator 主动 handoff 或 lease 过期接管都必须增加 epoch；
+- 旧 epoch 的命令必须被 fencing；
+- coordinator 失联可以换届，owner 失联不能自动 takeover；
+- 已确认并关联 contention 的 wait request 在 blocker release 时可以被协作式推进；
+- 没有确认的 pending contention 保持安全停驻并显示为 awaiting responses；lease 过期、decision
+  被拒或关联 request 进入 attention 时，才进入 stalled workflow 报告。
+
 ## 10. Direct claim 升级
 
 transaction 应尽量在重叠写入发生前创建。
@@ -566,6 +592,27 @@ flowchart LR
 
 `begin` 仍保留为无排队争用的显式快速入口，但只要存在重叠 active request 就必须拒绝旁路，
 由 `schedule` 决定顺序。
+
+### 11.5 Contention coordination 状态机
+
+```mermaid
+flowchart LR
+    A["Conflict detected"] --> B["Open / proposer lease epoch 1"]
+    B --> C["Decision proposed"]
+    C --> D["Awaiting participant responses"]
+    D -->|"Reject or claim drift"| E["Needs decision"]
+    E --> C
+    D -->|"All accept"| F["Ready"]
+    F --> G["Scheduling request persisted"]
+    G --> H["Scheduled / blocked"]
+    H -->|"Grant archived"| I["Completed / archived"]
+    B -->|"Lease expired"| J["Participant acquires epoch + 1"]
+    J --> C
+```
+
+decision response 绑定 revision；claim digest 绑定 enact。协调换届不清空已经持久化的 proposal，
+但新 coordinator 必须用新 epoch 执行后续 mutation。handoff decision 仍使用 owner-authorized 的
+既有 claim/transaction handoff，不因协调多数确认而自动转移工作。
 
 ## 12. GitWorktreeBackend
 
@@ -741,6 +788,9 @@ event 和 materialized transaction snapshot。
 ├── cleanups/
 │   ├── active/
 │   └── archive/
+├── contentions/
+│   ├── active/
+│   └── archive/
 ├── groups/
 │   ├── active/
 │   └── archive/
@@ -766,6 +816,7 @@ event 和 materialized transaction snapshot。
 
 - canonical Git `HEAD`：已发布代码内容；
 - transaction branch/candidate：未发布代码内容；
+- active contention：局部 proposer lease、decision revision、participant response 与 request correlation；
 - active group plan：materialization 的完整预期成员、共同 base 与授权 barrier；
 - active cleanup journal：已授权处置目标、精确 Git 事实和逐步完成状态；
 - active scheduling request：尚未授予的争用顺序、claim snapshot 和 blocker；
@@ -836,6 +887,21 @@ queue-requested(claim snapshots, sequence)
     → queue-activated / archived
 ```
 
+contention enact 的持久化顺序为：
+
+```text
+contention-opened(initial proposer + epoch)
+    → contention-decision-proposed(claim digests + revision)
+    → contention-decision-accepted(all participants)
+    → queue-requested(contention_id + coordinator_epoch)
+    → contention-enacted(request_id)
+    → queue-activated / archived
+    → contention-completed / archived
+```
+
+进程可以在 queue request 与 contention request link 之间退出。恢复通过 `contention_id` 找回唯一
+request，补齐 link 后继续，不创建第二个 request。
+
 ## 17. 崩溃恢复
 
 ### 17.1 Materializing 中断
@@ -893,6 +959,16 @@ terminal，group 才移动到 archive。group closure 不改变已经发生的�
 - claim snapshot、owner 或 path 已变化：进入 `needs-attention`，不得使用新事实自动改写旧请求；
 - 取消要求 request 的精确 owner 集，Activating 状态必须先 reconcile，避免取消已经发生的 grant。
 
+### 17.5 Contention coordinator 中断
+
+- lease 未过期：其他 participant 不得并行主持同一 contention；
+- lease 已过期：participant 可以在短时 guard 内比较 expected epoch，原子增加 epoch 并接管协调；
+- 旧 coordinator 恢复：所有旧 epoch mutation 被拒绝；
+- decision 后 claim digest 变化：进入 `needs-decision`，不创建 request 或 checkout；
+- request 已创建但 contention 尚未记录 request id：按 `contention_id` 补齐 link；
+- request 已 activated：补齐 contention Completed 和 archive；
+- coordinator takeover 不改变 claim owner、transaction owner、discard authority 或 publish predicate。
+
 ## 18. Handoff 与连续性
 
 handoff 必须保存 objective、original claim、arbitration decision、base、declared/actual write
@@ -915,6 +991,19 @@ handoff 在接收方确认前不能改变写入权限。
 - aborted、discarded 和 cleanup_pending 次数；
 - estimated wait 与实际 transaction 成本；
 - actual diff 越界导致的重新仲裁次数。
+- contention proposer、lease renewal、handoff、expired-lease acquisition 和 fencing epoch；
+- decision revision、参与者 accept/reject、claim drift invalidation 和 request correlation；
+- time-to-first-decision、time-to-enact、总协调耗时和 stalled 原因；
+- claim、message、ack、queue、group、transaction、publish、cleanup 和 recovery 的关联事件。
+
+`events/` 保存不可变结构化协作日志。事件至少包含 event、at，以及可用的 contention_id、
+request_id、transaction_id、scope、owner、paths、semantic_resources、decision revision、epoch 和
+reason。`log` 提供按关联 id、scope、owner 和 event 的原始查询；`workflow-report` 从事件和 snapshot
+派生争用生命周期、换届、拒绝、耗时与 stalled 状态；`hotspots` 聚合路径和语义资源。
+
+派生报告不是授权来源，也不得推动 takeover、重构或删除。event 与 snapshot 不一致时，以 Git
+事实和 active durable snapshot 执行恢复，并在报告中暴露缺口。未来事件压缩必须保留可验证的
+summary checkpoint 与 correlation，不得覆盖尚未归档流程的原始证据。
 
 持续热点应产生结构化报告：
 
@@ -1003,6 +1092,16 @@ tx cleanup-authorize 对变化后的 discard 目标提供新的 owner 授权
 tx reconcile         根据 Git 和 event 恢复中断状态
 tx doctor            只读报告受管资源与 orphan，不执行修复
 tx hotspots          输出争用统计和结构审查建议
+tx contention-status 查看 proposer、epoch、decision、response 和 request link
+tx contention-renew  由当前 coordinator 延长局部 lease
+tx contention-acquire lease 过期后由 participant 获取新 epoch
+tx contention-handoff 显式转交协调角色，不转移工作所有权
+tx contention-propose 提交绑定 claim digest 的 decision revision
+tx contention-respond participant 接受或拒绝指定 revision
+tx contention-enact  全员接受后关联 queue 并尝试 grant
+tx contention-reconcile 发现遗漏 contention、修复 request link 并协作推进
+tx log               按 correlation 查询不可变协作事件
+tx workflow-report   派生协调耗时、换届、拒绝和 stalled 流程
 ```
 
 状态查询应该同时支持紧凑人类输出和稳定 JSON 输出，便于 Agent 低 token 成本地读取。
@@ -1088,6 +1187,13 @@ A 申请 refactor 并覆盖相关 contract。协调器授予 scoped exclusive，
 28. scheduler 在 group plan 或 exclusive grant 后中断能够幂等补记 request；
 29. claim snapshot 变化不会被 queued request 静默接受；
 30. 结构化 hotspot 同时按 path、semantic resource、等待和冲突聚合。
+31. 冲突发现者自动成为 contention proposer，且不获得其他 owner 的工作权限；
+32. lease 过期后 participant 可以增加 epoch 接管协调，旧 epoch 被 fencing；
+33. participant rejection 阻止 enact，新 decision revision 清空旧确认；
+34. decision 后 claim digest 变化阻止 checkout materialization；
+35. wait decision 在 blocker release 时协作式 grant，但不激活无 contention 的旧式 request；
+36. request 已落盘、contention link 未落盘时可以按 correlation 幂等恢复；
+37. 原始 log 能还原 contention decision chain，workflow report 能识别 stalled 与协调成本。
 
 ## 26. 已确定的设计决策
 
@@ -1108,6 +1214,9 @@ A 申请 refactor 并覆盖相关 contract。协调器授予 scoped exclusive，
 - shared index 在发布时必须为空；
 - checkout backend 可替换，第一版使用 Git linked worktree；
 - 第一版使用本地可读 event/snapshot，不要求数据库或 daemon；
+- 冲突发现者默认成为 contention-local proposer，不要求常驻中心 Agent；
+- coordination lease 可以换届，claim/transaction ownership 不因 lease 过期转移；
+- 协作日志使用 immutable event，并由 workflow/hotspot 报告派生而非反向授权；
 - 高频争用触发结构审查，而不是无限增强自动合并。
 
 ## 27. 实现阶段可调参数
@@ -1161,7 +1270,17 @@ validation binding、shadow refresh、fast-forward publish、handoff、abort 和
 - 精确 owner 集授权的 request cancellation；
 - 按 path 和 semantic resource 聚合的 queue wait、exclusive、conflict 和 attention 指标。
 
-至此 direct claim、semantic arbitration、temporary checkout、publish、cleanup、recovery、queue 和
-fairness 已形成第一版核心闭环。下一阶段应以真实多 Agent 工作流验证和协议 hardening 为主：
-schema migration、事件压缩、长队列性能、跨平台 Git 行为与可替换 checkout backend。仍不默认
-实现 VFS、warm pool 或 AST-aware merge。
+阶段五已经实现：
+
+- pending claim 自动创建或加入 contention，冲突发现者成为初始 proposer；
+- contention-local lease、heartbeat、显式 handoff、过期接管和 epoch fencing；
+- decision revision、participant accept/reject、claim digest binding 与 stale stop；
+- contention-correlated wait/parallel/ordered/exclusive request 以及 blocker release 协作式推进；
+- request/link 原子边界的 correlation recovery 和 completed contention archive；
+- claim、message、contention、queue 与 transaction 共用 immutable event log；
+- 可过滤 `log`、生命周期 `workflow-report`、stalled detection 与扩展 hotspot metrics。
+
+至此 direct claim、distributed semantic arbitration、temporary checkout、publish、cleanup、
+recovery、queue、fairness 和 audit 已形成第一版核心闭环。下一阶段应以真实多 Agent 工作流验证
+和协议 hardening 为主：schema migration、带 checkpoint 的事件压缩、长队列性能、跨平台 Git
+行为与可替换 checkout backend。仍不默认实现 VFS、warm pool 或 AST-aware merge。

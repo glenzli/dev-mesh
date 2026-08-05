@@ -9,6 +9,8 @@ from pathlib import Path
 from . import git_backend as git
 from .activation import activate_transaction_group, load_claims
 from .arbitration import recommend_decision, record_paths
+from .contention import reconcile_contentions
+from .contention_store import active_contentions
 from .group_abort import (
     authorize_group_abort,
     reconcile_group_abort,
@@ -178,6 +180,7 @@ def command_begin(arguments: argparse.Namespace) -> int:
 
 def command_status(arguments: argparse.Namespace) -> int:
     location = initialize(arguments.root, arguments.state_dir)
+    contentions = [record for _, record in active_contentions(location)]
     groups = [record for _, record in active_groups(location)]
     records = [record for _, record in active_transactions(location)]
     cleanups = [record for _, record in active_cleanups(location)]
@@ -185,6 +188,7 @@ def command_status(arguments: argparse.Namespace) -> int:
     if arguments.json:
         print_json(
             {
+                "contentions": contentions,
                 "requests": requests,
                 "groups": groups,
                 "transactions": records,
@@ -192,9 +196,17 @@ def command_status(arguments: argparse.Namespace) -> int:
             }
         )
         return 0
-    if not requests and not groups and not records and not cleanups:
-        print("no active requests, transaction groups, transactions, or cleanups")
+    if not contentions and not requests and not groups and not records and not cleanups:
+        print("no active contentions, requests, transaction groups, transactions, or cleanups")
         return 0
+    for contention in contentions:
+        coordinator = contention.get("coordinator", {})
+        print(
+            f"contention {contention.get('contention_id')}: "
+            f"status={contention.get('status')} scopes={contention.get('scopes')} "
+            f"coordinator={coordinator.get('owner') if isinstance(coordinator, dict) else '?'} "
+            f"epoch={coordinator.get('epoch') if isinstance(coordinator, dict) else '?'}"
+        )
     for request in requests:
         print(
             f"request {request.get('request_id')}: status={request.get('status')} "
@@ -247,15 +259,15 @@ def command_schedule(arguments: argparse.Namespace) -> int:
     steward = require_steward(location, arguments.steward)
     canonical_branch = require_canonical_branch(location, arguments.root)
     with coordination_guard(location, "tx-schedule"):
-        print_json(
-            schedule_ready_requests(
-                arguments.root,
-                location,
-                steward,
-                canonical_branch,
-                arguments.limit,
-            )
+        updates = schedule_ready_requests(
+            arguments.root,
+            location,
+            steward,
+            canonical_branch,
+            arguments.limit,
         )
+        updates.extend(reconcile_contentions(location))
+        print_json(updates)
     return 0
 
 
@@ -832,6 +844,7 @@ def command_reconcile(arguments: argparse.Namespace) -> int:
             )
         )
         updates.extend(refresh_queue_states(arguments.root, location))
+        updates.extend(reconcile_contentions(location))
     print_json(updates)
     return 0
 

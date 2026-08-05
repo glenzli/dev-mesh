@@ -6,6 +6,19 @@ import argparse
 import sys
 
 from . import git_backend as git
+from .audit import command_log, command_workflow_report
+from .contention import DECISIONS
+from .contention_lease import DEFAULT_LEASE_SECONDS
+from .contention_commands import (
+    command_contention_acquire,
+    command_contention_enact,
+    command_contention_handoff,
+    command_contention_propose,
+    command_contention_reconcile,
+    command_contention_renew,
+    command_contention_respond,
+    command_contention_status,
+)
 from .scheduler import REQUEST_MODES
 from .state import TRANSACTION_MODES, root_path
 from .transactions import (
@@ -60,6 +73,75 @@ def parser() -> argparse.ArgumentParser:
     add_root(status_parser)
     status_parser.add_argument("--json", action="store_true")
     status_parser.set_defaults(handler=command_status)
+
+    contention_status_parser = subparsers.add_parser("contention-status")
+    add_root(contention_status_parser)
+    contention_status_parser.add_argument("--contention")
+    contention_status_parser.set_defaults(handler=command_contention_status)
+
+    contention_reconcile_parser = subparsers.add_parser("contention-reconcile")
+    add_root(contention_reconcile_parser)
+    contention_reconcile_parser.set_defaults(handler=command_contention_reconcile)
+
+    contention_renew_parser = subparsers.add_parser("contention-renew")
+    add_root(contention_renew_parser)
+    contention_renew_parser.add_argument("--contention", required=True)
+    contention_renew_parser.add_argument("--owner", required=True)
+    contention_renew_parser.add_argument("--epoch", type=int, required=True)
+    contention_renew_parser.add_argument(
+        "--lease-seconds", type=int, default=DEFAULT_LEASE_SECONDS
+    )
+    contention_renew_parser.set_defaults(handler=command_contention_renew)
+
+    contention_acquire_parser = subparsers.add_parser("contention-acquire")
+    add_root(contention_acquire_parser)
+    contention_acquire_parser.add_argument("--contention", required=True)
+    contention_acquire_parser.add_argument("--owner", required=True)
+    contention_acquire_parser.add_argument("--expected-epoch", type=int, required=True)
+    contention_acquire_parser.add_argument(
+        "--lease-seconds", type=int, default=DEFAULT_LEASE_SECONDS
+    )
+    contention_acquire_parser.set_defaults(handler=command_contention_acquire)
+
+    contention_handoff_parser = subparsers.add_parser("contention-handoff")
+    add_root(contention_handoff_parser)
+    contention_handoff_parser.add_argument("--contention", required=True)
+    contention_handoff_parser.add_argument("--owner", required=True)
+    contention_handoff_parser.add_argument("--epoch", type=int, required=True)
+    contention_handoff_parser.add_argument("--next-owner", required=True)
+    contention_handoff_parser.add_argument("--reason", required=True)
+    contention_handoff_parser.add_argument(
+        "--lease-seconds", type=int, default=DEFAULT_LEASE_SECONDS
+    )
+    contention_handoff_parser.set_defaults(handler=command_contention_handoff)
+
+    contention_propose_parser = subparsers.add_parser("contention-propose")
+    add_root(contention_propose_parser)
+    contention_propose_parser.add_argument("--contention", required=True)
+    contention_propose_parser.add_argument("--owner", required=True)
+    contention_propose_parser.add_argument("--epoch", type=int, required=True)
+    contention_propose_parser.add_argument("--decision", choices=sorted(DECISIONS))
+    contention_propose_parser.add_argument("--target-scopes", nargs="*", default=[])
+    contention_propose_parser.add_argument("--reason", required=True)
+    contention_propose_parser.set_defaults(handler=command_contention_propose)
+
+    contention_respond_parser = subparsers.add_parser("contention-respond")
+    add_root(contention_respond_parser)
+    contention_respond_parser.add_argument("--contention", required=True)
+    contention_respond_parser.add_argument("--owner", required=True)
+    contention_respond_parser.add_argument("--revision", type=int, required=True)
+    response_group = contention_respond_parser.add_mutually_exclusive_group(required=True)
+    response_group.add_argument("--accept", action="store_true")
+    response_group.add_argument("--reject", action="store_true")
+    contention_respond_parser.add_argument("--reason", default="")
+    contention_respond_parser.set_defaults(handler=command_contention_respond)
+
+    contention_enact_parser = subparsers.add_parser("contention-enact")
+    add_root(contention_enact_parser)
+    contention_enact_parser.add_argument("--contention", required=True)
+    contention_enact_parser.add_argument("--owner", required=True)
+    contention_enact_parser.add_argument("--epoch", type=int, required=True)
+    contention_enact_parser.set_defaults(handler=command_contention_enact)
 
     enqueue_parser = subparsers.add_parser("enqueue")
     add_root(enqueue_parser)
@@ -154,6 +236,21 @@ def parser() -> argparse.ArgumentParser:
     hotspot_parser = subparsers.add_parser("hotspots")
     add_root(hotspot_parser)
     hotspot_parser.set_defaults(handler=command_hotspots)
+
+    log_parser = subparsers.add_parser("log")
+    add_root(log_parser)
+    log_parser.add_argument("--contention")
+    log_parser.add_argument("--request")
+    log_parser.add_argument("--transaction")
+    log_parser.add_argument("--scope")
+    log_parser.add_argument("--owner")
+    log_parser.add_argument("--event")
+    log_parser.add_argument("--limit", type=int, default=100)
+    log_parser.set_defaults(handler=command_log)
+
+    workflow_report_parser = subparsers.add_parser("workflow-report")
+    add_root(workflow_report_parser)
+    workflow_report_parser.set_defaults(handler=command_workflow_report)
     return result
 
 

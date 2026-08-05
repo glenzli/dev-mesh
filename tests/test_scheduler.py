@@ -377,6 +377,42 @@ class SchedulingIntegrationTest(TransactionRepositoryCase):
         )
         self.assertEqual(self.active_requests(), [])
 
+    def test_reconcile_recovers_wait_grant_before_request_archive(self) -> None:
+        self.custom_claim("health", "agent-a", "src/router.txt", "route:/health")
+        self.custom_claim("metrics", "agent-b", "src/router.txt", "route:/metrics")
+        request = self.enqueue(("metrics",), "wait")
+        self.run_coord(
+            "release",
+            "--scope",
+            "health",
+            "--owner",
+            "agent-a",
+            "--summary",
+            "Release the direct blocker without auto-granting a manual request",
+        )
+        self.run_tx(
+            "schedule",
+            "--steward",
+            "central",
+            expected=86,
+            environment={"SHARED_COORD_TEST_CRASH_POINT": "wait-claim-granted"},
+        )
+
+        updates = json.loads(self.run_tx("reconcile", "--steward", "central").stdout)
+
+        self.assertTrue(
+            any(
+                update.get("request_id") == request["request_id"]
+                and update.get("action") == "activated"
+                for update in updates
+            )
+        )
+        metrics_path = self.repo / ".agent-coordination" / "claims" / "metrics.json"
+        metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+        self.assertEqual(metrics["status"], "active")
+        self.assertEqual(metrics["wait_request_id"], request["request_id"])
+        self.assertEqual(self.active_requests(), [])
+
     def test_request_cancellation_requires_exact_owners(self) -> None:
         self.claim("health", "agent-a", "route:/health")
         self.claim("metrics", "agent-b", "route:/metrics")

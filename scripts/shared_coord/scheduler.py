@@ -36,7 +36,7 @@ from .state import (
 )
 
 
-REQUEST_MODES = TRANSACTION_MODES | {"exclusive"}
+REQUEST_MODES = TRANSACTION_MODES | {"exclusive", "wait"}
 LIVE_REQUEST_STATES = {
     "activating",
     "blocked",
@@ -111,6 +111,9 @@ def create_request(
     mode: str,
     steward: str,
     reason: str,
+    *,
+    contention_id: str | None = None,
+    coordinator_epoch: int | None = None,
 ) -> tuple[Path, dict[str, object]]:
     if mode not in REQUEST_MODES:
         raise ValueError(f"request mode must be one of {', '.join(sorted(REQUEST_MODES))}")
@@ -119,8 +122,8 @@ def create_request(
         value = validate_slug(scope, "scope")
         if value not in normalized_scopes:
             normalized_scopes.append(value)
-    if mode == "exclusive" and len(normalized_scopes) != 1:
-        raise ValueError("an exclusive request requires exactly one scope")
+    if mode in {"exclusive", "wait"} and len(normalized_scopes) != 1:
+        raise ValueError(f"a {mode} request requires exactly one scope")
     if mode in TRANSACTION_MODES and len(normalized_scopes) < 2:
         raise ValueError("a transaction scheduling request requires at least two scopes")
     claims_with_paths = load_claims(location, normalized_scopes)
@@ -131,6 +134,8 @@ def create_request(
         raise ValueError(
             "exclusive scheduling is only needed for a pending-arbitration claim"
         )
+    if mode == "wait" and claims[0].get("status") != "pending-arbitration":
+        raise ValueError("wait scheduling requires a pending-arbitration claim")
     if mode in TRANSACTION_MODES:
         assert_scope_dependencies_acyclic(claims, mode)
     for _, existing in active_requests(location):
@@ -167,6 +172,12 @@ def create_request(
         "status": "queued",
         "created_at": now(),
     }
+    if contention_id is not None:
+        record["contention_id"] = validate_slug(contention_id, "contention id")
+    if coordinator_epoch is not None:
+        if coordinator_epoch < 1:
+            raise ValueError("coordinator epoch must be positive")
+        record["coordinator_epoch"] = coordinator_epoch
     path = request_path(location, request_id)
     write_json_exclusive(path, record)
     emit_event(
@@ -179,6 +190,8 @@ def create_request(
             "scopes": normalized_scopes,
             "paths": paths,
             "semantic_resources": semantic_resources,
+            "contention_id": contention_id,
+            "coordinator_epoch": coordinator_epoch,
         },
     )
     crash_if_testing("queue-requested")
@@ -302,6 +315,8 @@ def _transition(
             "paths": request["paths"],
             "semantic_resources": request["semantic_resources"],
             "blockers": blockers,
+            "contention_id": request.get("contention_id"),
+            "coordinator_epoch": request.get("coordinator_epoch"),
         },
     )
     return {
@@ -351,6 +366,8 @@ def _archive_request(
             "semantic_resources": request["semantic_resources"],
             "wait_duration_ms": wait_ms,
             "archive": str(archive),
+            "contention_id": request.get("contention_id"),
+            "coordinator_epoch": request.get("coordinator_epoch"),
         },
     )
     return {
@@ -387,17 +404,18 @@ def reconcile_request_activations(
                 )
             )
             continue
-        if mode == "exclusive":
+        if mode in {"exclusive", "wait"}:
             scope = string_list(request, "scopes")[0]
             claim = claim_path(location, scope)
-            if claim.exists() and read_json(claim).get("exclusive_request_id") == request_id:
+            marker = f"{mode}_request_id"
+            if claim.exists() and read_json(claim).get(marker) == request_id:
                 updates.append(
                     _archive_request(
                         location,
                         path,
                         request,
                         "activated",
-                        {"exclusive_scope": scope},
+                        {f"{mode}_scope": scope},
                     )
                 )
                 continue
@@ -436,22 +454,23 @@ def refresh_queue_states(
     return updates
 
 
-def _activate_exclusive(
+def _activate_pending_claim(
     location: Path,
     request: dict[str, object],
 ) -> str:
+    mode = str(request["mode"])
     scope = string_list(request, "scopes")[0]
     path = claim_path(location, scope)
     claim = read_json(path)
     if claim.get("status") != "pending-arbitration":
         raise ValueError(
-            f"exclusive claim {scope!r} must be pending-arbitration before grant"
+            f"{mode} claim {scope!r} must be pending-arbitration before grant"
         )
     claim["status"] = "active"
-    claim["exclusive_request_id"] = request["request_id"]
-    claim["exclusive_granted_at"] = now()
+    claim[f"{mode}_request_id"] = request["request_id"]
+    claim[f"{mode}_granted_at"] = now()
     replace_json(path, claim)
-    crash_if_testing("exclusive-claim-granted")
+    crash_if_testing(f"{mode}-claim-granted")
     return scope
 
 
@@ -461,11 +480,15 @@ def schedule_ready_requests(
     steward: str,
     canonical_branch: str,
     limit: int = 0,
+    *,
+    contention_only: bool = False,
 ) -> list[dict[str, object]]:
     updates = refresh_queue_states(root, location)
     activated = 0
     for path, request in list(active_requests(location)):
         if request.get("status") != "ready":
+            continue
+        if contention_only and not isinstance(request.get("contention_id"), str):
             continue
         if limit > 0 and activated >= limit:
             break
@@ -491,18 +514,21 @@ def schedule_ready_requests(
                 "request_id": request["request_id"],
                 "mode": request["mode"],
                 "paths": request["paths"],
+                "contention_id": request.get("contention_id"),
+                "coordinator_epoch": request.get("coordinator_epoch"),
             },
         )
         crash_if_testing("queue-activation-recorded")
         try:
-            if request.get("mode") == "exclusive":
-                scope = _activate_exclusive(location, request)
+            if request.get("mode") in {"exclusive", "wait"}:
+                mode = str(request["mode"])
+                scope = _activate_pending_claim(location, request)
                 update = _archive_request(
                     location,
                     path,
                     request,
                     "activated",
-                    {"exclusive_scope": scope},
+                    {f"{mode}_scope": scope},
                 )
             else:
                 transactions = activate_transaction_group(

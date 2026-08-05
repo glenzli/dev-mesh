@@ -81,6 +81,8 @@ def initialize(root: Path, state_directory: str) -> Path:
         "claims",
         "cleanups/active",
         "cleanups/archive",
+        "contentions/active",
+        "contentions/archive",
         "groups/active",
         "groups/archive",
         "transactions/active",

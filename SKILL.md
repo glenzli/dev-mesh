@@ -1,6 +1,6 @@
 ---
 name: coordinate-shared-workspace
-description: Coordinate multiple agents or threads that concurrently edit one local Git workspace using direct claims, messages, handoffs, semantic contention arbitration, and short-lived Git microtransactions. Use when work may overlap by path or contract, the workspace contains shared dirty files, agents need write ownership or cross-thread handoff, a same-file edit may be safely parallelized, or Git index/HEAD publication and recovery must be serialized.
+description: Coordinate multiple agents or threads that concurrently edit one local Git workspace using direct claims, messages, handoffs, contention-local coordination leases, semantic arbitration, short-lived Git microtransactions, and auditable workflow logs. Use when work may overlap by path or contract, the workspace contains shared dirty files, agents need write ownership or cross-thread handoff, a same-file edit may be safely parallelized, Git index/HEAD publication and recovery must be serialized, or coordination delays and contention history need analysis.
 ---
 
 # Coordinate a Shared Workspace
@@ -24,7 +24,8 @@ Keep `.agent-coordination/` local unless the user explicitly wants its history c
 ## Start or hot-join
 
 1. Find the Git worktree root and read repository instructions.
-2. Inspect `git status`, active claims, active transactions, action-required messages, and handoffs.
+2. Inspect `git status`, active claims, active contentions, active transactions, action-required
+   messages, and handoffs.
 3. Choose one semantic scope, likely write paths, and a concrete first release.
 4. Use an owner id that identifies the task/thread and agent.
 5. Declare intent before writing.
@@ -92,6 +93,61 @@ python3 <skill>/scripts/coord.py claim --root <workspace> \
 
 `pending-arbitration` records intent but grants no direct write authority.
 
+The conflict detector becomes the initial proposer for that contention slice. The claim command
+prints the durable contention id, coordinator owner, and fencing epoch. This coordination role does
+not transfer any participant's claim or uncommitted work.
+
+## Coordinate a contention without a permanent leader
+
+Inspect the contention and its deterministic recommendation:
+
+```bash
+python3 <skill>/scripts/tx.py contention-status --root <workspace> \
+  --contention <contention-id>
+```
+
+Let the current coordinator propose the recommended deterministic decision by omitting
+`--decision`, or record an explicit semantic decision when the recommendation is ambiguous:
+
+```bash
+python3 <skill>/scripts/tx.py contention-propose --root <workspace> \
+  --contention <contention-id> --owner agent-b --epoch 1 \
+  --reason "Disjoint route resources make a short parallel slice cheaper"
+
+python3 <skill>/scripts/tx.py contention-respond --root <workspace> \
+  --contention <contention-id> --owner agent-a --revision 1 --accept \
+  --reason "The declared semantic units are independent"
+
+python3 <skill>/scripts/tx.py contention-enact --root <workspace> \
+  --contention <contention-id> --owner agent-b --epoch 1
+```
+
+Bind every response to the exact decision revision. A rejection requires a new proposal. Enact only
+after every participant accepts and every claim still matches the decision digest. A new
+participant or changed claim invalidates the decision before any checkout is created.
+
+Renew a live coordination lease at a natural milestone. Hand it to another participant explicitly
+when that participant is better placed to arbitrate:
+
+```bash
+python3 <skill>/scripts/tx.py contention-renew --root <workspace> \
+  --contention <contention-id> --owner agent-b --epoch 1
+
+python3 <skill>/scripts/tx.py contention-handoff --root <workspace> \
+  --contention <contention-id> --owner agent-b --epoch 1 \
+  --next-owner agent-a --reason "Agent A owns the affected contract context"
+```
+
+If the lease expires, any recorded participant may acquire the next epoch. This takes over only the
+coordination workflow; it never transfers, publishes, discards, or deletes participant work:
+
+```bash
+python3 <skill>/scripts/tx.py contention-acquire --root <workspace> \
+  --contention <contention-id> --owner agent-a --expected-epoch 1
+```
+
+Old epochs are fenced. Never use coordination lease expiry as claim-owner takeover authority.
+
 ## Choose the cheapest safe shape
 
 Inspect claims before materializing anything:
@@ -157,6 +213,11 @@ Use `exclusive` with exactly one pending claim whose intent is `contract`, `refa
 not stop disjoint work. Once an exclusive request is queued, do not grant a newer overlapping
 claim, claim expansion, or transaction ahead of it. `begin` rejects any attempt to bypass an
 overlapping queue.
+
+A unanimously accepted contention decision creates a correlated `wait`, `parallel-tx`,
+`ordered-tx`, or `exclusive` request. When a direct blocker releases, the helper may cooperatively
+advance only these contention-authorized requests. Legacy or manually enqueued requests retain
+explicit `schedule` semantics.
 
 Cancel an ungranted request only with the exact owner set recorded by it:
 
@@ -254,6 +315,7 @@ Reconcile interrupted group materialization, claim promotion, or publication:
 
 ```bash
 python3 <skill>/scripts/tx.py reconcile --root <workspace> --steward <steward-id>
+python3 <skill>/scripts/tx.py contention-reconcile --root <workspace>
 ```
 
 Treat reconcile output as follows:
@@ -276,6 +338,8 @@ Treat reconcile output as follows:
   record was archived;
 - `activation-retryable` means an Activating record had no grant facts after recovery and safely
   returned to the queue.
+- contention `request-linked` means a request survived a crash before the contention recorded its
+  id; correlation recovery attached the existing request instead of creating another one.
 
 `doctor` is read-only. It reports orphan transaction branches, registered worktrees, unmanaged
 checkout paths, missing expected resources, and cleanup journals requiring attention. It never
@@ -301,6 +365,9 @@ Inspect event activity:
 
 ```bash
 python3 <skill>/scripts/tx.py hotspots --root <workspace>
+python3 <skill>/scripts/tx.py workflow-report --root <workspace>
+python3 <skill>/scripts/tx.py log --root <workspace> \
+  --contention <contention-id> --limit 100
 ```
 
 Repeated same-path transactions, ordered refreshes, conflicts, or scope expansion are architecture
@@ -310,6 +377,11 @@ more aggressive.
 `hotspots` reports queue counts and average wait plus ranked path and semantic-resource metrics.
 Repeated exclusive requests, refresh conflicts, or attention events should trigger a boundary or
 task-slicing review; metrics never authorize an automatic refactor or takeover.
+
+`log` returns the immutable event chain filtered by contention, request, transaction, scope, owner,
+or event type. `workflow-report` derives decision revisions, rejections, coordinator changes,
+time-to-decision, time-to-enact, total coordination time, and stalled contentions. Treat reports as
+diagnostics, not authority; recover from Git facts and durable active snapshots.
 
 ## Use direct coordination for non-transaction work
 
