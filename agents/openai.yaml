@@ -1,0 +1,4 @@
+interface:
+  display_name: "Shared Workspace Coordination"
+  short_description: "Coordinate shared edits with semantic Git microtransactions"
+  default_prompt: "Use $coordinate-shared-workspace to declare shared edit intent and choose the cheapest safe direct, waiting, handoff, or microtransaction workflow."

@@ -1,0 +1,4 @@
+.agent-coordination/
+__pycache__/
+*.py[cod]
+.pytest_cache/
