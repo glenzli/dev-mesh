@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import os
 import subprocess
 from pathlib import Path
 
-from .state import normalize_paths, paths_overlap
+from .state import paths_overlap
 
 
 class GitError(RuntimeError):
@@ -174,6 +173,48 @@ def branch_exists(root: Path, branch: str) -> bool:
     return git_returncode(root, "show-ref", "--verify", "--quiet", f"refs/heads/{branch}") == 0
 
 
+def branch_head(root: Path, branch: str) -> str | None:
+    if not branch_exists(root, branch):
+        return None
+    return str(run_git(root, "rev-parse", f"refs/heads/{branch}^{{commit}}")).strip()
+
+
+def worktrees(root: Path) -> list[dict[str, str | bool]]:
+    output = run_git(root, "worktree", "list", "--porcelain", "-z", binary=True)
+    assert isinstance(output, bytes)
+    entries: list[dict[str, str | bool]] = []
+    current: dict[str, str | bool] = {}
+    for raw in output.split(b"\0"):
+        if not raw:
+            if current:
+                entries.append(current)
+                current = {}
+            continue
+        line = _decode_path(raw)
+        key, separator, value = line.partition(" ")
+        current[key] = value if separator else True
+    if current:
+        entries.append(current)
+    return entries
+
+
+def worktree_for_path(root: Path, checkout: Path) -> dict[str, str | bool] | None:
+    expected = checkout.resolve()
+    for entry in worktrees(root):
+        value = entry.get("worktree")
+        if isinstance(value, str) and Path(value).resolve() == expected:
+            return entry
+    return None
+
+
+def worktree_for_branch(root: Path, branch: str) -> dict[str, str | bool] | None:
+    expected = f"refs/heads/{branch}"
+    for entry in worktrees(root):
+        if entry.get("branch") == expected:
+            return entry
+    return None
+
+
 def ensure_local_exclude(root: Path, state_directory: str) -> None:
     git_dir = Path(str(run_git(root, "rev-parse", "--git-dir")).strip())
     if not git_dir.is_absolute():
@@ -202,6 +243,17 @@ def materialize(
         raise ValueError(f"transaction branch already exists: {branch}")
     checkout.parent.mkdir(parents=True, exist_ok=True)
     run_git(root, "worktree", "add", "-b", branch, str(checkout), base)
+
+
+def materialize_existing(root: Path, checkout: Path, branch: str) -> None:
+    if checkout.exists():
+        raise ValueError(f"checkout path already exists: {checkout}")
+    if not branch_exists(root, branch):
+        raise ValueError(f"transaction branch does not exist: {branch}")
+    if worktree_for_branch(root, branch) is not None:
+        raise ValueError(f"transaction branch is already checked out: {branch}")
+    checkout.parent.mkdir(parents=True, exist_ok=True)
+    run_git(root, "worktree", "add", str(checkout), branch)
 
 
 def stage_and_commit(
@@ -258,7 +310,3 @@ def discard_transaction(root: Path, checkout: Path, branch: str) -> None:
     """Discard only an explicitly authorized coordinator-owned transaction."""
     run_git(root, "worktree", "remove", "--force", str(checkout))
     run_git(root, "branch", "-D", branch)
-
-
-def normalize_status_paths(root: Path, paths: list[str]) -> list[str]:
-    return normalize_paths(root, paths)

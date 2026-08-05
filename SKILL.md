@@ -131,8 +131,10 @@ python3 <skill>/scripts/tx.py begin --root <workspace> \
 ```
 
 For `ordered-tx`, scope order becomes publication order. The command returns each transaction id,
-owner, branch, base revision, and checkout path. Edit declared transaction paths only in the
-returned shadow checkout. Continue unrelated direct work in the canonical workspace.
+owner, group id, branch, base revision, and checkout path. The coordinator persists the entire
+group plan before creating any branch. Edit declared transaction paths only after the command
+returns successfully; a partial group grants no write authority. Continue unrelated direct work
+in the canonical workspace.
 
 A queued or merely requested task must not own a checkout. A transaction belongs to one contention
 slice, not to an agent's whole task.
@@ -203,11 +205,29 @@ python3 <skill>/scripts/coord.py status --root <workspace>
 python3 <skill>/scripts/tx.py status --root <workspace>
 ```
 
-Reconcile an interrupted publication from its expected old `HEAD` and candidate:
+Reconcile interrupted group materialization, claim promotion, or publication:
 
 ```bash
 python3 <skill>/scripts/tx.py reconcile --root <workspace> --steward <steward-id>
 ```
+
+Treat reconcile output as follows:
+
+- `activated` means every planned member was verified, the group barrier completed, and source
+  claims were promoted;
+- `unchanged` means the active group was already consistent; repeated reconcile is safe;
+- `completed` means canonical `HEAD` already reached a publishing candidate and bookkeeping was
+  repaired;
+- `closed` means every group member was already terminal and an interrupted group archive was
+  completed without rematerializing resources;
+- `retryable` or `stale` applies to an interrupted publication whose expected `HEAD` did or did not
+  remain current;
+- `needs-attention` means Git facts are ambiguous or a checkout contains unexpected work. Preserve
+  it and obtain owner or user direction; never reset, clean, remove, or rematerialize over it.
+
+If `begin` exits before returning transaction records, do not edit any created checkout. Run
+`reconcile`; write authority exists only when the group is Active and all source claims are marked
+promoted.
 
 Inspect event activity:
 

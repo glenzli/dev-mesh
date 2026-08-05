@@ -10,11 +10,20 @@ from pathlib import Path
 
 from . import git_backend as git
 from .arbitration import claim_intent, recommend_decision, record_paths
+from .recovery import (
+    active_groups,
+    crash_if_testing,
+    create_group,
+    group_declared_paths,
+    mark_group_member_terminal,
+    materialize_group,
+    reconcile_groups,
+    require_transaction_group_active,
+)
 from .state import (
     TRANSACTION_MODES,
     active_claims,
     active_transactions,
-    archive_claim,
     archive_transaction,
     claim_path,
     coordination_guard,
@@ -29,7 +38,6 @@ from .state import (
     require_text,
     string_list,
     transaction_is_committed,
-    transaction_path,
     validate_slug,
     write_json_exclusive,
 )
@@ -190,14 +198,20 @@ def command_begin(arguments: argparse.Namespace) -> int:
                     f"active transaction {other.get('transaction_id')!r} overlaps: "
                     + ", ".join(overlaps)
                 )
+        for _, group in active_groups(location):
+            overlaps = overlapping_pairs(selected_paths, group_declared_paths(group))
+            if overlaps:
+                raise ValueError(
+                    f"active transaction group {group.get('group_id')!r} overlaps: "
+                    + ", ".join(overlaps)
+                )
 
         base = git.current_head(arguments.root)
-        records: list[tuple[Path, dict[str, object], Path]] = []
+        records: list[dict[str, object]] = []
         prior_transaction: str | None = None
-        for claim_record_path, claim in claims:
+        for _, claim in claims:
             scope = str(claim["scope"])
             transaction_id = make_transaction_id(scope)
-            active_path = transaction_path(location, transaction_id)
             checkout = location / "checkouts" / transaction_id
             branch = f"agent-tx/{transaction_id}"
             publish_after = (
@@ -228,44 +242,43 @@ def command_begin(arguments: argparse.Namespace) -> int:
                 "status": "materializing",
                 "created_at": now(),
             }
-            write_json_exclusive(active_path, record)
-            emit_event(
-                location,
-                "materialize-started",
-                transaction_id,
-                {"base_revision": base, "branch": branch},
-            )
-            git.materialize(arguments.root, checkout, branch, base)
-            record["status"] = "active"
-            record["activated_at"] = now()
-            replace_json(active_path, record)
-            emit_event(location, "transaction-activated", transaction_id)
-            records.append((active_path, record, claim_record_path))
+            records.append(record)
             prior_transaction = transaction_id
 
-        for _, record, source_claim_path in records:
-            claim = read_json(source_claim_path)
-            claim["status"] = "promoted"
-            claim["transaction_id"] = record["transaction_id"]
-            claim["promoted_at"] = now()
-            archive_claim(location, source_claim_path, claim)
-        print_json([record for _, record, _ in records])
+        group_path, group = create_group(
+            location,
+            mode,
+            reason,
+            steward,
+            canonical_branch,
+            base,
+            records,
+        )
+        print_json(materialize_group(arguments.root, location, group_path, group))
     return 0
 
 
 def command_status(arguments: argparse.Namespace) -> int:
     location = initialize(arguments.root, arguments.state_dir)
+    groups = [record for _, record in active_groups(location)]
     records = [record for _, record in active_transactions(location)]
     if arguments.json:
-        print_json(records)
+        print_json({"groups": groups, "transactions": records})
         return 0
-    if not records:
-        print("no active transactions")
+    if not groups and not records:
+        print("no active transaction groups or transactions")
         return 0
+    for group in groups:
+        print(
+            f"group {group.get('group_id')}: status={group.get('status')} "
+            f"claims_promoted={group.get('claims_promoted')} "
+            f"members={len(group.get('members', []))}"
+        )
     for record in records:
         print(
             f"{record.get('transaction_id')}: status={record.get('status')} "
-            f"owner={record.get('owner')} scope={record.get('scope')} "
+            f"group={record.get('group_id', 'legacy')} owner={record.get('owner')} "
+            f"scope={record.get('scope')} "
             f"base={record.get('base_revision')} paths={record.get('paths')}"
         )
     return 0
@@ -278,6 +291,7 @@ def command_prepare(arguments: argparse.Namespace) -> int:
     with coordination_guard(location, "tx-prepare"):
         path, record = read_transaction(location, arguments.transaction)
         assert_owner(record, arguments.owner)
+        require_transaction_group_active(location, record)
         if record.get("status") not in {"active", "conflicted", "prepared", "stale"}:
             raise ValueError(f"transaction cannot be prepared from {record.get('status')!r}")
         checkout = transaction_checkout(record)
@@ -346,6 +360,7 @@ def command_validate(arguments: argparse.Namespace) -> int:
     with coordination_guard(location, "tx-validate"):
         path, record = read_transaction(location, arguments.transaction)
         assert_owner(record, arguments.owner)
+        require_transaction_group_active(location, record)
         if record.get("status") != "prepared":
             raise ValueError("only a prepared transaction can be validated")
         checkout = transaction_checkout(record)
@@ -385,6 +400,7 @@ def archive_committed_and_cleanup(
     path: Path,
     record: dict[str, object],
 ) -> tuple[Path, dict[str, object]]:
+    mark_group_member_terminal(location, record, "committed")
     archive = archive_transaction(location, path, record)
     try:
         git.cleanup_published(
@@ -414,6 +430,7 @@ def command_publish(arguments: argparse.Namespace) -> int:
         path, record = read_transaction(location, arguments.transaction)
         if record.get("steward") != steward:
             raise ValueError("transaction belongs to a different release steward")
+        require_transaction_group_active(location, record)
         if record.get("status") != "ready":
             raise ValueError("only a ready transaction can be published")
         check_publish_dependencies(location, record)
@@ -520,7 +537,9 @@ def command_publish(arguments: argparse.Namespace) -> int:
             str(record["transaction_id"]),
             {"expected_head": root_head, "candidate": candidate},
         )
+        crash_if_testing("publish-recorded")
         git.fast_forward(arguments.root, str(record["branch"]))
+        crash_if_testing("publish-fast-forwarded")
         if git.current_head(arguments.root) != candidate:
             raise RuntimeError("Git reported success but canonical HEAD is not the candidate")
         record["status"] = "committed"
@@ -533,6 +552,7 @@ def command_publish(arguments: argparse.Namespace) -> int:
             str(record["transaction_id"]),
             {"candidate": candidate},
         )
+        crash_if_testing("publish-committed")
         archive, record = archive_committed_and_cleanup(
             arguments.root, location, path, record
         )
@@ -547,6 +567,7 @@ def command_handoff(arguments: argparse.Namespace) -> int:
     with coordination_guard(location, "tx-handoff"):
         path, record = read_transaction(location, arguments.transaction)
         current_owner = assert_owner(record, arguments.owner)
+        require_transaction_group_active(location, record)
         if record.get("status") in {"publishing", "committed"}:
             raise ValueError("publishing or committed transactions cannot be handed off")
         record["handoff"] = {
@@ -574,6 +595,7 @@ def command_resume(arguments: argparse.Namespace) -> int:
     with coordination_guard(location, "tx-resume"):
         path, record = read_transaction(location, arguments.transaction)
         assert_owner(record, arguments.owner)
+        require_transaction_group_active(location, record)
         if record.get("status") != "paused":
             raise ValueError("only a paused transaction can be resumed")
         prior = record.pop("status_before_pause", "active")
@@ -594,12 +616,14 @@ def command_abort(arguments: argparse.Namespace) -> int:
     with coordination_guard(location, "tx-abort"):
         path, record = read_transaction(location, arguments.transaction)
         assert_owner(record, arguments.owner)
+        require_transaction_group_active(location, record)
         if record.get("status") in {"publishing", "committed"}:
             raise ValueError("publishing or committed transactions cannot be aborted")
         reason = require_text(arguments.reason, "abort reason")
         record["status"] = "aborted"
         record["abort_reason"] = reason
         record["aborted_at"] = now()
+        mark_group_member_terminal(location, record, "aborted")
         archive = archive_transaction(location, path, record)
         try:
             git.discard_transaction(
@@ -626,9 +650,21 @@ def command_reconcile(arguments: argparse.Namespace) -> int:
     location = initialize(arguments.root, arguments.state_dir)
     require_steward(location, arguments.steward)
     require_canonical_branch(location, arguments.root)
-    updates: list[dict[str, object]] = []
     with coordination_guard(location, "tx-reconcile"):
+        updates = reconcile_groups(arguments.root, location)
         for path, record in active_transactions(location):
+            if record.get("status") == "committed":
+                archive, record = archive_committed_and_cleanup(
+                    arguments.root, location, path, record
+                )
+                updates.append(
+                    {
+                        "kind": "transaction",
+                        "action": "completed",
+                        "archive": str(archive),
+                    }
+                )
+                continue
             if record.get("status") != "publishing":
                 continue
             head = git.current_head(arguments.root)
@@ -642,17 +678,35 @@ def command_reconcile(arguments: argparse.Namespace) -> int:
                 archive, record = archive_committed_and_cleanup(
                     arguments.root, location, path, record
                 )
-                updates.append({"action": "completed", "archive": str(archive)})
+                updates.append(
+                    {
+                        "kind": "transaction",
+                        "action": "completed",
+                        "archive": str(archive),
+                    }
+                )
             elif head == expected:
                 record["status"] = "ready"
                 record.pop("expected_head", None)
                 replace_json(path, record)
-                updates.append({"action": "retryable", "transaction": record["transaction_id"]})
+                updates.append(
+                    {
+                        "kind": "transaction",
+                        "action": "retryable",
+                        "transaction": record["transaction_id"],
+                    }
+                )
             else:
                 record["status"] = "stale"
                 record.pop("validation_evidence", None)
                 replace_json(path, record)
-                updates.append({"action": "stale", "transaction": record["transaction_id"]})
+                updates.append(
+                    {
+                        "kind": "transaction",
+                        "action": "stale",
+                        "transaction": record["transaction_id"],
+                    }
+                )
     print_json(updates)
     return 0
 

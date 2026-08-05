@@ -72,6 +72,8 @@ def initialize(root: Path, state_directory: str) -> Path:
     location = state_root(root, state_directory)
     for relative in (
         "claims",
+        "groups/active",
+        "groups/archive",
         "transactions/active",
         "transactions/archive",
         "events",

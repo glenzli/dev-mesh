@@ -1,6 +1,6 @@
 # Shared Workspace Semantic Microtransactions
 
-- 状态：设计草案，待实现
+- 状态：阶段二原型已实现，进入真实工作流验证
 - 日期：2026-08-05
 - 暂定中文名：争用触发的语义微事务
 - 暂定英文名：Contention-Triggered Semantic Microtransactions
@@ -34,6 +34,7 @@
 25. [验收场景](#25-验收场景)
 26. [已确定的设计决策](#26-已确定的设计决策)
 27. [实现阶段可调参数](#27-实现阶段可调参数)
+28. [当前实现状态](#28-当前实现状态)
 
 ## 1. 摘要
 
@@ -444,6 +445,36 @@ flowchart LR
 
 ## 11. Transaction 状态机
 
+### 11.1 Transaction group 激活状态机
+
+一次仲裁产生的多个 transaction 必须先形成一个持久化 group plan。group 是物化阶段的授权
+边界；单个 member 的 branch 或 checkout 已经存在，并不代表该 member 已获得写权限。
+
+```mermaid
+flowchart LR
+    A["Planned"] --> B["Materializing"]
+    B -->|"All members verified"| C["Members activated"]
+    C --> D["Group active"]
+    D -->|"All source claims archived"| E["Write authority granted"]
+    B -->|"Ambiguous Git facts or user work"| F["Needs attention"]
+    F -->|"Steward repairs facts and reconciles"| B
+    E -->|"All members terminal"| G["Closed / Archived"]
+```
+
+group plan 在任何 Git mutation 之前写入，包含共同 base、canonical branch、仲裁理由和每个
+member 的 transaction snapshot。只有同时满足以下条件，member 才能进入正常编辑流程：
+
+- 所有计划 branch 与 checkout 均已存在并和 record 双向匹配；
+- materialization 期间所有 checkout 仍 clean、没有进行中的 Git 操作且 `HEAD == base`；
+- 所有 transaction snapshot 已进入 Active；
+- group snapshot 为 Active；
+- 原 direct claims 已全部归档为 promoted。
+
+这使组级激活成为显式 barrier。即使进程在逐 member 写 snapshot 时退出，`prepare`、handoff、
+resume、abort 和 publish 也会拒绝尚未跨过 barrier 的 member。
+
+### 11.2 Member transaction 状态机
+
 ```mermaid
 flowchart LR
     A["Requested"] --> B{"Arbitration"}
@@ -652,6 +683,9 @@ event 和 materialized transaction snapshot。
 ```text
 .agent-coordination/
 ├── claims/
+├── groups/
+│   ├── active/
+│   └── archive/
 ├── transactions/
 │   ├── active/
 │   └── archive/
@@ -672,6 +706,7 @@ event 和 materialized transaction snapshot。
 
 - canonical Git `HEAD`：已发布代码内容；
 - transaction branch/candidate：未发布代码内容；
+- active group plan：materialization 的完整预期成员、共同 base 与授权 barrier；
 - immutable event log：协调状态转换；
 - materialized JSON snapshot：可由 event 重建的快速查询视图；
 - messages/acks/handoffs：授权、协商与连续性证据。
@@ -691,14 +726,42 @@ publish-started(expected_head, candidate)
 
 materialize 和 cleanup 使用相同的 intent/completion 模式。
 
+materialize 的持久化顺序为：
+
+```text
+group-planned(all member snapshots)
+    → transaction-recorded(member)
+    → materialize-started(member)
+    → Git branch/worktree creation
+    → materialize-completed(member)
+    → transaction-activated(all members)
+    → group-activated
+    → source-claims-promoted(all members)
+```
+
+任何一步都允许进程退出；恢复不得仅依据最后一个 JSON 状态猜测操作是否发生，而必须重新
+观察 branch ref、worktree registry、checkout path、checkout `HEAD`、dirty paths 和进行中的
+Git 操作。
+
 ## 17. 崩溃恢复
 
 ### 17.1 Materializing 中断
 
-- branch 和 checkout 都不存在：回到 Queued 或重试；
-- branch 存在、checkout 不存在：验证 branch 后重新 materialize；
-- checkout 存在且 record 匹配：补记 Active；
-- 资源 owner 无法确认：保留并请求人工或用户判断。
+`reconcile` 以 durable group plan 为预期状态，以 Git 为已发生事实：
+
+- branch 和 checkout 都不存在：从 group plan 重试 materialize；
+- branch 存在、checkout 不存在，且 branch 仍指向共同 base、未注册到其他 worktree：重新
+  materialize existing branch；
+- checkout 存在且 branch、worktree registry、record、path 和 base 全部匹配，且 checkout
+  clean：补记 member materialized；
+- 所有 member 已 materialized：幂等补齐 transaction Active、group Active 和 claim promotion；
+- claim 已移动到 archive、但 group snapshot 尚未更新：通过 transaction id 识别已经完成的
+  promotion，不创建重复 archive；
+- branch 已前进、checkout dirty、存在进行中的 Git 操作、注册位置不一致或 owner 无法确认：
+  标记 `needs-attention`，保留全部资源和内容，不 reset、不 clean、不删除。
+
+对同一组重复执行 `reconcile` 必须幂等。正常 Active 且 claims 已 promoted 的组返回 unchanged，
+不得重复创建 branch、checkout、transaction 或 archive。
 
 ### 17.2 Publishing 中断
 
@@ -714,6 +777,13 @@ materialize 和 cleanup 使用相同的 intent/completion 模式。
 Committed 是不可逆的业务结果。清理失败只标记 `cleanup_pending`，不得重复发布。owner 失联时
 保留 checkout、candidate 和 checkpoint，只发送 takeover request。无法匹配 transaction record
 的 worktree 或 branch 只报告，不自动删除。
+
+每个 member 进入 Committed 或 Aborted 时更新 group terminal snapshot；只有所有 member 都已
+terminal，group 才移动到 archive。group closure 不改变已经发生的业务提交，也不能授权删除
+含不确定修改的资源。
+
+如果进程在写入 group Closed 后、移动 archive 前退出，`reconcile` 只能完成 archive move；
+不得再次进入 materialize，也不得重新创建已终止 member 的 branch 或 checkout。
 
 ## 18. Handoff 与连续性
 
@@ -931,3 +1001,22 @@ A 申请 refactor 并覆盖相关 contract。协调器授予 scoped exclusive，
 - 人类输出和 JSON 输出的命令名称。
 
 这些参数必须通过兼容 schema 或迁移机制演进，不能削弱所有权、发布和恢复不变量。
+
+## 28. 当前实现状态
+
+阶段一已经实现 semantic claim、确定性仲裁、短寿命 linked worktree、范围检查、candidate 与
+validation binding、shadow refresh、fast-forward publish、handoff、abort 和基础 reconcile。
+
+阶段二已经实现：
+
+- schema 2 durable transaction group plan；
+- group activation barrier 与 claim promotion barrier；
+- branch/worktree 双向事实检查；
+- absent branch 的重建与 existing branch 的重新 materialize；
+- `needs-attention` 安全停驻，保留 dirty、异常 commit 和不确定资源；
+- materialize 与 publish 关键边界的故障注入测试；
+- claim archive 与 group snapshot 跨原子边界的幂等补记；
+- 所有 member terminal 后的 group closure。
+
+下一阶段仍不默认实现 VFS、warm pool 或 AST-aware merge。进入调度和性能优化前，应先在真实
+多 Agent 工作流中收集 group 恢复、等待时间、refresh 频率和人工 attention 的证据。

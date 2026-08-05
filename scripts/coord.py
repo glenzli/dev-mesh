@@ -68,6 +68,8 @@ def initialize(root: Path, state_directory: str) -> Path:
     location = state_root(root, state_directory)
     for relative in (
         "claims",
+        "groups/active",
+        "groups/archive",
         "messages",
         "acks",
         "tasks",
@@ -293,6 +295,26 @@ def active_transaction_scopes(location: Path) -> list[tuple[Path, dict[str, obje
     return transactions
 
 
+def materializing_group_scopes(location: Path) -> list[tuple[Path, dict[str, object]]]:
+    scopes: list[tuple[Path, dict[str, object]]] = []
+    for path in sorted((location / "groups" / "active").glob("*.json")):
+        group = read_json(path)
+        if group.get("status") == "active" and group.get("claims_promoted") is True:
+            continue
+        members = group.get("members", [])
+        if not isinstance(members, list):
+            continue
+        for member in members:
+            if not isinstance(member, dict):
+                continue
+            planned = member.get("planned_transaction")
+            if isinstance(planned, dict):
+                group_scope = dict(planned)
+                group_scope["_coord_record_kind"] = "transaction group"
+                scopes.append((path, group_scope))
+    return scopes
+
+
 def claim_conflicts(
     location: Path,
     requested_paths: list[str],
@@ -300,7 +322,9 @@ def claim_conflicts(
 ) -> list[str]:
     conflicts: list[str] = []
     for existing_path, existing in (
-        active_claims(location) + active_transaction_scopes(location)
+        active_claims(location)
+        + active_transaction_scopes(location)
+        + materializing_group_scopes(location)
     ):
         if existing_path == ignored_claim:
             continue
@@ -317,11 +341,13 @@ def claim_conflicts(
         )
         if overlapping:
             owner = existing.get("owner", "unknown")
-            record_kind = (
-                "transaction"
-                if "transaction_id" in existing
-                else "claim"
-            )
+            explicit_kind = existing.get("_coord_record_kind")
+            if isinstance(explicit_kind, str):
+                record_kind = explicit_kind
+            elif "transaction_id" in existing:
+                record_kind = "transaction"
+            else:
+                record_kind = "claim"
             conflicts.append(
                 f"{record_kind} {existing_path.stem} (owner {owner}): "
                 f"{', '.join(overlapping)}"
