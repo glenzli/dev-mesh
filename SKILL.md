@@ -1,6 +1,6 @@
 ---
 name: coordinate-shared-workspace
-description: Coordinate multiple agents or threads that concurrently edit one local Git workspace using direct claims, messages, handoffs, contention-local coordination leases, semantic arbitration, short-lived Git microtransactions, and auditable workflow logs. Use when work may overlap by path or contract, the workspace contains shared dirty files, agents need write ownership or cross-thread handoff, a same-file edit may be safely parallelized, Git index/HEAD publication and recovery must be serialized, or coordination delays and contention history need analysis.
+description: Coordinate multiple agents or threads that concurrently edit one local Git workspace using direct claims, messages, handoffs, contention-local coordination leases, semantic arbitration, short-lived Git microtransactions, and auditable workflow logs. Use when work may overlap by path or contract, the workspace contains shared dirty files, agents need write ownership or cross-thread handoff, a same-file edit may be safely parallelized, Git index/HEAD or canonical build publication must be serialized, an external shared mutation is authorization-gated, or coordination delays and contention history need analysis.
 ---
 
 # Coordinate a Shared Workspace
@@ -18,6 +18,8 @@ microtransaction only when a clean overlapping scope is worth developing concurr
   workspace.
 - Publish only a candidate that can fast-forward the current canonical `HEAD`.
 - Treat an expired timestamp as diagnostic evidence, not transfer authority.
+- Treat permission, sandbox, policy, and approval failures as environment or authorization blockers,
+  not evidence of another owner or a contention.
 
 Keep `.agent-coordination/` local unless the user explicitly wants its history committed.
 
@@ -263,6 +265,40 @@ After a successful fast-forward, the helper writes a durable cleanup intent befo
 transaction, then removes its clean merged checkout and branch step by step. Recovery can resume
 between any of those boundaries without repeating publication.
 
+## Serialize external shared outputs
+
+Treat a canonical build, deployment link, generated catalog, or other mutable output outside the
+workspace as a named logical resource even when its physical path cannot be claimed directly.
+
+- Define one pseudo-path and one semantic resource key in repository instructions; every task must
+  reuse those exact identities. Do not invent synonyms for the same output.
+- Let the product-side lock distinguish an existing lock (`EEXIST`) from permission, sandbox,
+  missing-parent, read-only-filesystem, and other environment failures. Preserve the real error;
+  only proven lock existence means another steward may be active.
+- If policy or the environment blocks the mutation, keep the logical claim and pause it. Do not
+  create a contention and do not release a claim that the same task intends to resume:
+
+```bash
+python3 <skill>/scripts/coord.py pause --root <workspace> \
+  --scope <scope> --owner <owner-id> --checkpoint '<checkpoint-json>' \
+  --resume-condition "User authorizes the exact mutation and resource state is rechecked" \
+  --retain-paths-reason "Protect the external publication boundary while approval is pending" \
+  --blocker-kind authorization --operation "publish canonical output" \
+  --resources <canonical-resource-key> --error-kind sandbox-write-denied
+```
+
+After authorization, verify the physical lock, canonical target, candidate identity, and any
+recorded base again. Resume with concise evidence before mutating:
+
+```bash
+python3 <skill>/scripts/coord.py resume --root <workspace> \
+  --scope <scope> --owner <owner-id> \
+  --evidence "Exact operation authorized; lock absent and canonical target unchanged"
+```
+
+Authorization and environment pauses require evidence. If the earlier claim was released instead
+of paused, reacquire the canonical resource and perform the same state checks before retrying.
+
 ## Hand off or abort safely
 
 Transfer a transaction with a concrete checkpoint:
@@ -382,6 +418,19 @@ task-slicing review; metrics never authorize an automatic refactor or takeover.
 or event type. `workflow-report` derives decision revisions, rejections, coordinator changes,
 time-to-decision, time-to-enact, total coordination time, and stalled contentions. Treat reports as
 diagnostics, not authority; recover from Git facts and durable active snapshots.
+
+`claim-paused` records blocker kind, operation, resource, error kind, resume condition, and whether
+paths were retained. `claim-resumed` records the recheck evidence. Keep raw secrets and unbounded
+command output out of these fields; preserve a stable error category and a bounded diagnostic.
+
+If an immutable event contains wrong evidence, append an owner-scoped correction; never rewrite or
+delete the original event:
+
+```bash
+python3 <skill>/scripts/coord.py audit-note --root <workspace> \
+  --scope <scope> --owner <owner-id> --kind correction \
+  --supersedes-event <event-file> --message "Fresh observed fact supersedes stale evidence"
+```
 
 ## Use direct coordination for non-transaction work
 

@@ -51,8 +51,16 @@ def event_log(
     if limit < 1 or limit > 5000:
         raise ValueError("log limit must be between 1 and 5000")
     matched: list[dict[str, object]] = []
-    for path in sorted((location / "events").glob("*.json")):
-        record = read_json(path)
+    records = [
+        (path, read_json(path))
+        for path in sorted((location / "events").glob("*.json"))
+    ]
+    superseded_by: dict[str, list[str]] = defaultdict(list)
+    for path, record in records:
+        superseded = record.get("supersedes_event")
+        if record.get("event") == "audit-correction" and isinstance(superseded, str):
+            superseded_by[superseded].append(path.name)
+    for path, record in records:
         if not all(
             (
                 _matches(record, "contention_id", contention_id),
@@ -68,6 +76,8 @@ def event_log(
             continue
         item = dict(record)
         item["event_file"] = path.name
+        if path.name in superseded_by:
+            item["superseded_by"] = superseded_by[path.name]
         matched.append(item)
     total = len(matched)
     if total > limit:

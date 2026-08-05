@@ -1,6 +1,6 @@
 # Shared Workspace Semantic Microtransactions
 
-- 状态：阶段五原型已实现，分布式争用协调与审计闭环
+- 状态：阶段六 hardening 已实现，覆盖外部共享资源与授权阻断
 - 日期：2026-08-06
 - 暂定中文名：争用触发的语义微事务
 - 暂定英文名：Contention-Triggered Semantic Microtransactions
@@ -192,6 +192,16 @@ microtransaction 使用的临时物理文件视图。第一版由 Git linked wor
 **Contention hotspot**
 
 重复出现重叠申请、等待、rebase、冲突或返工的路径或语义资源。
+
+**External shared resource**
+
+位于 workspace 之外、但会被多个任务观察或修改的 canonical build、部署链接、生成 catalog
+或其他共享输出。它必须拥有仓库定义的唯一逻辑资源键，并由物理原子锁保护最终 mutation。
+
+**Environment or authorization blocker**
+
+沙箱、文件系统权限、只读挂载、缺少父目录、策略或用户批准阻止操作的状态。它不是 contention，
+也不能推导出存在另一个 steward。
 
 ## 7. 系统架构
 
@@ -471,6 +481,19 @@ flowchart LR
 
 如果现有 owner 已产生脏写入，默认让它快速完成 first release。捕获脏工作树为临时 Git tree
 可以作为未来能力，但不属于第一版 fast path。
+
+### 10.1 等待授权或环境变化
+
+任务已经拥有 shared output 的逻辑 claim、但最终 mutation 被环境或授权边界阻止时，必须把
+claim 标记为 Paused，并记录 checkpoint、blocker kind、operation、canonical resource key、稳定
+error kind 和精确 resume condition。该状态继续保留逻辑资源所有权，但 owner 必须停止 mutation。
+
+只有确认物理锁确实存在，才可以报告另一位 steward 可能正在操作。`EACCES`、`EPERM`、`EROFS`、
+`ENOENT` 和 sandbox/policy denial 必须保持各自的环境分类，不创建 contention。
+
+等待用户授权后仍计划继续的任务不得 release claim。恢复前必须重新观察物理锁、canonical target、
+candidate identity 和记录的 base，并把 bounded evidence 写入 `claim-resumed`。如果 claim 已被释放，
+必须重新申请相同 canonical resource；不能依赖旧授权或旧检查直接 mutation。
 
 ## 11. Transaction 状态机
 
@@ -902,6 +925,22 @@ contention-opened(initial proposer + epoch)
 进程可以在 queue request 与 contention request link 之间退出。恢复通过 `contention_id` 找回唯一
 request，补齐 link 后继续，不创建第二个 request。
 
+外部共享 mutation 的阻断顺序为：
+
+```text
+canonical-resource-claimed(stable logical identity)
+    → physical-lock-attempted
+    → lock-acquired | environment-blocked | authorization-blocked | lock-contended
+    → claim-paused(checkpoint + exact resume condition)
+    → resource-state-rechecked + claim-resumed(evidence)
+    → physical-lock-acquired
+    → canonical-mutation-completed
+    → claim-released
+```
+
+产品侧锁实现必须保留原始错误类别。协调日志可以只保存稳定 error kind 和 bounded diagnostic，
+但不得把所有 lock-create failure 折叠成 contention。
+
 ## 17. 崩溃恢复
 
 ### 17.1 Materializing 中断
@@ -995,11 +1034,17 @@ handoff 在接收方确认前不能改变写入权限。
 - decision revision、参与者 accept/reject、claim drift invalidation 和 request correlation；
 - time-to-first-decision、time-to-enact、总协调耗时和 stalled 原因；
 - claim、message、ack、queue、group、transaction、publish、cleanup 和 recovery 的关联事件。
+- 外部 shared mutation 的 operation、canonical resource、物理锁结果、environment/authorization
+  blocker、pause resume condition 和恢复时的 resource-state evidence。
 
 `events/` 保存不可变结构化协作日志。事件至少包含 event、at，以及可用的 contention_id、
 request_id、transaction_id、scope、owner、paths、semantic_resources、decision revision、epoch 和
 reason。`log` 提供按关联 id、scope、owner 和 event 的原始查询；`workflow-report` 从事件和 snapshot
 派生争用生命周期、换届、拒绝、耗时与 stalled 状态；`hotspots` 聚合路径和语义资源。
+
+已写入 event 的错误证据不得覆盖或删除。当前 claim owner 可以追加 `audit-correction`，但只能
+引用同 scope、同 owner 的既有 event filename，并必须给出新观察事实。派生报告遇到 correction
+时保留原事件，同时把被引用事件标记为 superseded。
 
 派生报告不是授权来源，也不得推动 takeover、重构或删除。event 与 snapshot 不一致时，以 Git
 事实和 active durable snapshot 执行恢复，并在报告中暴露缺口。未来事件压缩必须保留可验证的
@@ -1072,6 +1117,9 @@ warm pool 的 reset/clean 只能作用于协调器专属、经过 sentinel 验�
 claim request        提交语义 claim
 claim update         在写入前缩小或扩大意图
 claim status         查看 direct、waiting 和冲突关系
+claim pause          保留逻辑资源并记录环境、授权或依赖阻断
+claim resume         绑定恢复证据后重新取得 mutation 权限
+claim audit-note     追加诊断或对同 owner/scope 既有事件的不可变更正
 arbitrate            记录 wait/handoff/parallel/ordered/exclusive 决策
 
 tx activate          为已授权请求物化 shadow checkout
@@ -1194,6 +1242,11 @@ A 申请 refactor 并覆盖相关 contract。协调器授予 scoped exclusive，
 35. wait decision 在 blocker release 时协作式 grant，但不激活无 contention 的旧式 request；
 36. request 已落盘、contention link 未落盘时可以按 correlation 幂等恢复；
 37. 原始 log 能还原 contention decision chain，workflow report 能识别 stalled 与协调成本。
+38. 物理锁目录无写权限时记录 environment blocker，不报告另一位 steward；
+39. 只有原子 lock create 返回 already-exists 时才报告 lock contention；
+40. authorization/environment pause 在缺少 resource-state evidence 时不能 resume；
+41. 同一 external shared resource 的所有任务使用仓库定义的唯一逻辑 key。
+42. 错误审计证据只能由同 scope/owner 追加 correction，不得覆盖原 event 或更正他人记录。
 
 ## 26. 已确定的设计决策
 
@@ -1218,6 +1271,7 @@ A 申请 refactor 并覆盖相关 contract。协调器授予 scoped exclusive，
 - coordination lease 可以换届，claim/transaction ownership 不因 lease 过期转移；
 - 协作日志使用 immutable event，并由 workflow/hotspot 报告派生而非反向授权；
 - 高频争用触发结构审查，而不是无限增强自动合并。
+- 外部 shared resource 同时使用稳定逻辑 claim 与短时物理锁；环境或授权失败不进入 contention。
 
 ## 27. 实现阶段可调参数
 
@@ -1280,7 +1334,15 @@ validation binding、shadow refresh、fast-forward publish、handoff、abort 和
 - claim、message、contention、queue 与 transaction 共用 immutable event log；
 - 可过滤 `log`、生命周期 `workflow-report`、stalled detection 与扩展 hotspot metrics。
 
+阶段六 hardening 已经实现：
+
+- direct claim 的结构化 authorization/environment pause metadata；
+- authorization/environment resume evidence gate；
+- pause/resume blocker、operation、resource 与 error kind 的 immutable audit；
+- owner-scoped immutable audit correction；
+- 外部 shared mutation 的错误分类、稳定资源身份和恢复前事实复核规则。
+
 至此 direct claim、distributed semantic arbitration、temporary checkout、publish、cleanup、
-recovery、queue、fairness 和 audit 已形成第一版核心闭环。下一阶段应以真实多 Agent 工作流验证
+recovery、queue、fairness、external shared mutation 和 audit 已形成第一版核心闭环。下一阶段应以真实多 Agent 工作流验证
 和协议 hardening 为主：schema migration、带 checkpoint 的事件压缩、长队列性能、跨平台 Git
 行为与可替换 checkout backend。仍不默认实现 VFS、warm pool 或 AST-aware merge。

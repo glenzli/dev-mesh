@@ -51,6 +51,16 @@ MESSAGE_TYPES = {
     "takeover",
     "validation",
 }
+PAUSE_BLOCKERS = {
+    "authorization",
+    "dependency",
+    "environment",
+    "handoff",
+    "other",
+    "validation",
+}
+EVIDENCE_REQUIRED_PAUSE_BLOCKERS = {"authorization", "environment"}
+AUDIT_NOTE_KINDS = {"correction", "diagnostic"}
 
 
 def now() -> str:
@@ -464,6 +474,17 @@ def normalize_resources(values: list[str], label: str) -> list[str]:
     return normalized
 
 
+def normalize_optional_detail(value: str, label: str) -> str | None:
+    normalized = value.strip()
+    if not normalized:
+        return None
+    if "\n" in normalized or "\r" in normalized:
+        raise ValueError(f"{label} must fit on one line")
+    if len(normalized) > 1000:
+        raise ValueError(f"{label} must be at most 1000 characters")
+    return normalized
+
+
 def validate_transaction_metadata(
     kind: str,
     steward: str | None,
@@ -848,7 +869,8 @@ def command_status(arguments: argparse.Namespace) -> int:
             f"owner={claim.get('owner')} task={claim.get('task')} "
             f"intent={claim.get('intent', 'local-edit')} "
             f"heartbeat={claim.get('heartbeat_at')} paths=[{joined}] "
-            f"semantic_writes={claim.get('semantic_writes', [])}"
+            f"semantic_writes={claim.get('semantic_writes', [])} "
+            f"pause={claim.get('pause') if claim.get('status') == 'paused' else None}"
         )
     for _, contention in active_contentions(location):
         coordinator = contention.get("coordinator", {})
@@ -961,6 +983,17 @@ def command_pause(arguments: argparse.Namespace) -> int:
             record["pause_retained_paths_reason"] = retain_reason
         else:
             record.pop("pause_retained_paths_reason", None)
+        operation = normalize_optional_detail(arguments.operation, "operation")
+        error_kind = normalize_optional_detail(arguments.error_kind, "error_kind")
+        resources = normalize_resources(arguments.resources, "pause resources")
+        pause: dict[str, object] = {"blocker_kind": arguments.blocker_kind}
+        if operation is not None:
+            pause["operation"] = operation
+        if resources:
+            pause["resources"] = resources
+        if error_kind is not None:
+            pause["error_kind"] = error_kind
+        record["pause"] = pause
         record["status"] = "paused"
         record["paused_at"] = now()
         record["heartbeat_at"] = now()
@@ -969,7 +1002,17 @@ def command_pause(arguments: argparse.Namespace) -> int:
             location,
             "claim-paused",
             None,
-            {"scope": scope, "owner": owner, "paths": claimed_paths},
+            {
+                "scope": scope,
+                "owner": owner,
+                "paths": claimed_paths,
+                "blocker_kind": arguments.blocker_kind,
+                "operation": operation,
+                "resources": resources,
+                "error_kind": error_kind,
+                "resume_condition": record["resume_condition"],
+                "retained_paths": bool(retain_reason),
+            },
         )
     print(path)
     return 0
@@ -986,8 +1029,30 @@ def command_resume(arguments: argparse.Namespace) -> int:
             raise ValueError(f"claim belongs to {record.get('owner')!r}, not {owner!r}")
         if record.get("status", "active") != "paused":
             raise ValueError("only a paused claim can be resumed")
+        pause = record.get("pause", {})
+        if not isinstance(pause, dict):
+            raise ValueError("paused claim has malformed pause metadata")
+        blocker_kind = str(pause.get("blocker_kind", "other"))
+        evidence = normalize_optional_detail(arguments.evidence, "resume evidence")
+        if blocker_kind in EVIDENCE_REQUIRED_PAUSE_BLOCKERS and evidence is None:
+            raise ValueError(
+                f"resuming a {blocker_kind} pause requires --evidence describing "
+                "the authorization and current resource-state recheck"
+            )
+        resumed_at = now()
+        last_pause = dict(pause)
+        last_pause["checkpoint"] = record.pop("checkpoint", None)
+        last_pause["resume_condition"] = record.pop("resume_condition", None)
+        retained_reason = record.pop("pause_retained_paths_reason", None)
+        if retained_reason is not None:
+            last_pause["retained_paths_reason"] = retained_reason
+        last_pause["resumed_at"] = resumed_at
+        if evidence is not None:
+            last_pause["resume_evidence"] = evidence
+        record["last_pause"] = last_pause
+        record.pop("pause", None)
         record["status"] = "active"
-        record["resumed_at"] = now()
+        record["resumed_at"] = resumed_at
         record["heartbeat_at"] = now()
         replace_json(path, record)
         emit_coordination_event(
@@ -998,9 +1063,56 @@ def command_resume(arguments: argparse.Namespace) -> int:
                 "scope": scope,
                 "owner": owner,
                 "paths": record.get("paths", []),
+                "blocker_kind": blocker_kind,
+                "operation": pause.get("operation"),
+                "resources": pause.get("resources", []),
+                "resume_evidence": evidence,
             },
         )
     print(path)
+    return 0
+
+
+def command_audit_note(arguments: argparse.Namespace) -> int:
+    location = initialize(arguments.root, arguments.state_dir)
+    scope = validate_slug(arguments.scope, "scope")
+    owner = validate_slug(arguments.owner, "owner")
+    message = normalize_optional_detail(arguments.message, "audit note")
+    if message is None:
+        raise ValueError("audit note cannot be empty")
+    resources = normalize_resources(arguments.resources, "audit note resources")
+    supersedes_event = arguments.supersedes_event.strip()
+    event_name = "audit-note"
+    details: dict[str, object] = {
+        "scope": scope,
+        "owner": owner,
+        "note_kind": arguments.kind,
+        "message": message,
+        "resources": resources,
+    }
+    with claim_guard(location, "audit-note"):
+        claim = read_json(location / "claims" / f"{scope}.json")
+        if claim.get("owner") != owner:
+            raise ValueError(f"claim belongs to {claim.get('owner')!r}, not {owner!r}")
+        if arguments.kind == "correction":
+            if not supersedes_event:
+                raise ValueError("audit correction requires --supersedes-event")
+            if Path(supersedes_event).name != supersedes_event:
+                raise ValueError("superseded event must be an event filename, not a path")
+            prior_path = location / "events" / supersedes_event
+            if prior_path.is_symlink() or not prior_path.is_file():
+                raise ValueError("superseded event must name an existing regular event file")
+            prior = read_json(prior_path)
+            if prior.get("scope") != scope or prior.get("owner") != owner:
+                raise ValueError(
+                    "audit correction can supersede only an event from the same scope and owner"
+                )
+            event_name = "audit-correction"
+            details["supersedes_event"] = supersedes_event
+            details["supersedes_event_type"] = prior.get("event")
+        elif supersedes_event:
+            raise ValueError("--supersedes-event requires --kind correction")
+        emit_coordination_event(location, event_name, None, details)
     return 0
 
 
@@ -1341,13 +1453,36 @@ def parser() -> argparse.ArgumentParser:
     pause_parser.add_argument("--checkpoint", required=True)
     pause_parser.add_argument("--resume-condition", required=True)
     pause_parser.add_argument("--retain-paths-reason", default="")
+    pause_parser.add_argument(
+        "--blocker-kind",
+        choices=sorted(PAUSE_BLOCKERS),
+        default="other",
+    )
+    pause_parser.add_argument("--operation", default="")
+    pause_parser.add_argument("--resources", nargs="*", default=[])
+    pause_parser.add_argument("--error-kind", default="")
     pause_parser.set_defaults(handler=command_pause)
 
     resume_parser = subparsers.add_parser("resume")
     add_root(resume_parser)
     resume_parser.add_argument("--scope", required=True)
     resume_parser.add_argument("--owner", required=True)
+    resume_parser.add_argument("--evidence", default="")
     resume_parser.set_defaults(handler=command_resume)
+
+    audit_note_parser = subparsers.add_parser("audit-note")
+    add_root(audit_note_parser)
+    audit_note_parser.add_argument("--scope", required=True)
+    audit_note_parser.add_argument("--owner", required=True)
+    audit_note_parser.add_argument(
+        "--kind",
+        choices=sorted(AUDIT_NOTE_KINDS),
+        default="diagnostic",
+    )
+    audit_note_parser.add_argument("--message", required=True)
+    audit_note_parser.add_argument("--resources", nargs="*", default=[])
+    audit_note_parser.add_argument("--supersedes-event", default="")
+    audit_note_parser.set_defaults(handler=command_audit_note)
 
     status_parser = subparsers.add_parser("status")
     add_root(status_parser)
