@@ -1080,9 +1080,45 @@ issues。事件以 `(workspace_id, source filename)` 幂等导入并保存首次
 symlink、非普通文件和 malformed JSON 只产生采集问题，不得扩大读取范围或中断其他 workspace。
 
 `discover` 只登记合法源，`collect` 重新发现已登记 roots 并增量采集，`status` 报告 source
-availability、event 和 issue 数，`report` 派生时间窗内 workspace、owner、resource activity，
-以及全局 open run 与 pending handoff。中央报告不是恢复来源；恢复仍以 source workspace 的 Git
-事实、active snapshot 和 immutable event 为准。
+availability、event 和 issue 数，`report` 派生时间窗内 workspace、owner、resource activity、
+冲突信号、transaction lifecycle 和协议利用启发式，以及全局 open run 与 pending handoff。
+中央报告不是恢复来源；恢复仍以 source workspace 的 Git 事实、active snapshot 和 immutable event
+为准。
+
+### 19.2 本地 Web Console
+
+Observer 可以在 `127.0.0.1` 或 `localhost` 提供内嵌 Web Console。Console 由静态 HTML、CSS、
+JavaScript 与 Python HTTP API 组成，不引入前端构建链、远程服务或新的持久层。它展示 catalog
+summary、workspace availability、open run、pending handoff、owner/resource activity、冲突汇总、
+transaction lifecycle、协议利用启发式、可筛选 event timeline、单事件原始 payload 和 collection
+issues。
+
+冲突汇总只能使用显式冲突或阻塞证据：`contention-opened`、`queue-blocked`、
+`refresh-conflicted`、`contention-decision-rejected` 和各类 `*-needs-attention`。普通 claim lifecycle
+或高频路径活动不得被标成冲突。路径榜单因此称为 conflict-related paths；contention 中的 affected
+paths 说明路径与冲突有关，但不等价于该文件已经发生文本 merge conflict。
+
+transaction 视图按 `transaction_id` 关联生命周期事件，汇总 activated、prepared、validated、
+published、aborted、conflicted、attention 和 handed-off，并保留最近事务的最后状态。协议利用视图只
+对已结束 run 判断“疑似 solo protocol”：run 产生过协议事件，但 Observer 没有观察到不同 owner 的
+并行 run、父子关系、message、handoff、contention 或 transaction。仍开放的 run 必须保持
+open-unclassified；没有协议事件的已结束 run 归为 lifecycle-only。该分类是优化协议成本的启发式，
+不是“没有协作”的证明，更不得自动关闭 run 或改变协调行为。
+
+HTTP server 必须拒绝非 loopback binding，不发送 CORS permission，并对所有响应设置 CSP、
+no-store、nosniff 和 frame-deny。静态资源只能来自内嵌 allowlist；URL path 不得映射为任意文件读取。
+事件列表默认不携带 raw payload，只有用户打开单条 event 时才按 `(workspace_id, source_name)` 查询。
+
+Console 有两类受限写请求：`Collect now` 只能重新扫描 Observer catalog 中已经登记的 roots；
+`Add workspace` 只在用户显式输入绝对路径或 `~` 路径后，把该精确路径登记为新的 allowlisted scan
+root，并按用户选择的 `0..20` 深度完成一次 discovery 与幂等 collection。两者都要求同源 localhost
+请求和浏览器不能跨域伪造的自定义 request header。路径 action 只扩大 Observer 的只读发现范围，
+所有写入仍限于仓库外 SQLite；不得修改 source workspace 或产生 coordination authority。
+
+Console 默认跟随操作系统的 light/dark preference，并允许浏览器本地 theme override。运行时 locale
+catalog 第一批提供中文和英文，选择只存于浏览器本地；protocol event names、ids 和用户生成的 raw
+payload 保持原文，不因语言切换而改写。第一版本地 Console 不是远程多用户服务；remote binding、
+proxy exposure、authentication 和跨机器汇聚需要独立安全设计。
 
 已写入 event 的错误证据不得覆盖或删除。当前 claim owner 可以追加 `audit-correction`，但只能
 引用同 scope、同 owner 的既有 event filename，并必须给出新观察事实。派生报告遇到 correction
@@ -1200,6 +1236,7 @@ observer discover    在 allowlisted roots 中登记本地 coordination sources
 observer collect     只读、幂等镜像已登记 workspace 的 immutable events
 observer status      报告中央 catalog、source availability、event 与 integrity issue
 observer report      派生跨 workspace 时间窗活动、open run 与 pending handoff
+observer serve       在 localhost 提供 Web Console、显式 root 登记和受限 collect action
 ```
 
 状态查询应该同时支持紧凑人类输出和稳定 JSON 输出，便于 Agent 低 token 成本地读取。
@@ -1406,6 +1443,7 @@ validation binding、shadow refresh、fast-forward publish、handoff、abort 和
 - Observer-owned workspace UUID、Git metadata fingerprint 与仓库外 SQLite catalog；
 - event filename + digest 的幂等导入和 immutable mutation detection；
 - 跨 workspace status、时间窗 activity、open run 与 pending handoff 报告；
+- localhost-only Web Console、自适应主题、中英 locale、显式 root 登记、过滤 event timeline 与受限手动采集；
 - Collector 对 source workspace 的严格只读边界。
 
 至此 direct claim、distributed semantic arbitration、temporary checkout、publish、cleanup、

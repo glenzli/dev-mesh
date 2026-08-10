@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <meta name="description" content="Dev Mesh 多工作区协作观测控制台">
+    <title>Dev Mesh Observer</title>
+    <script src="/preferences.js"></script>
+    <link rel="stylesheet" href="/styles.css">
+    <script src="/analytics-view.js" defer></script>
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="/" data-i18n-aria-label="brand.home">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+        <span>
+          <strong>DEV MESH</strong>
+          <small>Observer Console</small>
+        </span>
+      </a>
+      <div class="topbar-actions">
+        <label class="compact-control">
+          <span class="sr-only" data-i18n="preferences.language">语言</span>
+          <select id="locale-select" data-i18n-aria-label="preferences.language">
+            <option value="zh-CN">中文</option>
+            <option value="en">English</option>
+          </select>
+        </label>
+        <label class="compact-control">
+          <span class="sr-only" data-i18n="preferences.theme">显示主题</span>
+          <select id="theme-select" data-i18n-aria-label="preferences.theme">
+            <option value="auto" data-i18n="theme.auto">跟随系统</option>
+            <option value="light" data-i18n="theme.light">亮色</option>
+            <option value="dark" data-i18n="theme.dark">暗色</option>
+          </select>
+        </label>
+        <div class="live-state" id="live-state" role="status">
+          <span class="pulse"></span>
+          <span id="live-state-label" data-i18n="connection.connecting">正在连接</span>
+        </div>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero" aria-labelledby="page-title">
+        <div>
+          <p class="eyebrow" data-i18n="hero.eyebrow">本地协作观测</p>
+          <h1 id="page-title"><span data-i18n="hero.title1">看清 Agent 之间</span><br><span data-i18n="hero.title2">发生了什么。</span></h1>
+          <p class="hero-copy" data-i18n="hero.copy">
+            从 immutable events 还原 workspace、run、handoff 与资源热点。控制台只写 Observer 数据库，不改变任何源工作区。
+          </p>
+        </div>
+        <div class="toolbar" data-i18n-aria-label="toolbar.label">
+          <label>
+            <span data-i18n="toolbar.label">观察窗口</span>
+            <select id="since-select">
+              <option value="1h" data-i18n="since.1h">最近 1 小时</option>
+              <option value="24h" data-i18n="since.24h">最近 24 小时</option>
+              <option value="48h" selected data-i18n="since.48h">最近 48 小时</option>
+              <option value="7d" data-i18n="since.7d">最近 7 天</option>
+              <option value="4w" data-i18n="since.4w">最近 4 周</option>
+            </select>
+          </label>
+          <button class="button secondary" id="refresh-button" type="button" data-i18n="action.refresh">刷新视图</button>
+          <button class="button primary" id="collect-button" type="button">
+            <span class="button-dot"></span><span data-i18n="action.collect">立即采集</span>
+          </button>
+        </div>
+      </section>
+
+      <section class="metrics" data-i18n-aria-label="metrics.label">
+        <article class="metric"><span data-i18n="metrics.workspaces">工作区</span><strong id="metric-workspaces">—</strong><small id="metric-available" data-i18n="metrics.waiting">等待数据</small></article>
+        <article class="metric"><span data-i18n="metrics.events">窗口内事件</span><strong id="metric-events">—</strong><small id="metric-active" data-i18n="metrics.waiting">等待数据</small></article>
+        <article class="metric accent"><span data-i18n="metrics.openRuns">开放 Run</span><strong id="metric-runs">—</strong><small id="metric-run-total" data-i18n="metrics.waiting">等待数据</small></article>
+        <article class="metric"><span data-i18n="metrics.pendingHandoffs">Pending Handoff</span><strong id="metric-handoffs">—</strong><small id="metric-handoff-total" data-i18n="metrics.waiting">等待数据</small></article>
+        <article class="metric warning"><span data-i18n="metrics.issues">Integrity Issues</span><strong id="metric-issues">—</strong><small data-i18n="metrics.issueHint">采集与不可变性检查</small></article>
+      </section>
+
+      <section class="analysis-grid" data-i18n-aria-label="analytics.label">
+        <article class="panel diagnostic-card" aria-labelledby="conflicts-title">
+          <div class="panel-heading">
+            <div><p class="kicker" data-i18n="analytics.kicker">诊断</p><h2 id="conflicts-title" data-i18n="conflicts.title">冲突汇总</h2></div>
+          </div>
+          <div class="diagnostic-body">
+            <div class="diagnostic-primary"><strong id="conflict-signal-count">0</strong><span data-i18n="conflicts.signals">冲突信号</span></div>
+            <div class="mini-metrics">
+              <div><strong id="conflict-contention-count">0</strong><span data-i18n="conflicts.contentions">争用</span></div>
+              <div><strong id="conflict-refresh-count">0</strong><span data-i18n="conflicts.refresh">合并冲突</span></div>
+              <div><strong id="conflict-blocked-count">0</strong><span data-i18n="conflicts.blocked">队列阻塞</span></div>
+              <div><strong id="conflict-attention-count">0</strong><span data-i18n="conflicts.attention">需关注</span></div>
+            </div>
+          </div>
+        </article>
+
+        <article class="panel diagnostic-card" aria-labelledby="transactions-title">
+          <div class="panel-heading">
+            <div><p class="kicker" data-i18n="analytics.kicker">诊断</p><h2 id="transactions-title" data-i18n="transactions.title">事务</h2></div>
+          </div>
+          <div class="diagnostic-body transaction-body">
+            <div class="diagnostic-primary"><strong id="transaction-observed-count">0</strong><span data-i18n="transactions.observed">观察到的事务</span></div>
+            <div class="mini-metrics">
+              <div><strong id="transaction-published-count">0</strong><span data-i18n="transactions.published">已发布</span></div>
+              <div><strong id="transaction-conflicted-count">0</strong><span data-i18n="transactions.conflicted">曾冲突</span></div>
+              <div><strong id="transaction-aborted-count">0</strong><span data-i18n="transactions.aborted">已中止</span></div>
+            </div>
+            <div id="transaction-list" class="diagnostic-list"><p class="empty" data-i18n="transactions.noData">当前窗口没有 transaction 事件</p></div>
+          </div>
+        </article>
+
+        <article class="panel diagnostic-card" aria-labelledby="hotspots-title">
+          <div class="panel-heading">
+            <div><p class="kicker" data-i18n="analytics.kicker">诊断</p><h2 id="hotspots-title" data-i18n="conflicts.hotspots">冲突相关路径</h2></div>
+          </div>
+          <div id="conflict-hotspot-list" class="diagnostic-list"><p class="empty" data-i18n="conflicts.noHotspots">当前窗口没有路径级冲突证据</p></div>
+        </article>
+
+        <article class="panel diagnostic-card" aria-labelledby="protocol-use-title">
+          <div class="panel-heading">
+            <div><p class="kicker" data-i18n="analytics.kicker">诊断</p><h2 id="protocol-use-title" data-i18n="protocolUse.title">协议利用</h2></div>
+          </div>
+          <div class="diagnostic-body protocol-body">
+            <div class="mini-metrics">
+              <div><strong id="protocol-solo-count">0</strong><span data-i18n="protocolUse.solo">疑似单 Agent 协议</span></div>
+              <div><strong id="protocol-collaborative-count">0</strong><span data-i18n="protocolUse.collaborative">观察到协作</span></div>
+              <div><strong id="protocol-lifecycle-count">0</strong><span data-i18n="protocolUse.lifecycleOnly">仅生命周期</span></div>
+              <div><strong id="protocol-open-count">0</strong><span data-i18n="protocolUse.open">开放未判定</span></div>
+            </div>
+            <div id="solo-run-list" class="diagnostic-list"><p class="empty" data-i18n="protocolUse.noSolo">当前窗口未发现疑似 solo-protocol run</p></div>
+            <p class="analysis-note" data-i18n="protocolUse.heuristic">仅判定已结束 run：产生了协议事件，但未观察到并行 run、父子关系、message、handoff、contention 或 transaction。</p>
+          </div>
+        </article>
+      </section>
+
+      <section class="split-grid">
+        <article class="panel" aria-labelledby="workspaces-title">
+          <div class="panel-heading">
+            <div><p class="kicker" data-i18n="catalog.kicker">目录</p><h2 id="workspaces-title" data-i18n="catalog.workspaces">工作区</h2></div>
+            <div class="heading-actions">
+              <span class="count" id="workspace-count">0</span>
+              <button class="button ghost compact-button" id="add-workspace-button" type="button" data-i18n="workspace.add">添加工作区</button>
+            </div>
+          </div>
+          <div class="stack-list" id="workspace-list"><p class="empty" data-i18n="metrics.waiting">等待数据</p></div>
+        </article>
+
+        <article class="panel" aria-labelledby="coordination-title">
+          <div class="panel-heading">
+            <div><p class="kicker" data-i18n="inflight.kicker">进行中</p><h2 id="coordination-title" data-i18n="inflight.title">正在进行</h2></div>
+          </div>
+          <div class="inflight-grid">
+            <section><h3 data-i18n="inflight.openRuns">开放 Runs</h3><div class="stack-list compact" id="run-list"><p class="empty" data-i18n="inflight.noRuns">暂无开放 run</p></div></section>
+            <section><h3 data-i18n="inflight.handoffs">等待 Handoff</h3><div class="stack-list compact" id="handoff-list"><p class="empty" data-i18n="inflight.noHandoffs">暂无 pending handoff</p></div></section>
+          </div>
+        </article>
+      </section>
+
+      <section class="activity-grid" data-i18n-aria-label="activity.kicker">
+        <article class="panel small"><div class="panel-heading"><div><p class="kicker" data-i18n="activity.kicker">活动</p><h2 data-i18n="activity.workspace">工作区</h2></div></div><div id="workspace-activity" class="bar-list"></div></article>
+        <article class="panel small"><div class="panel-heading"><div><p class="kicker" data-i18n="activity.ownership">所有者</p><h2 data-i18n="activity.owner">Agent Owner</h2></div></div><div id="owner-activity" class="bar-list"></div></article>
+        <article class="panel small"><div class="panel-heading"><div><p class="kicker" data-i18n="activity.pressure">压力</p><h2 data-i18n="activity.resource">语义资源</h2></div></div><div id="resource-activity" class="bar-list"></div></article>
+      </section>
+
+      <section class="lower-grid">
+        <section class="panel timeline-panel" aria-labelledby="timeline-title">
+          <div class="panel-heading timeline-heading">
+            <div><p class="kicker" data-i18n="timeline.kicker">不可变事件流</p><h2 id="timeline-title" data-i18n="timeline.title">协作时间线</h2></div>
+            <form class="filters" id="event-filters">
+              <label><span class="sr-only" data-i18n="filters.workspace">工作区</span><select id="filter-workspace"><option value="" data-i18n="filters.allWorkspaces">全部工作区</option></select></label>
+              <label><span class="sr-only" data-i18n="filters.event">事件类型</span><select id="filter-event"><option value="" data-i18n="filters.allEvents">全部事件</option></select></label>
+              <label><span class="sr-only" data-i18n="filters.owner">Owner</span><select id="filter-owner"><option value="" data-i18n="filters.allOwners">全部 Owner</option></select></label>
+              <label><span class="sr-only" data-i18n="filters.run">Run ID</span><input id="filter-run" type="search" data-i18n-placeholder="filters.run" maxlength="256"></label>
+              <button class="button ghost" type="submit" data-i18n="filters.apply">应用</button>
+            </form>
+          </div>
+          <div class="event-list" id="event-list"><p class="empty" data-i18n="events.waiting">等待事件</p></div>
+        </section>
+
+        <section class="panel issues-panel" aria-labelledby="issues-title">
+          <div class="panel-heading">
+            <div><p class="kicker" data-i18n="issues.kicker">完整性</p><h2 id="issues-title" data-i18n="issues.title">采集问题</h2></div>
+            <span class="count warning-count" id="issue-count">0</span>
+          </div>
+          <div class="stack-list" id="issue-list"><p class="empty" data-i18n="issues.none">未发现问题</p></div>
+        </section>
+      </section>
+    </main>
+
+    <footer>
+      <span>DEV MESH / LOCAL OBSERVER</span>
+      <span id="last-updated" data-i18n="footer.pending">尚未刷新</span>
+    </footer>
+
+    <dialog id="event-dialog" aria-labelledby="dialog-title">
+      <div class="dialog-heading">
+        <div><p class="kicker" data-i18n="eventDetail.kicker">事件详情</p><h2 id="dialog-title" data-i18n="eventDetail.title">事件详情</h2></div>
+        <button class="icon-button" id="dialog-close" type="button" data-i18n-aria-label="action.close">×</button>
+      </div>
+      <div class="detail-meta" id="detail-meta"></div>
+      <pre id="detail-json"></pre>
+    </dialog>
+
+    <dialog id="workspace-dialog" aria-labelledby="workspace-dialog-title">
+      <form id="workspace-form">
+        <div class="dialog-heading">
+          <div><p class="kicker" data-i18n="workspaceDialog.kicker">允许扫描目录</p><h2 id="workspace-dialog-title" data-i18n="workspaceDialog.title">添加工作区</h2></div>
+          <button class="icon-button" id="workspace-dialog-close" type="button" data-i18n-aria-label="action.close">×</button>
+        </div>
+        <div class="dialog-body">
+          <label class="field">
+            <span data-i18n="workspaceDialog.path">工作区或父目录的绝对路径</span>
+            <input id="workspace-root" type="text" required maxlength="4096" autocomplete="off" data-i18n-placeholder="workspaceDialog.placeholder">
+          </label>
+          <p class="field-help" data-i18n="workspaceDialog.help">添加即允许 Observer 只读扫描该路径下的 .agent-coordination/events。它不会修改源工作区。</p>
+          <label class="field">
+            <span data-i18n="workspaceDialog.depth">向下扫描深度</span>
+            <select id="workspace-depth">
+              <option value="0" data-i18n="workspaceDialog.depth0">仅当前目录</option>
+              <option value="2" data-i18n="workspaceDialog.depth2">向下 2 层</option>
+              <option value="5" selected data-i18n="workspaceDialog.depth5">向下 5 层</option>
+              <option value="10" data-i18n="workspaceDialog.depth10">向下 10 层</option>
+            </select>
+          </label>
+          <section class="registered-roots">
+            <h3 data-i18n="workspaceDialog.registered">已登记扫描根</h3>
+            <div id="scan-root-list"><p class="empty" data-i18n="workspaceDialog.noRoots">尚无扫描根</p></div>
+          </section>
+        </div>
+        <div class="dialog-actions">
+          <button class="button secondary" id="workspace-cancel" type="button" data-i18n="workspaceDialog.cancel">取消</button>
+          <button class="button primary" id="workspace-submit" type="submit" data-i18n="workspaceDialog.submit">添加并采集</button>
+        </div>
+      </form>
+    </dialog>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <noscript data-i18n="noscript">此控制台需要 JavaScript 才能显示 Observer 数据。</noscript>
+  </body>
+</html>

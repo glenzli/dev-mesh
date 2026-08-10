@@ -8,6 +8,8 @@ import sqlite3
 from collections import Counter
 from datetime import UTC, datetime, timedelta
 
+from .analytics import build_coordination_analytics
+
 
 DURATION = re.compile(r"^(\d+)([mhdw])$")
 
@@ -65,16 +67,17 @@ def build_report(
         str(row["workspace_id"]): str(row["workspace_root"])
         for row in workspace_rows
     }
-    rows = list(
-        connection.execute(
+    rows = [
+        dict(row)
+        for row in connection.execute(
             """
             SELECT workspace_id, event_at, event_type, run_id, handoff_id,
-                   owner, payload_json
+                   transaction_id, owner, payload_json
             FROM events
             ORDER BY event_at, source_name
             """
         )
-    )
+    ]
     window_rows = [
         row
         for row in rows
@@ -124,8 +127,9 @@ def build_report(
     issue_count = int(
         connection.execute("SELECT COUNT(*) FROM collection_issues").fetchone()[0]
     )
+    generated_at = datetime.now(UTC)
     return {
-        "generated_at": _iso(datetime.now(UTC)),
+        "generated_at": _iso(generated_at),
         "since": _iso(since),
         "summary": {
             "registered_workspaces": len(workspace_rows),
@@ -172,4 +176,11 @@ def build_report(
             }
             for workspace_id, handoff_id in sorted(offered - accepted)
         ][:limit],
+        "coordination_analytics": build_coordination_analytics(
+            rows,
+            since=since,
+            workspace_names=workspace_names,
+            limit=limit,
+            current=generated_at,
+        ),
     }

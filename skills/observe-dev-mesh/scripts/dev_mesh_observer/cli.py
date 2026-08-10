@@ -8,7 +8,9 @@ import sqlite3
 import sys
 from pathlib import Path
 
-from .catalog import WorkspaceSource, discover_workspaces, ensure_external_data_dir
+from .catalog import discover_workspaces, ensure_external_data_dir
+from .console import serve_console
+from .operations import collect_registered, discover_and_collect, register_discovery
 from .reports import build_report, parse_since
 from .store import ObserverStore, default_data_dir
 
@@ -21,58 +23,25 @@ def _print(value: object) -> None:
     print(json.dumps(value, indent=2, ensure_ascii=False))
 
 
-def _register_discovery(
-    store: ObserverStore,
-    roots: list[Path],
-    sources: list[WorkspaceSource],
-) -> dict[str, object]:
-    registered_roots = store.register_roots(roots)
-    result = store.register_workspaces(sources)
-    return {
-        "roots": registered_roots,
-        **result,
-        "workspaces": [source.as_record() for source in sources],
-    }
-
-
 def command_discover(arguments: argparse.Namespace) -> int:
     sources = discover_workspaces(arguments.roots, max_depth=arguments.max_depth)
     ensure_external_data_dir(arguments.data_dir, sources)
     with ObserverStore(arguments.data_dir) as store:
-        _print(_register_discovery(store, arguments.roots, sources))
+        _print(register_discovery(store, arguments.roots, sources))
     return 0
 
 
 def command_collect(arguments: argparse.Namespace) -> int:
-    supplied_sources = (
-        discover_workspaces(arguments.roots, max_depth=arguments.max_depth)
-        if arguments.roots
-        else None
-    )
-    if supplied_sources is not None:
-        ensure_external_data_dir(arguments.data_dir, supplied_sources)
     with ObserverStore(arguments.data_dir) as store:
         if arguments.roots:
-            roots = arguments.roots
-            sources = supplied_sources or []
+            result = discover_and_collect(
+                store,
+                roots=arguments.roots,
+                max_depth=arguments.max_depth,
+            )
         else:
-            roots = store.scan_roots()
-            sources = discover_workspaces(roots, max_depth=arguments.max_depth)
-            ensure_external_data_dir(arguments.data_dir, sources)
-        discovery = (
-            _register_discovery(store, roots, sources)
-            if roots
-            else {
-                "roots": [],
-                "discovered": 0,
-                "registered": 0,
-                "existing": 0,
-                "new_workspace_ids": [],
-                "workspaces": [],
-            }
-        )
-        collection = store.collect()
-        _print({"discovery": discovery, "collection": collection})
+            result = collect_registered(store, max_depth=arguments.max_depth)
+        _print(result)
     return 0
 
 
@@ -91,6 +60,16 @@ def command_report(arguments: argparse.Namespace) -> int:
                 limit=arguments.limit,
             )
         )
+    return 0
+
+
+def command_serve(arguments: argparse.Namespace) -> int:
+    serve_console(
+        data_dir=arguments.data_dir,
+        host=arguments.host,
+        port=arguments.port,
+        max_depth=arguments.max_depth,
+    )
     return 0
 
 
@@ -116,6 +95,12 @@ def parser() -> argparse.ArgumentParser:
     report.add_argument("--since", default="48h")
     report.add_argument("--limit", type=int, default=10)
     report.set_defaults(handler=command_report)
+
+    serve = subparsers.add_parser("serve")
+    serve.add_argument("--host", default="127.0.0.1")
+    serve.add_argument("--port", type=int, default=8765)
+    serve.add_argument("--max-depth", type=int, default=5)
+    serve.set_defaults(handler=command_serve)
     return result
 
 
