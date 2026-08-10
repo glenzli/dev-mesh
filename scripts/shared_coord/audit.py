@@ -26,10 +26,17 @@ def _matches(record: dict[str, object], key: str, expected: str | None) -> bool:
         return True
     if record.get(key) == expected:
         return True
+    if key == "run_id" and expected in {
+        record.get("source_run_id"),
+        record.get("target_run_id"),
+    }:
+        return True
     plural = {
         "contention_id": "contention_ids",
+        "handoff_id": "handoff_ids",
         "owner": "owners",
         "request_id": "request_ids",
+        "run_id": "run_ids",
         "scope": "scopes",
         "transaction_id": "transaction_ids",
     }.get(key)
@@ -45,6 +52,8 @@ def event_log(
     transaction_id: str | None = None,
     scope: str | None = None,
     owner: str | None = None,
+    run_id: str | None = None,
+    handoff_id: str | None = None,
     event: str | None = None,
     limit: int = 100,
 ) -> dict[str, object]:
@@ -70,6 +79,8 @@ def event_log(
                 _matches(record, "owner", owner)
                 or record.get("coordinator") == owner
                 or record.get("prior_coordinator") == owner,
+                _matches(record, "run_id", run_id),
+                _matches(record, "handoff_id", handoff_id),
                 event is None or record.get("event") == event,
             )
         ):
@@ -91,6 +102,8 @@ def event_log(
                 "transaction_id": transaction_id,
                 "scope": scope,
                 "owner": owner,
+                "run_id": run_id,
+                "handoff_id": handoff_id,
                 "event": event,
             }.items()
             if value is not None
@@ -269,6 +282,8 @@ def command_log(arguments) -> int:
         transaction_id=arguments.transaction,
         scope=arguments.scope,
         owner=arguments.owner,
+        run_id=arguments.run,
+        handoff_id=arguments.handoff,
         event=arguments.event,
         limit=arguments.limit,
     )

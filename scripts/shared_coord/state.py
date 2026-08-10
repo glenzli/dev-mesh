@@ -92,6 +92,7 @@ def initialize(root: Path, state_directory: str) -> Path:
         "waiting/active",
         "waiting/archive",
         "handoffs",
+        "runs",
         "messages",
         "acks",
         "archive/claims",

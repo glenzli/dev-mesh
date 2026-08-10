@@ -826,6 +826,7 @@ event 和 materialized transaction snapshot。
 │   ├── active/
 │   └── archive/
 ├── handoffs/
+├── runs/
 ├── messages/
 ├── acks/
 ├── archive/
@@ -845,7 +846,8 @@ event 和 materialized transaction snapshot。
 - active scheduling request：尚未授予的争用顺序、claim snapshot 和 blocker；
 - immutable event log：协调状态转换；
 - materialized JSON snapshot：可由 event 重建的快速查询视图；
-- messages/acks/handoffs：授权、协商与连续性证据。
+- messages/acks/handoffs：授权、协商与连续性证据；
+- runs：由 immutable lifecycle event 支撑的快速 correlation snapshot，不授予工作权限。
 
 协调状态转换使用短时 advisory lock、exclusive create 和 atomic replace。锁只保护状态转换，
 不覆盖 Agent 编辑、长时间测试或等待。
@@ -1036,11 +1038,24 @@ handoff 在接收方确认前不能改变写入权限。
 - claim、message、ack、queue、group、transaction、publish、cleanup 和 recovery 的关联事件。
 - 外部 shared mutation 的 operation、canonical resource、物理锁结果、environment/authorization
   blocker、pause resume condition 和恢复时的 resource-state evidence。
+- 进入共享 workspace 的 agent run、父 agent、bounded task summary、终态与 bounded outcome；
+- 非事务 handoff 的 offer/accept 双边事实、source/target run、agent 与消息 correlation。
 
 `events/` 保存不可变结构化协作日志。事件至少包含 event、at，以及可用的 contention_id、
 request_id、transaction_id、scope、owner、paths、semantic_resources、decision revision、epoch 和
-reason。`log` 提供按关联 id、scope、owner 和 event 的原始查询；`workflow-report` 从事件和 snapshot
+reason。Agent lifecycle 事件还可以包含 run_id、parent_agent_id、task_summary、outcome 和
+handoff_id。`log` 提供按关联 id、scope、owner、run、handoff 和 event 的原始查询；`workflow-report` 从事件和 snapshot
 派生争用生命周期、换届、拒绝、耗时与 stalled 状态；`hotspots` 聚合路径和语义资源。
+
+Agent run 是观测 correlation，不是新的权限对象。`agent-joined` 不授予 claim、路径、lease、
+transaction capability 或 publish 权限；`agent-left` 也不隐式释放任何权限。非事务交接沿用
+message/ack：发送方写入 `handoff-offered`，接收方必须先建立自己的 run，再对同一 message 和
+handoff id 确认，形成 `handoff-accepted`。这对双边事实只证明交接已被观察和确认，实际工作
+所有权仍由 claim 或 transaction 的 owner-authorized 流程转移。
+
+`coverage` 从 immutable events 派生已加入、已关闭、仍开放的 run，以及已发出、已接受、仍等待
+的 handoff，并暴露重复或缺边事件。coverage 只诊断采集完整度，不得自动关闭 run、接受 handoff、
+接管 claim 或修复 transaction。
 
 已写入 event 的错误证据不得覆盖或删除。当前 claim owner 可以追加 `audit-correction`，但只能
 引用同 scope、同 owner 的既有 event filename，并必须给出新观察事实。派生报告遇到 correction
@@ -1120,6 +1135,9 @@ claim status         查看 direct、waiting 和冲突关系
 claim pause          保留逻辑资源并记录环境、授权或依赖阻断
 claim resume         绑定恢复证据后重新取得 mutation 权限
 claim audit-note     追加诊断或对同 owner/scope 既有事件的不可变更正
+agent-join           记录一个不授予权限的 agent run 起点
+agent-leave          记录 agent run 的 completed/failed/abandoned 终态
+coverage             派生 open run、pending handoff 和生命周期缺口
 arbitrate            记录 wait/handoff/parallel/ordered/exclusive 决策
 
 tx activate          为已授权请求物化 shadow checkout
@@ -1341,6 +1359,13 @@ validation binding、shadow refresh、fast-forward publish、handoff、abort 和
 - pause/resume blocker、operation、resource 与 error kind 的 immutable audit；
 - owner-scoped immutable audit correction；
 - 外部 shared mutation 的错误分类、稳定资源身份和恢复前事实复核规则。
+
+阶段七 observability capture 已经实现第一批最小闭环：
+
+- agent join/leave 的 immutable run lifecycle；
+- 普通 handoff 复用 message/ack 的 offer/accept 双边 correlation；
+- 按 run/handoff 查询事件和只读 coverage 缺口报告；
+- 生命周期事实不参与 claim、lease、transaction 或 publish 授权。
 
 至此 direct claim、distributed semantic arbitration、temporary checkout、publish、cleanup、
 recovery、queue、fairness、external shared mutation 和 audit 已形成第一版核心闭环。下一阶段应以真实多 Agent 工作流验证

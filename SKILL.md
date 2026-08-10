@@ -39,6 +39,20 @@ Initialize direct coordination when needed:
 python3 <skill>/scripts/coord.py init --root <workspace>
 ```
 
+When the skill is used for writable shared-workspace work, open one lightweight observational run
+before claiming or editing. Reuse the same run id only for this agent's current task in this
+workspace:
+
+```bash
+python3 <skill>/scripts/coord.py agent-join --root <workspace> \
+  --run <run-id> --owner <owner-id> --task "<bounded task summary>" \
+  --parent-owner <parent-agent-id>
+```
+
+Omit `--parent-owner` when the agent was not delegated by another agent. Run events are diagnostic
+correlation only: they grant no paths, claim, transaction capability, coordination lease, or
+publication authority. Retrying an identical join is idempotent.
+
 Initialize the transaction steward only when microtransactions may be used:
 
 ```bash
@@ -301,6 +315,29 @@ of paused, reacquire the canonical resource and perform the same state checks be
 
 ## Hand off or abort safely
 
+For a non-transaction agent handoff, send an acknowledged handoff message from the source run. A
+handoff message without acknowledgement is rejected:
+
+```bash
+python3 <skill>/scripts/coord.py message --root <workspace> \
+  --to agent-b --from-owner agent-a \
+  --subject "Continue the router slice" --body "<bounded checkpoint>" \
+  --type handoff --requires-ack --run run-a --handoff router-handoff
+
+python3 <skill>/scripts/coord.py agent-join --root <workspace> \
+  --run run-b --owner agent-b --task "Continue the router slice" \
+  --parent-owner agent-a
+
+python3 <skill>/scripts/coord.py ack --root <workspace> \
+  --owner agent-b --message-id <message-id> --run run-b \
+  --note "Checkpoint and ownership boundary reviewed"
+```
+
+`--handoff` is optional; the message id becomes the stable handoff id when it is omitted. The ack
+must come from the named target owner and a joined target run. This records `handoff-offered` and
+`handoff-accepted`, but the message itself does not transfer a claim or transaction capability.
+Use the owner-authorized claim or transaction workflow for the actual transfer.
+
 Transfer a transaction with a concrete checkpoint:
 
 ```bash
@@ -402,8 +439,9 @@ Inspect event activity:
 ```bash
 python3 <skill>/scripts/tx.py hotspots --root <workspace>
 python3 <skill>/scripts/tx.py workflow-report --root <workspace>
+python3 <skill>/scripts/coord.py coverage --root <workspace>
 python3 <skill>/scripts/tx.py log --root <workspace> \
-  --contention <contention-id> --limit 100
+  --run <run-id> --handoff <handoff-id> --limit 100
 ```
 
 Repeated same-path transactions, ordered refreshes, conflicts, or scope expansion are architecture
@@ -415,9 +453,11 @@ Repeated exclusive requests, refresh conflicts, or attention events should trigg
 task-slicing review; metrics never authorize an automatic refactor or takeover.
 
 `log` returns the immutable event chain filtered by contention, request, transaction, scope, owner,
-or event type. `workflow-report` derives decision revisions, rejections, coordinator changes,
-time-to-decision, time-to-enact, total coordination time, and stalled contentions. Treat reports as
-diagnostics, not authority; recover from Git facts and durable active snapshots.
+agent run, handoff, or event type. `coverage` reports open runs, offered-but-unaccepted handoffs,
+and malformed lifecycle counts. `workflow-report` derives decision revisions, rejections,
+coordinator changes, time-to-decision, time-to-enact, total coordination time, and stalled
+contentions. Treat reports as diagnostics, not authority; recover from Git facts and durable active
+snapshots.
 
 `claim-paused` records blocker kind, operation, resource, error kind, resume condition, and whether
 paths were retained. `claim-resumed` records the recheck evidence. Keep raw secrets and unbounded
@@ -446,6 +486,18 @@ Before a direct release:
 4. Inspect the cached diff.
 5. Create one coherent commit and publish old/new `HEAD` plus evidence.
 6. Release or checkpoint without touching unrelated dirty state.
+
+After the run has no remaining owned or delegated work, close its observational lifecycle:
+
+```bash
+python3 <skill>/scripts/coord.py agent-leave --root <workspace> \
+  --run <run-id> --owner <owner-id> --outcome completed \
+  --summary "<bounded outcome summary>"
+```
+
+Use `failed` when the run ended with a known failure and `abandoned` when it stopped without a
+normal completion. Closing a run never releases claims or transaction capability; perform those
+authority-bearing operations first. Retrying an identical leave is idempotent.
 
 ## Load detailed design only when needed
 

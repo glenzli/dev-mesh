@@ -18,6 +18,17 @@ from typing import Iterator
 
 from shared_coord.contention import drive_ready_requests, open_or_join_contention
 from shared_coord.contention_store import active_contentions
+from shared_coord.lifecycle import (
+    RUN_OUTCOMES,
+    command_agent_join,
+    command_agent_leave,
+    command_coverage,
+    correlation_id,
+    optional_correlation_id,
+    record_handoff_accepted,
+    record_handoff_offered,
+    require_joined_run,
+)
 from shared_coord.state import emit_event as emit_coordination_event
 
 try:  # POSIX, including the supported macOS development environment.
@@ -98,6 +109,7 @@ def initialize(root: Path, state_directory: str) -> Path:
         "waiting/active",
         "waiting/archive",
         "handoffs",
+        "runs",
         "archive/claims",
         "archive/messages",
         "guard-events",
@@ -892,6 +904,8 @@ def write_message(
     message_type: str = "info",
     requires_ack: bool = False,
     reply_to: str | None = None,
+    run_id: str | None = None,
+    handoff_id: str | None = None,
 ) -> Path:
     if message_type not in MESSAGE_TYPES:
         raise ValueError(
@@ -903,6 +917,8 @@ def write_message(
     destination.mkdir(parents=True, exist_ok=True)
     subject_slug = re.sub(r"[^a-z0-9]+", "-", subject.lower()).strip("-")[:40] or "message"
     message_id = f"{time.time_ns()}-{sender}-{subject_slug}"
+    if message_type == "handoff" and handoff_id is None:
+        handoff_id = message_id
     path = destination / f"{message_id}.md"
     with path.open("x", encoding="utf-8") as stream:
         stream.write(
@@ -914,6 +930,10 @@ def write_message(
         )
         if reply_to is not None:
             stream.write(f"reply_to: {json.dumps(reply_to, ensure_ascii=False)}\n")
+        if run_id is not None:
+            stream.write(f"run_id: {json.dumps(run_id, ensure_ascii=False)}\n")
+        if handoff_id is not None:
+            stream.write(f"handoff_id: {json.dumps(handoff_id, ensure_ascii=False)}\n")
         stream.write(
             "---\n\n"
             f"{body.rstrip()}\n"
@@ -926,29 +946,55 @@ def command_message(arguments: argparse.Namespace) -> int:
     recipient = validate_slug(arguments.to, "recipient")
     sender = validate_slug(arguments.from_owner, "sender")
     subject = require_text(arguments.subject, "message subject")
-    path = write_message(
-        location,
-        recipient,
-        sender,
-        subject,
-        arguments.body,
-        message_type=arguments.type,
-        requires_ack=arguments.requires_ack,
-        reply_to=arguments.reply_to,
-    )
-    emit_coordination_event(
-        location,
-        "message-sent",
-        None,
-        {
+    run_id = optional_correlation_id(arguments.run, "run id")
+    handoff_id = optional_correlation_id(arguments.handoff, "handoff id")
+    if arguments.type == "handoff":
+        if run_id is None:
+            raise ValueError("handoff messages require --run")
+        if not arguments.requires_ack:
+            raise ValueError("handoff messages require --requires-ack")
+        require_joined_run(location, run_id, sender)
+    elif handoff_id is not None:
+        raise ValueError("--handoff requires --type handoff")
+    with claim_guard(location, "message"):
+        path = write_message(
+            location,
+            recipient,
+            sender,
+            subject,
+            arguments.body,
+            message_type=arguments.type,
+            requires_ack=arguments.requires_ack,
+            reply_to=arguments.reply_to,
+            run_id=run_id,
+            handoff_id=handoff_id,
+        )
+        metadata = message_metadata(path)
+        details: dict[str, object] = {
             "message_id": path.stem,
             "scope": recipient,
             "owner": sender,
             "message_type": arguments.type,
             "requires_ack": arguments.requires_ack,
             "reply_to": arguments.reply_to,
-        },
-    )
+        }
+        if run_id is not None:
+            details["run_id"] = run_id
+        resolved_handoff = metadata.get("handoff_id")
+        if isinstance(resolved_handoff, str):
+            details["handoff_id"] = resolved_handoff
+        emit_coordination_event(location, "message-sent", None, details)
+        if arguments.type == "handoff":
+            if not isinstance(resolved_handoff, str):
+                raise ValueError("handoff message did not persist a handoff id")
+            record_handoff_offered(
+                location,
+                handoff_id=resolved_handoff,
+                source_run_id=str(run_id),
+                source_owner=sender,
+                target_owner=recipient,
+                message_id=path.stem,
+            )
     print(path)
     return 0
 
@@ -1265,6 +1311,17 @@ def command_ack(arguments: argparse.Namespace) -> int:
     message_id = require_text(arguments.message_id, "message_id")
     source = find_message(location, message_id)
     metadata = message_metadata(source)
+    run_id = optional_correlation_id(arguments.run, "run id")
+    message_type = metadata.get("type", "info")
+    handoff_id = metadata.get("handoff_id")
+    if message_type == "handoff":
+        if run_id is None:
+            raise ValueError("acknowledging a handoff requires --run")
+        if not isinstance(handoff_id, str):
+            raise ValueError("handoff message is missing its handoff id")
+        if metadata.get("to") != owner:
+            raise ValueError(f"handoff targets {metadata.get('to')!r}, not {owner!r}")
+        require_joined_run(location, run_id, owner)
     destination = acknowledgement_path(location, owner, message_id)
     destination.parent.mkdir(parents=True, exist_ok=True)
     with claim_guard(location, "ack"):
@@ -1272,31 +1329,59 @@ def command_ack(arguments: argparse.Namespace) -> int:
             existing = read_json(destination)
             if existing.get("owner") != owner:
                 raise ValueError(f"acknowledgement belongs to {existing.get('owner')!r}")
+            if message_type == "handoff" and existing.get("run_id") != run_id:
+                raise ValueError("handoff acknowledgement belongs to another agent run")
+            if message_type == "handoff":
+                record_handoff_accepted(
+                    location,
+                    handoff_id=str(handoff_id),
+                    target_run_id=str(run_id),
+                    target_owner=owner,
+                    message_id=message_id,
+                )
             print(destination)
             return 0
+        acknowledgement: dict[str, object] = {
+            "schema": 1,
+            "message_id": message_id,
+            "message_type": message_type,
+            "owner": owner,
+            "acknowledged_at": now(),
+            "source": source.relative_to(location).as_posix(),
+            "note": arguments.note.strip(),
+        }
+        if run_id is not None:
+            acknowledgement["run_id"] = run_id
+        if isinstance(handoff_id, str):
+            acknowledgement["handoff_id"] = handoff_id
         write_json_exclusive(
             destination,
-            {
-                "schema": 1,
-                "message_id": message_id,
-                "message_type": metadata.get("type", "info"),
-                "owner": owner,
-                "acknowledged_at": now(),
-                "source": source.relative_to(location).as_posix(),
-                "note": arguments.note.strip(),
-            },
+            acknowledgement,
         )
+        details: dict[str, object] = {
+            "message_id": message_id,
+            "owner": owner,
+            "message_type": message_type,
+            "scope": metadata.get("to"),
+        }
+        if run_id is not None:
+            details["run_id"] = run_id
+        if isinstance(handoff_id, str):
+            details["handoff_id"] = handoff_id
         emit_coordination_event(
             location,
             "message-acknowledged",
             None,
-            {
-                "message_id": message_id,
-                "owner": owner,
-                "message_type": metadata.get("type", "info"),
-                "scope": metadata.get("to"),
-            },
+            details,
         )
+        if message_type == "handoff":
+            record_handoff_accepted(
+                location,
+                handoff_id=str(handoff_id),
+                target_run_id=str(run_id),
+                target_owner=owner,
+                message_id=message_id,
+            )
     print(destination)
     return 0
 
@@ -1497,7 +1582,29 @@ def parser() -> argparse.ArgumentParser:
     message_parser.add_argument("--type", choices=sorted(MESSAGE_TYPES), default="info")
     message_parser.add_argument("--requires-ack", action="store_true")
     message_parser.add_argument("--reply-to")
+    message_parser.add_argument("--run")
+    message_parser.add_argument("--handoff")
     message_parser.set_defaults(handler=command_message)
+
+    agent_join_parser = subparsers.add_parser("agent-join")
+    add_root(agent_join_parser)
+    agent_join_parser.add_argument("--run", required=True)
+    agent_join_parser.add_argument("--owner", required=True)
+    agent_join_parser.add_argument("--task", required=True)
+    agent_join_parser.add_argument("--parent-owner")
+    agent_join_parser.set_defaults(handler=command_agent_join)
+
+    agent_leave_parser = subparsers.add_parser("agent-leave")
+    add_root(agent_leave_parser)
+    agent_leave_parser.add_argument("--run", required=True)
+    agent_leave_parser.add_argument("--owner", required=True)
+    agent_leave_parser.add_argument("--outcome", choices=sorted(RUN_OUTCOMES), required=True)
+    agent_leave_parser.add_argument("--summary", required=True)
+    agent_leave_parser.set_defaults(handler=command_agent_leave)
+
+    coverage_parser = subparsers.add_parser("coverage")
+    add_root(coverage_parser)
+    coverage_parser.set_defaults(handler=command_coverage)
 
     takeover_parser = subparsers.add_parser("takeover-request")
     add_root(takeover_parser)
@@ -1532,6 +1639,7 @@ def parser() -> argparse.ArgumentParser:
     ack_parser.add_argument("--owner", required=True)
     ack_parser.add_argument("--message-id", required=True)
     ack_parser.add_argument("--note", default="")
+    ack_parser.add_argument("--run")
     ack_parser.set_defaults(handler=command_ack)
 
     release_parser = subparsers.add_parser("release")

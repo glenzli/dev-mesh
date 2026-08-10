@@ -244,6 +244,8 @@ def parser() -> argparse.ArgumentParser:
     log_parser.add_argument("--transaction")
     log_parser.add_argument("--scope")
     log_parser.add_argument("--owner")
+    log_parser.add_argument("--run")
+    log_parser.add_argument("--handoff")
     log_parser.add_argument("--event")
     log_parser.add_argument("--limit", type=int, default=100)
     log_parser.set_defaults(handler=command_log)
