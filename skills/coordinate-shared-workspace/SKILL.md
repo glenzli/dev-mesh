@@ -5,29 +5,24 @@ description: Coordinate multiple agents or threads that concurrently edit one lo
 
 # Coordinate a Shared Workspace
 
-Keep one canonical workspace. Use direct claims for the normal case and create a short-lived
-microtransaction only when a clean overlapping scope is worth developing concurrently.
+Prefer direct claims in one canonical workspace; use microtransactions only for clean concurrent overlap.
 
 ## Preserve hard boundaries
 
 - Never clean, revert, reformat, stage, commit, or discard another owner's work.
 - Never take over a possibly active claim or transaction without owner or user authorization.
-- Serialize mutations to shared Git index/HEAD and canonical build outputs through one release
-  steward.
-- Resolve rebase or merge conflicts only in a transaction shadow checkout, never in the canonical
-  workspace.
+- Serialize shared Git index/HEAD and canonical build mutations through one release steward.
+- Resolve rebase or merge conflicts only in a transaction shadow checkout, never canonical.
 - Publish only a candidate that can fast-forward the current canonical `HEAD`.
 - Treat an expired timestamp as diagnostic evidence, not transfer authority.
-- Treat permission, sandbox, policy, and approval failures as environment or authorization blockers,
-  not evidence of another owner or a contention.
+- Treat permission, sandbox, policy, and approval failures as environment blockers, not contention.
 
 Keep `.agent-coordination/` local unless the user explicitly wants its history committed.
 
 ## Start or hot-join
 
 1. Find the Git worktree root and read repository instructions.
-2. Inspect `git status`, active claims, active contentions, active transactions, action-required
-   messages, and handoffs.
+2. Inspect Git status, active work, action-required messages, and handoffs.
 3. Choose one semantic scope, likely write paths, and a concrete first release.
 4. Use an owner id that identifies the task/thread and agent.
 5. Declare intent before writing.
@@ -39,9 +34,8 @@ Initialize direct coordination when needed:
 python3 <skill>/scripts/coord.py init --root <workspace>
 ```
 
-When the skill is used for writable shared-workspace work, open one lightweight observational run
-before claiming or editing. Reuse the same run id only for this agent's current task in this
-workspace:
+For writable shared-workspace work, open one lightweight observational run before claiming or
+editing. Reuse its run id only for this agent's current task in this workspace:
 
 ```bash
 python3 <skill>/scripts/coord.py agent-join --root <workspace> \
@@ -49,9 +43,9 @@ python3 <skill>/scripts/coord.py agent-join --root <workspace> \
   --parent-owner <parent-agent-id>
 ```
 
-Omit `--parent-owner` when the agent was not delegated by another agent. Run events are diagnostic
-correlation only: they grant no paths, claim, transaction capability, coordination lease, or
-publication authority. Retrying an identical join is idempotent.
+Omit `--parent-owner` when the agent was not delegated. Run events are diagnostic only: they grant
+no paths, claims, transactions, coordination leases, or publication authority. Identical joins are
+idempotent.
 
 Initialize the transaction steward only when microtransactions may be used:
 
@@ -82,12 +76,10 @@ Use these intents:
 - `read` for a read-only snapshot;
 - `additive` for an independent new entry or case;
 - `local-edit` for a bounded existing semantic unit;
-- `contract`, `refactor`, `move`, `delete`, or `generated` for changes that normally require
-  ordered or exclusive treatment.
+- `contract`, `refactor`, `move`, `delete`, or `generated` for ordered or exclusive changes.
 
-Declare `semantic-writes` when same-path work may be independent. Declare `sensitive-to` only for
-resources whose change would invalidate the implementation or validation; do not list every file
-read during exploration.
+Declare `semantic-writes` when same-path work may be independent. Use `sensitive-to` only when a
+resource change would invalidate implementation or validation; omit incidental reads.
 
 ## Record overlap without granting write authority
 
@@ -501,7 +493,7 @@ authority-bearing operations first. Retrying an identical leave is idempotent.
 
 ## Load detailed design only when needed
 
-Read [DESIGN.md](DESIGN.md) when changing the transaction protocol, evaluating a non-obvious
+Read [DESIGN.md](../../DESIGN.md) when changing the transaction protocol, evaluating a non-obvious
 arbitration, implementing another checkout backend, auditing publish predicates, or recovering an
 ambiguous crash. Ordinary direct claims and routine clean microtransactions should not require
 loading the full design.

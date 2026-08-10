@@ -11,8 +11,20 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-COORD = PROJECT_ROOT / "scripts" / "coord.py"
-TX = PROJECT_ROOT / "scripts" / "tx.py"
+COORD = (
+    PROJECT_ROOT
+    / "skills"
+    / "coordinate-shared-workspace"
+    / "scripts"
+    / "coord.py"
+)
+TX = (
+    PROJECT_ROOT
+    / "skills"
+    / "coordinate-shared-workspace"
+    / "scripts"
+    / "tx.py"
+)
 
 
 class TransactionRepositoryCase(unittest.TestCase):

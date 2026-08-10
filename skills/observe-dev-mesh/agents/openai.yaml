@@ -1,0 +1,6 @@
+interface:
+  display_name: "Dev Mesh Observer"
+  short_description: "Analyze coordination activity across local workspaces"
+  default_prompt: "Use $observe-dev-mesh to collect and analyze coordination activity across explicitly allowed local workspaces."
+policy:
+  allow_implicit_invocation: false

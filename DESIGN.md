@@ -1057,6 +1057,33 @@ handoff id 确认，形成 `handoff-accepted`。这对双边事实只证明交�
 的 handoff，并暴露重复或缺边事件。coverage 只诊断采集完整度，不得自动关闭 run、接受 handoff、
 接管 claim 或修复 transaction。
 
+### 19.1 跨 workspace Observer
+
+dev-mesh 提供独立的只读 Observer，源码与 event producer 在同一仓库版本化，但运行数据必须放在
+所有被扫描 workspace 之外。协调器不导入 Observer；Observer 单向读取 `.agent-coordination/`，
+故障、停机或数据库锁不得影响 claim、message、transaction、Git publish 或 Agent 编辑。
+
+技能分发边界与源码仓库边界分离。`skills/coordinate-shared-workspace/` 和
+`skills/observe-dev-mesh/` 各自拥有独立的 `SKILL.md`、UI metadata、CLI 入口和 Python package；
+前者可以作为默认全局协调技能链接，后者默认不链接并禁止隐式调用。两者共享版本、设计文档和
+event compatibility tests，但不得共享运行时 import。仓库根只是产品与协议根，不再充当某个
+技能的加载入口。
+
+第一版不向 workspace 写入 `workspace.json`。Observer 在 allowlisted roots 下发现包含 `events/`
+的 `.agent-coordination/`，以其 canonical source path 在中央 catalog 中分配 UUID，并记录可选的
+Git top-level、common dir 和 remote fingerprint。路径移动默认形成新的 workspace instance；
+推测性的 Git 相似性不得自动合并观测历史。
+
+Observer 使用仓库外 SQLite 存储 scan roots、workspace catalog、event mirror 和 collection
+issues。事件以 `(workspace_id, source filename)` 幂等导入并保存首次 SHA-256 digest；重复 digest
+跳过，变化 digest 记录 immutable-integrity issue，但不替换首次镜像。单个事件有大小上限，
+symlink、非普通文件和 malformed JSON 只产生采集问题，不得扩大读取范围或中断其他 workspace。
+
+`discover` 只登记合法源，`collect` 重新发现已登记 roots 并增量采集，`status` 报告 source
+availability、event 和 issue 数，`report` 派生时间窗内 workspace、owner、resource activity，
+以及全局 open run 与 pending handoff。中央报告不是恢复来源；恢复仍以 source workspace 的 Git
+事实、active snapshot 和 immutable event 为准。
+
 已写入 event 的错误证据不得覆盖或删除。当前 claim owner 可以追加 `audit-correction`，但只能
 引用同 scope、同 owner 的既有 event filename，并必须给出新观察事实。派生报告遇到 correction
 时保留原事件，同时把被引用事件标记为 superseded。
@@ -1168,6 +1195,11 @@ tx contention-enact  全员接受后关联 queue 并尝试 grant
 tx contention-reconcile 发现遗漏 contention、修复 request link 并协作推进
 tx log               按 correlation 查询不可变协作事件
 tx workflow-report   派生协调耗时、换届、拒绝和 stalled 流程
+
+observer discover    在 allowlisted roots 中登记本地 coordination sources
+observer collect     只读、幂等镜像已登记 workspace 的 immutable events
+observer status      报告中央 catalog、source availability、event 与 integrity issue
+observer report      派生跨 workspace 时间窗活动、open run 与 pending handoff
 ```
 
 状态查询应该同时支持紧凑人类输出和稳定 JSON 输出，便于 Agent 低 token 成本地读取。
@@ -1366,6 +1398,15 @@ validation binding、shadow refresh、fast-forward publish、handoff、abort 和
 - 普通 handoff 复用 message/ack 的 offer/accept 双边 correlation；
 - 按 run/handoff 查询事件和只读 coverage 缺口报告；
 - 生命周期事实不参与 claim、lease、transaction 或 publish 授权。
+
+阶段八 official Observer 已经实现第一版：
+
+- coordination 与 Observer 的独立技能目录、触发 metadata 和运行时 package；
+- 无 workspace manifest 的 allowlisted `.agent-coordination` discovery；
+- Observer-owned workspace UUID、Git metadata fingerprint 与仓库外 SQLite catalog；
+- event filename + digest 的幂等导入和 immutable mutation detection；
+- 跨 workspace status、时间窗 activity、open run 与 pending handoff 报告；
+- Collector 对 source workspace 的严格只读边界。
 
 至此 direct claim、distributed semantic arbitration、temporary checkout、publish、cleanup、
 recovery、queue、fairness、external shared mutation 和 audit 已形成第一版核心闭环。下一阶段应以真实多 Agent 工作流验证
