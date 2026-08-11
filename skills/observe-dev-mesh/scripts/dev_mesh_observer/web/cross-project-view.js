@@ -85,6 +85,7 @@
       episodeGeometry.set(episode.id, {
         x1,
         x2: Math.max(x1 + 10, observedX2),
+        observedX2,
         y: lane.center,
       });
     });
@@ -94,12 +95,22 @@
       const source = episodeGeometry.get(ids[0]);
       const target = episodeGeometry.get(ids[1]);
       if (!source || !target) return;
+      const overlapX1 = Math.max(source.x1, target.x1);
+      const overlapX2 = Math.min(source.observedX2, target.observedX2);
       relationGeometry.set(relation.id, {
         source: {
           x: relation.temporal_relation === "overlap" ? target.x1 : source.x2,
           y: source.y,
         },
         target: { x: target.x1, y: target.y },
+        overlap: relation.temporal_relation === "overlap" && overlapX2 > overlapX1
+          ? {
+            x1: overlapX1,
+            x2: overlapX2,
+            y1: Math.min(source.y, target.y) - 8,
+            y2: Math.max(source.y, target.y) + 8,
+          }
+          : null,
       });
     });
     return {
@@ -160,8 +171,12 @@
       htmlNode("small", "", t("crossProject.noCausality")),
     );
     const scroll = $("cross-project-scroll");
-    const centerX = (geometry.source.x + geometry.target.x) / 2;
-    const centerY = (geometry.source.y + geometry.target.y) / 2;
+    const centerX = geometry.overlap
+      ? (geometry.overlap.x1 + geometry.overlap.x2) / 2
+      : (geometry.source.x + geometry.target.x) / 2;
+    const centerY = geometry.overlap
+      ? (geometry.overlap.y1 + geometry.overlap.y2) / 2
+      : (geometry.source.y + geometry.target.y) / 2;
     tooltip.style.left = `${Math.max(8, centerX - scroll.scrollLeft + 10)}px`;
     tooltip.style.top = `${Math.max(8, centerY - scroll.scrollTop + 10)}px`;
     tooltip.hidden = false;
@@ -233,8 +248,49 @@
     });
     svg.append(guides);
 
+    const overlapAreas = svgNode("g", { class: "cross-project-overlaps" });
+    layout.relations.forEach((relation) => {
+      const geometry = layout.relationGeometry.get(relation.id);
+      if (!geometry?.overlap) return;
+      const overlap = geometry.overlap;
+      const group = svgNode("g", {
+        class: `cross-project-overlap confidence-${relation.confidence || "moderate"}`,
+        tabindex: "0",
+        role: "button",
+        "aria-label": t("crossProject.overlapArea", {
+          owner: relation.owner,
+          duration: formatDuration(relation.overlap_seconds),
+        }),
+      });
+      group.append(
+        svgNode("rect", {
+          class: "identity-overlap-area",
+          x: overlap.x1,
+          y: overlap.y1,
+          width: overlap.x2 - overlap.x1,
+          height: overlap.y2 - overlap.y1,
+          rx: 4,
+        }),
+        svgNode("rect", {
+          class: "identity-overlap-hit",
+          x: overlap.x1,
+          y: overlap.y1,
+          width: overlap.x2 - overlap.x1,
+          height: overlap.y2 - overlap.y1,
+          rx: 4,
+        }),
+      );
+      group.addEventListener("mouseenter", () => showRelationTooltip(relation, geometry));
+      group.addEventListener("focus", () => showRelationTooltip(relation, geometry));
+      group.addEventListener("mouseleave", hideTooltip);
+      group.addEventListener("blur", hideTooltip);
+      overlapAreas.append(group);
+    });
+    svg.append(overlapAreas);
+
     const links = svgNode("g", { class: "cross-project-links" });
     layout.relations.forEach((relation) => {
+      if (relation.temporal_relation === "overlap") return;
       const geometry = layout.relationGeometry.get(relation.id);
       if (!geometry) return;
       const group = svgNode("g", {

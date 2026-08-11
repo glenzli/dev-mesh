@@ -133,6 +133,29 @@
     return owner;
   }
 
+  function endpointLabel(endpoint) {
+    if (!endpoint?.state) return "";
+    return t(`storyline.endpoint.${endpoint.state}`);
+  }
+
+  function laneMoment(value) {
+    const parsed = new Date(value || "").getTime();
+    return Number.isFinite(parsed) ? parsed : Number.NEGATIVE_INFINITY;
+  }
+
+  function orderLanes(lanes, mode) {
+    if (mode === "window") return [...lanes];
+    const canonical = lanes.filter((lane) => lane.kind === "canonical");
+    const agents = lanes.filter((lane) => lane.kind === "agent").sort((left, right) => (
+      Number(right.open_runs || 0) - Number(left.open_runs || 0)
+      || laneMoment(right.last_at) - laneMoment(left.last_at)
+      || laneMoment(right.started_at) - laneMoment(left.started_at)
+      || String(left.id).localeCompare(String(right.id))
+    ));
+    const remaining = lanes.filter((lane) => !["canonical", "agent"].includes(lane.kind));
+    return [...canonical, ...agents, ...remaining];
+  }
+
   function allItems() {
     return [...currentStory.spans, ...currentStory.markers, ...currentStory.relations];
   }
@@ -155,12 +178,20 @@
       htmlNode("span", `status-${item.status || "observed"}`, statusLabel(item.status)),
     );
     tooltip.className = `storyline-tooltip type-${item.kind} status-${item.status || "observed"}`;
-    tooltip.replaceChildren(
+    const contents = [
       heading,
       htmlNode("strong", "", displayLabel(item)),
       htmlNode("span", "storyline-tooltip-owner", displayOwner(item)),
-      htmlNode("time", "", itemTimeLabel(item)),
-    );
+    ];
+    if (item.target_endpoint) {
+      contents.push(htmlNode(
+        "span",
+        "storyline-tooltip-endpoint",
+        endpointLabel(item.target_endpoint),
+      ));
+    }
+    contents.push(htmlNode("time", "", itemTimeLabel(item)));
+    tooltip.replaceChildren(...contents);
     tooltip.dataset.itemId = item.id;
     tooltip.style.left = `${Math.max(8, Math.min(position.x + 12, canvasWidth - TOOLTIP_WIDTH - 8))}px`;
     tooltip.style.top = `${Math.max(8, position.y > 104 ? position.y - 92 : position.y + 15)}px`;
@@ -215,6 +246,22 @@
       );
     }
     if (item.evidence) details.append(detailRow(t("storyline.detail.evidence"), item.evidence));
+    if (item.target_endpoint) {
+      details.append(detailRow(
+        t("storyline.detail.target_endpoint"),
+        endpointLabel(item.target_endpoint),
+      ));
+      if (item.target_endpoint.run_id) {
+        details.append(detailRow(
+          t("storyline.detail.target_run_id"),
+          item.target_endpoint.run_id,
+        ));
+      }
+      details.append(detailRow(
+        t("storyline.detail.target_endpoint_evidence"),
+        t(`storyline.endpointEvidence.${item.target_endpoint.evidence}`),
+      ));
+    }
     if (item.event_count) details.append(detailRow(t("storyline.detail.events"), item.event_count));
     const values = item.details || {};
     Object.entries(values).forEach(([key, value]) => {
@@ -243,7 +290,8 @@
     element.dataset.itemId = item.id;
     element.setAttribute("tabindex", "0");
     element.setAttribute("role", "button");
-    element.setAttribute("aria-label", `${kindLabel(item.kind)} ${displayLabel(item)}, ${statusLabel(item.status)}`);
+    const endpoint = item.target_endpoint ? `, ${endpointLabel(item.target_endpoint)}` : "";
+    element.setAttribute("aria-label", `${kindLabel(item.kind)} ${displayLabel(item)}, ${statusLabel(item.status)}${endpoint}`);
     element.addEventListener("mouseenter", () => showTooltip(item, position, width));
     element.addEventListener("mouseleave", () => {
       if (document.activeElement !== element) hideTooltip();
@@ -259,7 +307,7 @@
     });
   }
 
-  function renderLaneLabels(story, layout) {
+  function renderLaneLabels(story, layout, mode) {
     const target = $("storyline-lanes");
     target.replaceChildren();
     let actorNumber = 0;
@@ -273,7 +321,10 @@
       row.append(
         htmlNode("strong", "", laneLabel(lane, actorNumber)),
         htmlNode("span", "", lane.kind === "agent"
-          ? t("storyline.laneStarted", { time: formatTime(lane.started_at) })
+          ? t(
+            mode === "window" ? "storyline.laneStarted" : "storyline.laneRecent",
+            { time: formatTime(mode === "window" ? lane.started_at : lane.last_at) },
+          )
           : t("storyline.laneItems", { count: lane.item_count || 0 })),
       );
       target.append(row);
@@ -473,6 +524,43 @@
     return `M ${source.x} ${source.y} H ${middleX} V ${target.y} H ${target.x}`;
   }
 
+  function communicationApproach(source, target, distance = 7) {
+    if (Math.abs(target.x - source.x) < 0.5) {
+      return { ...target, y: target.y - Math.sign(target.y - source.y) * distance };
+    }
+    return { ...target, x: target.x - Math.sign(target.x - source.x) * distance };
+  }
+
+  function drawCommunicationEndpoints(group, geometry) {
+    const endpoint = geometry.targetEndpoint;
+    if (!endpoint || !geometry.source || !geometry.target) return;
+    group.append(svgNode("circle", {
+      class: "communication-source-node",
+      cx: geometry.source.x,
+      cy: geometry.source.y,
+      r: 2.5,
+    }));
+    group.append(svgNode("circle", {
+      class: `communication-endpoint endpoint-${endpoint.state}`,
+      cx: geometry.target.x,
+      cy: geometry.target.y,
+      r: endpoint.state === "acknowledged" ? 5 : 4.5,
+    }));
+    if (endpoint.state === "run-context") {
+      group.append(svgNode("circle", {
+        class: "communication-endpoint-core",
+        cx: geometry.target.x,
+        cy: geometry.target.y,
+        r: 1.8,
+      }));
+    } else if (endpoint.state === "acknowledged") {
+      group.append(svgNode("path", {
+        class: "communication-endpoint-check",
+        d: `M ${geometry.target.x - 2.3} ${geometry.target.y} l 1.6 1.7 l 3.2 -3.4`,
+      }));
+    }
+  }
+
   function branchTransitionPath(source, target, kind) {
     const deltaX = target.x - source.x;
     const deltaY = target.y - source.y;
@@ -516,13 +604,17 @@
           x: (geometry.source.x + geometry.target.x) / 2,
           y: (geometry.source.y + geometry.target.y) / 2,
         };
+        const pathTarget = geometry.targetEndpoint
+          ? communicationApproach(geometry.source, geometry.target)
+          : geometry.target;
         group.append(svgNode("path", {
           class: "relation-line",
           d: localBranch
             ? branchTransitionPath(geometry.source, geometry.target, relation.kind)
-            : relationPath(geometry.source, geometry.target),
+            : relationPath(geometry.source, pathTarget),
           "marker-end": localBranch ? undefined : relationArrow(relation.kind),
         }));
+        drawCommunicationEndpoints(group, geometry);
         if (localBranch) {
           const anchor = relation.kind === "fork" ? geometry.source : geometry.target;
           group.append(svgNode("circle", {
@@ -570,7 +662,7 @@
     renderedWorkspace = story.workspace_id || null;
     currentStory = {
       workspace_id: story.workspace_id || null,
-      lanes: story.lanes || [],
+      lanes: orderLanes(story.lanes || [], context.mode),
       spans: story.spans || [],
       markers: story.markers || [],
       relations: story.relations || [],
@@ -628,7 +720,7 @@
     empty.hidden = true;
     svg.hidden = false;
     const layout = window.DevMeshStorylineLayout.compute(currentStory);
-    renderLaneLabels(currentStory, layout);
+    renderLaneLabels(currentStory, layout, context.mode);
     svg.setAttribute("viewBox", `0 0 ${layout.width} ${layout.height}`);
     svg.setAttribute("width", layout.width);
     svg.setAttribute("height", layout.height);

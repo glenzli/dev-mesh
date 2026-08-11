@@ -235,6 +235,7 @@ select:disabled { cursor: not-allowed; opacity: 0.62; }
 .cross-project-legend { min-height: 38px; padding: 7px 11px; display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; border-bottom: 1px solid var(--line-soft); color: var(--dim); }
 .cross-project-legend span { display: inline-flex; align-items: center; gap: 7px; }
 .cross-project-legend i.activity { width: 20px; border-top: 2px solid var(--trace-main); }
+.cross-project-legend i.overlap { width: 20px; height: 9px; border: 1px solid var(--cyan); background: var(--cyan); opacity: 0.18; }
 .cross-project-legend i.identity { width: 20px; border-top: 2px dotted var(--cyan); }
 .cross-project-legend b { font: 550 10px/1.2 var(--mono); }
 .cross-project-legend small { margin-left: auto; font-size: 9.5px; }
@@ -253,6 +254,11 @@ select:disabled { cursor: not-allowed; opacity: 0.62; }
 .cross-project-guides .lane-even { fill: var(--hover); }
 .cross-project-guides line { stroke: var(--line-soft); stroke-width: 1; }
 .cross-project-time { fill: var(--dim); font: 500 8.5px/1 var(--mono); }
+.cross-project-overlap { cursor: help; outline: none; }
+.cross-project-overlap .identity-overlap-area { fill: var(--cyan); fill-opacity: 0.1; stroke: var(--cyan); stroke-width: 1; stroke-opacity: 0.34; stroke-dasharray: 3 4; }
+.cross-project-overlap.confidence-moderate .identity-overlap-area { fill-opacity: 0.06; stroke-opacity: 0.24; }
+.cross-project-overlap:hover .identity-overlap-area, .cross-project-overlap:focus .identity-overlap-area { fill-opacity: 0.19; stroke-opacity: 0.8; }
+.cross-project-overlap .identity-overlap-hit { fill: transparent; stroke: transparent; }
 .cross-project-link { cursor: help; outline: none; }
 .cross-project-link .identity-line { fill: none; stroke: var(--cyan); stroke-width: 1.6; stroke-dasharray: 2 3; opacity: 0.66; }
 .cross-project-link.confidence-moderate .identity-line { opacity: 0.4; stroke-dasharray: 1 4; }
@@ -323,6 +329,10 @@ select:disabled { cursor: not-allowed; opacity: 0.62; }
 .storyline-legend i.aborted::before { transform: rotate(45deg); }
 .storyline-legend i.aborted::after { transform: rotate(-45deg); }
 .storyline-legend i.handoff, .storyline-legend i.message, .storyline-legend i.waiting, .storyline-legend i.diverted { position: relative; width: 20px; height: 0; background: transparent; }
+.storyline-legend i.endpoint-addressed, .storyline-legend i.endpoint-run-context, .storyline-legend i.endpoint-acknowledged { position: relative; width: 10px; height: 10px; border: 1.8px solid var(--cyan); border-radius: 50%; background: var(--surface-raised); }
+.storyline-legend i.endpoint-run-context::after { content: ""; position: absolute; inset: 2px; border-radius: 50%; background: var(--trace-main); }
+.storyline-legend i.endpoint-acknowledged { background: var(--cyan); }
+.storyline-legend i.endpoint-acknowledged::after { content: "✓"; position: absolute; left: 1px; top: -2px; color: var(--input); font: 700 8px/10px var(--sans); }
 .storyline-legend i.return { width: 20px; height: 0; border-top: 2px dashed var(--trace-main); background: transparent; }
 .storyline-legend i.handoff { border-top: 2px solid var(--cyan); }
 .storyline-legend i.message { border-top: 2px dotted var(--cyan); }
@@ -391,6 +401,12 @@ select:disabled { cursor: not-allowed; opacity: 0.62; }
 .relation-diverts-to .relation-line { stroke: var(--violet); stroke-width: 1.6; stroke-dasharray: 2 3; }
 .relation-handoff .relation-line, .relation-reassigned .relation-line, .relation-message .relation-line { stroke: var(--cyan); }
 .relation-message .relation-line { stroke-dasharray: 2 3; }
+.communication-source-node { fill: var(--cyan); stroke: var(--input); stroke-width: 1; }
+.communication-endpoint { fill: var(--surface-raised); stroke: var(--cyan); stroke-width: 1.8; }
+.communication-endpoint.endpoint-run-context { fill: var(--surface-raised); }
+.communication-endpoint.endpoint-acknowledged { fill: var(--cyan); }
+.communication-endpoint-core { fill: var(--trace-main); stroke: none; }
+.communication-endpoint-check { fill: none; stroke: var(--input); stroke-width: 1.35; stroke-linecap: round; stroke-linejoin: round; }
 .relation-contention .relation-line { stroke: var(--red); stroke-width: 1.8; }
 .relation-symbol { fill: var(--red); stroke: var(--input); stroke-width: 1; }
 .trace-arrow { fill: var(--line-strong); }
@@ -418,6 +434,7 @@ select:disabled { cursor: not-allowed; opacity: 0.62; }
 .storyline-tooltip > strong, .storyline-tooltip > span, .storyline-tooltip > time { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .storyline-tooltip > strong { font: 600 13px/1.4 var(--mono); }
 .storyline-tooltip-owner { margin-top: 6px; color: var(--muted); font: 500 10.5px/1.3 var(--mono); }
+.storyline-tooltip-endpoint { margin-top: 4px; color: var(--cyan); font: 600 9.5px/1.3 var(--mono); }
 .storyline-tooltip > time { margin-top: 5px; color: var(--dim); font: 500 9.5px/1.3 var(--mono); }
 .storyline-inspector { min-width: 0; min-height: 250px; padding: 20px; border-left: 1px solid var(--line); background: var(--surface-raised); }
 .storyline-inspector h3 { margin: 0; overflow-wrap: anywhere; font: 600 16px/1.35 var(--mono); }

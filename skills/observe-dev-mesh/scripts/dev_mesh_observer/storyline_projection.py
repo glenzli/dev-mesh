@@ -44,6 +44,7 @@ ATTENTION_STATUSES = {
     "stalled",
     "waiting",
 }
+COMMUNICATION_KINDS = {"handoff", "message"}
 FOCUS_KIND_PRIORITY = {
     "contention": 6,
     "waits-for": 6,
@@ -73,6 +74,37 @@ def _strings(value: object) -> list[str]:
     if not isinstance(value, list):
         return []
     return [item for item in value if isinstance(item, str) and item]
+
+
+def _attention_moment_count(
+    moments: Iterable[tuple[str, Mapping[str, object]]],
+) -> int:
+    """Count semantic attention moments, not every glyph used to draw one."""
+
+    ordered = list(moments)
+    items_by_id = {
+        str(item["id"]): item
+        for _, item in ordered
+        if item.get("id") is not None
+    }
+    count = 0
+    for category, item in ordered:
+        status = str(item.get("status") or "")
+        if status not in ATTENTION_STATUSES:
+            continue
+        if category == "relation":
+            linked_items = (
+                items_by_id.get(str(item.get(field) or ""))
+                for field in ("source_item", "target_item")
+            )
+            if any(
+                linked is not None
+                and str(linked.get("status") or "") == status
+                for linked in linked_items
+            ):
+                continue
+        count += 1
+    return count
 
 
 def _timestamp(value: object) -> str | None:
@@ -542,17 +574,23 @@ class StorylineProjection:
             target = _text(payload.get("target_owner")) or scope
             if target:
                 message_id = _text(payload.get("message_id")) or source_name
-                self.add_relation(
-                    f"message:{self.workspace_id}:{message_id}",
-                    kind="message",
-                    at=at,
-                    label=_text(payload.get("message_type")) or "message",
-                    status="sent",
-                    evidence="owner+scope",
-                    source_owner=owner,
-                    target_owner=target,
-                    details=details,
+                handoff_relation = (
+                    f"handoff:{self.workspace_id}:{handoff_id}"
+                    if handoff_id
+                    else None
                 )
+                if handoff_relation not in self.relations:
+                    self.add_relation(
+                        f"message:{self.workspace_id}:{message_id}",
+                        kind="message",
+                        at=at,
+                        label=_text(payload.get("message_type")) or "message",
+                        status="sent",
+                        evidence="owner+scope",
+                        source_owner=owner,
+                        target_owner=target,
+                        details=details,
+                    )
 
         if handoff_id and event in {"handoff-offered", "handoff-accepted"}:
             source_owner = _text(payload.get("source_owner"))
@@ -578,6 +616,18 @@ class StorylineProjection:
                     target_owner=target_owner,
                     details=details,
                 )
+                for relation_id, relation in list(self.relations.items()):
+                    relation_details = relation.get("details")
+                    if not isinstance(relation_details, Mapping):
+                        continue
+                    if (
+                        relation.get("kind") == "message"
+                        and (
+                            _text(relation_details.get("handoff_id")) == handoff_id
+                            or _text(relation_details.get("message_id")) == handoff_id
+                        )
+                    ):
+                        self.relations.pop(relation_id, None)
 
         if contention_id and event.startswith("contention-"):
             owners = _strings(payload.get("owners"))
@@ -1080,6 +1130,66 @@ class StorylineProjection:
             inferred += 1
         return inferred
 
+    def _annotate_communication_endpoints(self) -> None:
+        sessions = [
+            span
+            for span in self.spans.values()
+            if span.get("kind") == "session"
+            and span.get("observed_join")
+            and span.get("run_id")
+            and span.get("started_at")
+        ]
+        for relation in self.relations.values():
+            if relation.get("kind") not in COMMUNICATION_KINDS:
+                continue
+            target_owner = _text(relation.get("target_owner"))
+            at = _text(relation.get("at"))
+            if target_owner is None or at is None:
+                continue
+            candidates = [
+                session
+                for session in sessions
+                if session.get("owner") == target_owner
+                and str(session["started_at"]) <= at
+                and (
+                    session.get("ended_at") is None
+                    or at <= str(session["ended_at"])
+                )
+            ]
+            acknowledged = (
+                relation.get("kind") == "handoff"
+                and relation.get("status") == "accepted"
+            )
+            run_id = (
+                _text(candidates[0].get("run_id"))
+                if len(candidates) == 1
+                else None
+            )
+            if acknowledged:
+                details = relation.get("details")
+                accepted_run = (
+                    _text(details.get("run_id"))
+                    if isinstance(details, Mapping)
+                    else None
+                )
+                relation["target_endpoint"] = {
+                    "state": "acknowledged",
+                    "evidence": "handoff-accepted",
+                    "run_id": run_id or accepted_run,
+                }
+            elif run_id is not None:
+                relation["target_endpoint"] = {
+                    "state": "run-context",
+                    "evidence": "unique-target-run-window",
+                    "run_id": run_id,
+                }
+            else:
+                relation["target_endpoint"] = {
+                    "state": "addressed",
+                    "evidence": "target-owner-only",
+                    "run_id": None,
+                }
+
     def serialise(
         self,
         *,
@@ -1088,6 +1198,7 @@ class StorylineProjection:
         page: int = 1,
     ) -> dict[str, object]:
         inferred_run_bindings = self._infer_presentation_runs()
+        self._annotate_communication_endpoints()
         all_items = [*self.spans.values(), *self.markers.values()]
 
         def moment_at(category: str, item: Mapping[str, object]) -> str:
@@ -1168,21 +1279,28 @@ class StorylineProjection:
             )
 
         visible_first_activity: dict[str, str] = {}
+        visible_last_activity: dict[str, str] = {}
 
         def record_activity(owner: str | None, at: object) -> None:
             if not owner or owner in {"__canonical__", "__system__"} or not at:
                 return
             value = str(at)
-            current = visible_first_activity.get(owner)
-            if current is None or value < current:
+            first = visible_first_activity.get(owner)
+            if first is None or value < first:
                 visible_first_activity[owner] = value
+            last = visible_last_activity.get(owner)
+            if last is None or value > last:
+                visible_last_activity[owner] = value
 
         for span in spans:
             record_activity(str(span["owner"]), span.get("started_at"))
+            record_activity(str(span["owner"]), span.get("last_at"))
         for marker in markers:
             record_activity(str(marker.get("lane") or ""), marker.get("at"))
+            record_activity(str(marker.get("lane") or ""), marker.get("last_at"))
             for owner in marker.get("owners", []):
                 record_activity(str(owner), marker.get("at"))
+                record_activity(str(owner), marker.get("last_at"))
         for relation in visible_relations:
             record_activity(_text(relation.get("source_owner")), relation.get("at"))
             record_activity(_text(relation.get("target_owner")), relation.get("at"))
@@ -1220,6 +1338,12 @@ class StorylineProjection:
         ):
             owner_spans = [span for span in spans if span["owner"] == owner]
             statuses = {str(span["status"]) for span in owner_spans}
+            open_runs = sum(
+                span.get("kind") == "session"
+                and span.get("owner") == owner
+                and span.get("status") == "active"
+                for span in self.spans.values()
+            )
             lanes.append(
                 {
                     "id": owner,
@@ -1234,6 +1358,8 @@ class StorylineProjection:
                     ),
                     "item_count": len(owner_spans),
                     "started_at": visible_first_activity.get(owner),
+                    "last_at": visible_last_activity.get(owner),
+                    "open_runs": open_runs,
                 }
             )
         if any(span["owner"] == "__system__" for span in spans):
@@ -1303,10 +1429,7 @@ class StorylineProjection:
                 "total_moments": total_moments,
                 "visible_moments": len(visible_moments),
                 "hidden_moments": total_moments - len(visible_moments),
-                "attention_moments": sum(
-                    str(item.get("status") or "") in ATTENTION_STATUSES
-                    for _, item in ordered_moments
-                ),
+                "attention_moments": _attention_moment_count(ordered_moments),
                 "truncated": total_moments > len(visible_moments),
                 "pagination": {
                     "page": current_page,

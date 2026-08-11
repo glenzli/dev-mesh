@@ -99,8 +99,9 @@
           <div class="cross-project-view" id="cross-project-view">
             <div class="cross-project-legend" data-i18n-aria-label="crossProject.legend">
               <span><i class="activity"></i><b data-i18n="crossProject.legend.activity">项目内活动</b></span>
-              <span><i class="identity"></i><b data-i18n="crossProject.legend.identity">相同 owner · 推断关联</b></span>
-              <small data-i18n="crossProject.legend.hint">虚线不表示因果、依赖或交接；悬停查看证据</small>
+              <span><i class="overlap"></i><b data-i18n="crossProject.legend.overlap">半透明区域 · 推断并行窗口</b></span>
+              <span><i class="identity"></i><b data-i18n="crossProject.legend.identity">虚线 · 相同 owner 的先后活动</b></span>
+              <small data-i18n="crossProject.legend.hint">面积和虚线都不表示因果、依赖或交接；悬停查看证据</small>
             </div>
             <div class="cross-project-canvas">
               <div class="cross-project-lanes" id="cross-project-lanes" aria-hidden="true"></div>
@@ -140,6 +141,9 @@
               <span><i class="return"></i><b data-i18n="storyline.legend.return">中止后返回执行主线</b></span>
               <span><i class="handoff"></i><b data-i18n="storyline.legend.handoff">交接 / 重分配</b></span>
               <span><i class="message"></i><b data-i18n="storyline.legend.message">通知</b></span>
+              <span><i class="endpoint-addressed"></i><b data-i18n="storyline.legend.endpointAddressed">空心端点 · 仅寻址</b></span>
+              <span><i class="endpoint-run-context"></i><b data-i18n="storyline.legend.endpointRunContext">实心端点 · Run 上下文</b></span>
+              <span><i class="endpoint-acknowledged"></i><b data-i18n="storyline.legend.endpointAcknowledged">勾选端点 · 已确认</b></span>
               <span><i class="waiting"></i><b data-i18n="storyline.legend.waiting">等待 / 依赖</b></span>
               <span><i class="diverted"></i><b data-i18n="storyline.legend.diverted">转做其他工作</b></span>
               <span><i class="contention"></i><b data-i18n="storyline.legend.contention">冲突 / 争用</b></span>

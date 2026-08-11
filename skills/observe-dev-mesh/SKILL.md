@@ -127,17 +127,23 @@ coordination owner. Legacy events never gain guessed branch, dependency, or auth
 Keep relation lines free of persistent text. Distinguish handoff, message, waiting, diversion,
 contention, run progress, and transaction branches through color, dash pattern, arrow shape, and the
 bilingual legend; retain their exact label and status in hover cards and the inspector.
-Number visible owner lanes by first appearance (`Actor 01`, `Actor 02`, and so on) because protocol
-owner ids are coordination identities, not guaranteed Agent display names. Keep the raw owner id in
-hover cards and the inspector. Make storyline labels, nodes, and the bilingual legend comfortably
-readable at normal desktop scale. Hover or keyboard-focus an item for a bounded action, owner,
-status, and time card; select it to keep the full protocol facts in the inspector. Keep moment
-spacing dense enough that forks, rejoins, waits, diversion, notification, and cross-lane
-intersections remain legible without expanding into a topology dashboard.
-Do not describe the overview as a cross-project graph. The current event contract has no
-cross-workspace correlation, so the console keeps same-name agents and all edges workspace-scoped
-and explicitly reports that cross-project tracking is unavailable. Never infer such relationships
-from names, timestamps, paths, or Git metadata. Treat
+Number visible owner lanes (`Actor 01`, `Actor 02`, and so on) because protocol owner ids are
+coordination identities, not guaranteed Agent display names or conversation sessions. In the
+latest-slice mode, place owners with open recorded runs first, then order by most recent visible
+activity so current work stays near the top. In the full-window mode, retain first-appearance order
+for historical stability. Keep separate run spines disconnected inside an owner lane unless the
+protocol records a relation between them. Keep the raw owner id in hover cards and the inspector.
+Make storyline labels, nodes, and the bilingual legend comfortably readable at normal desktop
+scale. Hover or keyboard-focus an item for a bounded action, owner, status, and time card; select it
+to keep the full protocol facts in the inspector. Keep moment spacing dense enough that forks,
+rejoins, waits, diversion, notification, and cross-lane intersections remain legible without
+expanding into a topology dashboard.
+The cross-project overview may correlate the exact same non-generic owner id across workspace-scoped
+activity episodes for presentation only. Show a real temporal overlap as a low-opacity area spanning
+the two project lanes, and retain a dotted link for sequential activity. Neither form proves one
+Agent session, causality, dependency, handoff, or authority. Never derive a cross-project relation
+from timestamps, similar names, paths, or Git metadata without the exact owner identity, and never
+promote this presentation inference into the workspace-scoped causal storyline. Treat
 conflict-related paths as affected resources, not proof of a textual merge conflict. Treat likely
 solo-protocol runs as a closed-run heuristic only; open runs remain unclassified, and the result
 grants no authority. The console follows the operating-system light or dark appearance by default,

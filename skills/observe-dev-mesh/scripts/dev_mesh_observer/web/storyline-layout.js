@@ -460,14 +460,29 @@
           : null;
       const sourceLane = laneGeometry.get(relation.source_owner);
       const targetLane = laneGeometry.get(relation.target_owner);
+      const endpointRunId = relation.target_endpoint?.run_id;
+      const endpointSpine = endpointRunId && relation.target_owner
+        ? spineByOwnerRun.get(`${relation.target_owner}\u0000${endpointRunId}`)
+        : null;
+      const source = sourceItem
+        || (sourceLane ? { x, y: sourceLane.center, lane: sourceLane.id } : null);
+      const target = targetItem
+        || (endpointSpine
+          ? { x, y: endpointSpine.y, lane: endpointSpine.owner }
+          : targetLane
+            ? { x, y: targetLane.center, lane: targetLane.id }
+            : null);
       const ownerPoints = (relation.owners || [])
         .map((owner) => laneGeometry.get(owner))
         .filter(Boolean)
         .map((lane) => ({ x, y: lane.center, lane: lane.id }));
       relationGeometry.set(relation.id, {
         x,
-        source: sourceItem || (sourceLane ? { x, y: sourceLane.center, lane: sourceLane.id } : null),
-        target: targetItem || (targetLane ? { x, y: targetLane.center, lane: targetLane.id } : null),
+        source,
+        target,
+        targetEndpoint: relation.target_endpoint && target
+          ? { ...relation.target_endpoint, point: target }
+          : null,
         owners: ownerPoints,
         branchContext: localBranch,
       });

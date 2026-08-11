@@ -236,6 +236,14 @@ class ObserverStorylineTest(unittest.TestCase):
         self.assertEqual(contention["details"]["missing_responses"], ["agent-a"])
         self.assertEqual(contention["details"]["paths"], ["src/shared.py"])
 
+        attention_glyphs = [
+            item
+            for item in [*story["markers"], *story["relations"]]
+            if item["status"] == "stalled"
+        ]
+        self.assertEqual(len(attention_glyphs), 2)
+        self.assertEqual(story["summary"]["attention_moments"], 1)
+
         relation_kinds = {relation["kind"] for relation in story["relations"]}
         self.assertTrue({"handoff", "contention"} <= relation_kinds)
         self.assertNotIn("fork", relation_kinds)
@@ -248,8 +256,96 @@ class ObserverStorylineTest(unittest.TestCase):
         self.assertEqual(story["focus"]["kind"], "handoff")
         self.assertEqual(story["focus"]["status"], "accepted")
         self.assertEqual(story["focus"]["owners"], ["agent-a", "agent-b"])
+        handoff = next(
+            relation
+            for relation in story["relations"]
+            if relation["kind"] == "handoff"
+        )
+        self.assertEqual(
+            handoff["target_endpoint"],
+            {
+                "state": "acknowledged",
+                "evidence": "handoff-accepted",
+                "run_id": "run-b",
+            },
+        )
 
-    def test_orders_agent_lanes_by_first_visible_activity(self) -> None:
+    def test_communication_endpoints_preserve_evidence_and_collapse_alias(self) -> None:
+        additions = [
+            {
+                "at": "2026-08-11T00:00:40Z",
+                "event": "message-sent",
+                "message_id": "message-run-context",
+                "owner": "agent-a",
+                "target_owner": "agent-b",
+                "message_type": "progress",
+            },
+            {
+                "at": "2026-08-11T00:04:00Z",
+                "event": "message-sent",
+                "message_id": "handoff-after-run",
+                "handoff_id": "handoff-after-run",
+                "owner": "agent-a",
+                "target_owner": "agent-b",
+                "message_type": "handoff",
+            },
+            {
+                "at": "2026-08-11T00:04:00Z",
+                "event": "handoff-offered",
+                "handoff_id": "handoff-after-run",
+                "run_id": "run-a",
+                "owner": "agent-a",
+                "source_owner": "agent-a",
+                "target_owner": "agent-b",
+            },
+        ]
+        for index, event in enumerate(additions, start=14):
+            self.write_event(index, event)
+
+        with ObserverStore(self.data_dir) as store:
+            self.assertEqual(store.collect()["inserted"], len(additions))
+            story = build_collaboration_storyline(
+                store.connection,
+                since=datetime(2026, 8, 10, tzinfo=UTC),
+                workspace_id=self.workspace_id,
+            )
+
+        run_message = next(
+            relation
+            for relation in story["relations"]
+            if relation["id"].endswith(":message-run-context")
+        )
+        self.assertEqual(
+            run_message["target_endpoint"],
+            {
+                "state": "run-context",
+                "evidence": "unique-target-run-window",
+                "run_id": "run-b",
+            },
+        )
+        offered = next(
+            relation
+            for relation in story["relations"]
+            if relation["id"].endswith(":handoff-after-run")
+        )
+        self.assertEqual(offered["kind"], "handoff")
+        self.assertEqual(
+            offered["target_endpoint"],
+            {
+                "state": "addressed",
+                "evidence": "target-owner-only",
+                "run_id": None,
+            },
+        )
+        self.assertFalse(
+            any(
+                relation["kind"] == "message"
+                and relation["details"].get("handoff_id") == "handoff-after-run"
+                for relation in story["relations"]
+            )
+        )
+
+    def test_emits_lane_activity_bounds_and_open_run_state(self) -> None:
         self.write_event(
             14,
             {
@@ -269,10 +365,18 @@ class ObserverStorylineTest(unittest.TestCase):
                 workspace_id=self.workspace_id,
             )
 
+        agent_lanes = [
+            lane for lane in story["lanes"] if lane["kind"] == "agent"
+        ]
         self.assertEqual(
-            [lane["id"] for lane in story["lanes"] if lane["kind"] == "agent"],
+            [lane["id"] for lane in agent_lanes],
             ["agent-a", "agent-b", "agent-0"],
         )
+        by_owner = {lane["id"]: lane for lane in agent_lanes}
+        self.assertEqual(by_owner["agent-0"]["last_at"], "2026-08-11T00:04:00Z")
+        self.assertEqual(by_owner["agent-0"]["open_runs"], 1)
+        self.assertEqual(by_owner["agent-a"]["open_runs"], 1)
+        self.assertEqual(by_owner["agent-b"]["open_runs"], 0)
 
     def test_requires_one_project_and_bounds_visible_slices(self) -> None:
         for index in range(14, 17):
