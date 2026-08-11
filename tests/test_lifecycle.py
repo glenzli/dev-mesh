@@ -48,6 +48,167 @@ class AgentLifecycleIntegrationTest(TransactionRepositoryCase):
         )
         return Path(message.stdout.strip()).stem
 
+    def claim_checkpoint(self) -> str:
+        return json.dumps(
+            {
+                "base_revision": "claim-run-correlation",
+                "owned_paths": ["src/router.txt"],
+                "validation": "focused lifecycle tests",
+                "known_failure": "none",
+                "next_safe_owner": "agent-a",
+            }
+        )
+
+    def test_claim_lifecycle_is_correlated_with_one_verified_run(self) -> None:
+        self.join("run-a", "agent-a")
+        self.run_coord(
+            "claim",
+            "--scope",
+            "route-a",
+            "--owner",
+            "agent-a",
+            "--run",
+            "run-a",
+            "--task",
+            "Build route A",
+            "--paths",
+            "src/router.txt",
+        )
+        claim_path = self.repo / ".agent-coordination" / "claims" / "route-a.json"
+        self.assertEqual(
+            json.loads(claim_path.read_text(encoding="utf-8"))["run_id"],
+            "run-a",
+        )
+        self.run_coord(
+            "update",
+            "--scope",
+            "route-a",
+            "--owner",
+            "agent-a",
+            "--run",
+            "run-a",
+            "--task",
+            "Finish route A",
+        )
+        self.run_coord(
+            "pause",
+            "--scope",
+            "route-a",
+            "--owner",
+            "agent-a",
+            "--run",
+            "run-a",
+            "--checkpoint",
+            self.claim_checkpoint(),
+            "--resume-condition",
+            "Dependency is ready",
+        )
+        self.run_coord(
+            "resume",
+            "--scope",
+            "route-a",
+            "--owner",
+            "agent-a",
+            "--run",
+            "run-a",
+        )
+        self.run_coord(
+            "release",
+            "--scope",
+            "route-a",
+            "--owner",
+            "agent-a",
+            "--run",
+            "run-a",
+            "--summary",
+            "Route A completed",
+        )
+
+        claim_events = []
+        for path in sorted(
+            (self.repo / ".agent-coordination" / "events").glob("*.json")
+        ):
+            event = json.loads(path.read_text(encoding="utf-8"))
+            if str(event.get("event", "")).startswith("claim-"):
+                claim_events.append(event)
+        self.assertEqual(
+            [event["event"] for event in claim_events],
+            [
+                "claim-created",
+                "claim-updated",
+                "claim-paused",
+                "claim-resumed",
+                "claim-released",
+            ],
+        )
+        self.assertTrue(
+            all(event.get("run_id") == "run-a" for event in claim_events)
+        )
+        self.assertTrue(
+            all(event.get("trace_schema") == 1 for event in claim_events)
+        )
+
+    def test_claim_auto_binds_only_when_one_owner_run_is_active(self) -> None:
+        self.join("run-a", "agent-a")
+        self.run_coord(
+            "claim",
+            "--scope",
+            "route-a",
+            "--owner",
+            "agent-a",
+            "--task",
+            "Build route A",
+            "--paths",
+            "src/router.txt",
+        )
+        claim_path = self.repo / ".agent-coordination" / "claims" / "route-a.json"
+        self.assertEqual(
+            json.loads(claim_path.read_text(encoding="utf-8"))["run_id"],
+            "run-a",
+        )
+
+        self.run_coord(
+            "release",
+            "--scope",
+            "route-a",
+            "--owner",
+            "agent-a",
+            "--summary",
+            "Route A completed",
+        )
+        self.join("run-a-2", "agent-a")
+        ambiguous = self.run_coord(
+            "claim",
+            "--scope",
+            "route-b",
+            "--owner",
+            "agent-a",
+            "--task",
+            "Build route B",
+            "--paths",
+            "src/router.txt",
+            expected=1,
+        )
+        self.assertIn("multiple active agent runs", ambiguous.stderr)
+
+    def test_claim_rejects_a_run_owned_by_another_agent(self) -> None:
+        self.join("run-b", "agent-b")
+        rejected = self.run_coord(
+            "claim",
+            "--scope",
+            "route-a",
+            "--owner",
+            "agent-a",
+            "--run",
+            "run-b",
+            "--task",
+            "Build route A",
+            "--paths",
+            "src/router.txt",
+            expected=1,
+        )
+        self.assertIn("does not belong to", rejected.stderr)
+
     def test_agent_runs_and_handoff_form_a_queryable_chain(self) -> None:
         self.join("run-a", "agent-a")
         self.join("run-b", "agent-b", parent_owner="agent-a")

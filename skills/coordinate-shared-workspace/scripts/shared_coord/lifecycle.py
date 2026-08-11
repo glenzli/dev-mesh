@@ -80,6 +80,59 @@ def require_joined_run(location: Path, run_id: str, owner: str) -> dict[str, obj
     return record
 
 
+def resolve_claim_run(
+    location: Path,
+    *,
+    owner: str,
+    requested_run: str | None,
+    existing_run: object = None,
+    infer_if_unbound: bool = False,
+) -> str | None:
+    """Resolve a diagnostic claim/run correlation without granting authority."""
+
+    normalized_owner = validate_slug(owner, "owner")
+    normalized_requested = optional_correlation_id(requested_run, "run id")
+    normalized_existing = (
+        correlation_id(existing_run, "claim run id")
+        if isinstance(existing_run, str) and existing_run
+        else None
+    )
+    if normalized_requested is not None:
+        require_joined_run(location, normalized_requested, normalized_owner)
+        if (
+            normalized_existing is not None
+            and normalized_existing != normalized_requested
+        ):
+            raise ValueError(
+                f"claim is already correlated with run {normalized_existing!r}; "
+                "release and create a new claim episode instead of rebinding it"
+            )
+        return normalized_requested
+    if normalized_existing is not None:
+        return normalized_existing
+    if not infer_if_unbound:
+        return None
+
+    active_runs: list[str] = []
+    for path in sorted((location / "runs").glob("*.json")):
+        record = read_json(path)
+        run_id = record.get("run_id")
+        if (
+            record.get("owner") == normalized_owner
+            and record.get("status") == "active"
+            and isinstance(run_id, str)
+        ):
+            active_runs.append(correlation_id(run_id, "run id"))
+    if len(active_runs) == 1:
+        return active_runs[0]
+    if len(active_runs) > 1:
+        raise ValueError(
+            "multiple active agent runs belong to this owner; pass --run to "
+            "correlate the claim without guessing"
+        )
+    return None
+
+
 def command_agent_join(arguments: argparse.Namespace) -> int:
     location = initialize(arguments.root, arguments.state_dir)
     run_id = correlation_id(arguments.run, "run id")

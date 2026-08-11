@@ -1051,6 +1051,12 @@ reason。Agent lifecycle 事件还可以包含 run_id、parent_agent_id、task_s
 handoff_id。`log` 提供按关联 id、scope、owner、run、handoff 和 event 的原始查询；`workflow-report` 从事件和 snapshot
 派生争用生命周期、换届、拒绝、耗时与 stalled 状态；`hotspots` 聚合路径和语义资源。
 
+新建 claim 可以显式携带一个已 joined 且 owner 匹配的 `run_id`；只有该 owner 恰好存在一个 active
+run 时 producer 才可自动选择。多个 active run 必须由调用者明确指定，零个 active run 继续允许生成
+兼容的 unbound claim。绑定写入 claim snapshot，并传播到 claim-created/updated/paused/resumed/released
+事件；它只提供观测 correlation，不改变 claim owner 或任何权限。一个已绑定的 claim episode 不得被
+另一 run 静默重绑。历史无 `run_id` claim 不回写，也不得因 owner 相同或时间接近而追溯归入后来 run。
+
 Agent run 是观测 correlation，不是新的权限对象。`agent-joined` 不授予 claim、路径、lease、
 transaction capability 或 publish 权限；`agent-left` 也不隐式释放任何权限。非事务交接沿用
 message/ack：发送方写入 `handoff-offered`，接收方必须先建立自己的 run，再对同一 message 和
@@ -1129,6 +1135,12 @@ authority。
 - `derived`：只从同一 workspace、精确 id 关联的 durable snapshot/archive 安全补出缺失字段；
 - `legacy-unknown`：无法可靠归属，保留原事件但省略 owner lane 或 causal edge。
 
+这三类仍描述协议事实质量。Observer 还可以独立标记 `run_binding: inferred`，但只限完整的 legacy
+claim episode 完全落入同一 owner 的唯一 observed run interval；它保留 `run_id: null`，另写
+`inferred_run_id` 与 presentation-only 依据。重叠 run、缺少 join、claim 只有窗口内 update/release、
+开放 claim 对应已关闭 run 或任一边界不完整时都不得推断。该挂接只帮助阅读，不产生 causal edge、
+权限、恢复事实或 source event 修正。
+
 Observer 可以删除并重建自己的派生 storyline cache，但不得为了新图修改 source event mirror 的
 首次 payload。当前不需要清理历史 `.agent-coordination/events/` 或中央 SQLite events；未来若数据量
 要求 retention/compaction，必须另行定义覆盖范围、digest/checkpoint、可验证重放边界和失败恢复，
@@ -1152,16 +1164,26 @@ last attempt、last success、last error、cycle 数与尚未镜像的 source ev
 
 storyline 是独立的语义 projection，不是把 event timeline 横过来画。它把明确的 run lifecycle、
 claim episode、handoff、contention decision、transaction lifecycle、work disposition 和 publish
-checkpoint 折叠成有界工作切片；默认最多显示 28 个，硬上限 60 个。布局顶部以 canonical branch/
-HEAD rail 表达共享 Git 上下文，每个真实 owner 一条紧凑 swimlane；temporary transaction branch 从
-对应 owner lane 的 base checkpoint 分叉，publish 后回到 canonical rail。硬等待画成带 `waiting`
-区间的依赖边，转做别事则在原 work span 暂停后连接 alternate work span。message、handoff、
-reassignment 和 contention 作为跨 lane 关系，而不是伪造一条 coordination owner lane；只有无法从
-immutable event 可靠归属到 work owner 的全局 Git 事实才进入 system/canonical rail。相同 lane 的
-连线只表示展示顺序，不声明因果；handoff 必须匹配 source/target run id，contention 必须匹配 owner
+checkpoint 折叠成有界动作节点；默认最多读取 28 个可见要点，硬上限 60 个。默认展示不是整个时间窗
+的 owner 清单，而是优先级最高的显式协作片段：stalled contention / wait / blocked 优先，其次是
+handoff / reassignment、transaction fork/rejoin、diversion 和 message。窗口统计必须分别报告 owner
+label 数、真实 joined run 数与观测到的 run 峰值并发，不能把按任务命名的 owner 都称作同时在线 Agent。
+布局顶部以 canonical branch/HEAD rail 表达共享 Git 上下文，只有该片段涉及的 owner 获得紧凑
+swimlane；不画跨 run 的 owner 生命线，而为每个 observed run 绘制一段有方向的连续执行主干。空心
+播放节点是主干起点，native action 落在主干上；waiting/diverted 覆盖对应中断区间，同时动作可从同一
+时刻短距离展开。完整 legacy claim 仅按上一节的唯一 interval 规则用点线挂到主干，并明确标记为
+presentation inference；其他无唯一 correlation 的 claim 独立显示。该主干表达 run 存续与阅读顺序，
+不得作为额外因果或依赖证据。同一 run 在同一记录时刻创建的首个 claim 作为起点的小型复合 badge，
+而不是另画一个看似并列的起点。temporary transaction branch 从对应 owner lane
+的 base checkpoint 分叉，publish 后回到 canonical rail；只有 canonical、真实 temporary branch 与
+显式 dependency/message/handoff/reassignment/contention 关系在此之外保留线形。
+message、handoff、reassignment 和 contention 作为跨 lane 关系，而不是伪造一条 coordination owner
+lane；只有无法从 immutable event 可靠归属到 work owner 的全局 Git 事实才进入 system/canonical
+rail。节点的水平顺序只表示时间，不声明因果；handoff 必须匹配 source/target run id，contention 必须匹配 owner
 与 scope，decision 必须匹配 contention id，transaction fork/rejoin 必须匹配 transaction id、branch、
-base 和 canonical branch。没有这些 correlation 就省略连线，不从路径相似、同名 owner、时间接近
-或 transaction id 命名推断。节点第一层只显示动作、对象和状态，路径、semantic resource、lease、
+base 和 canonical branch。没有这些 correlation 就省略因果连线，不从路径相似、同名 owner、时间接近
+或 transaction id 命名推断；唯一完整 run interval 的 presentation attachment 是明确受限的例外，
+且不改变任何 causal relation。节点第一层只显示动作、对象和状态，路径、semantic resource、lease、
 event type 与原始 id 只在点击检查器中出现。默认画布用紧凑 dot node 表达这些切片，hover 或键盘
 focus 才浮出 action、owner、status、time 简卡；sequence、branching 和 cross-lane dependency 的
 整体形状优先于常驻文字，点击仍把完整事实固定到 inspector。
@@ -1539,6 +1561,13 @@ validation binding、shadow refresh、fast-forward publish、handoff、abort 和
 - diagnostic-only `waiting` / `diverted` work disposition 及 resume correlation；
 - additive `trace_schema` 和 native/derived/legacy-unknown 兼容策略；
 - 历史 immutable event 不回写、不删除，retention/compaction 继续保持独立设计边界。
+
+Observer consumer 侧也已对齐 schema v2：默认 storyline 聚焦一个显式协作片段，由 canonical
+rail、相关 owner lane、连续 run execution spine、action node、checkpoint marker 与显式 relation
+组成；native transaction 才显示 fork/rejoin，legacy claim 只允许 presentation-only 的唯一完整
+run-window 挂接，不猜测分支因果，waiting/diverted、message、handoff、reassignment 和 contention
+均可独立检查。窗口 owner label、joined run 与峰值并发分别统计，避免把顺序任务误画成大量同时
+在线 Agent。
 
 至此 direct claim、distributed semantic arbitration、temporary checkout、publish、cleanup、
 recovery、queue、fairness、external shared mutation 和 audit 已形成第一版核心闭环。下一阶段应以真实多 Agent 工作流验证

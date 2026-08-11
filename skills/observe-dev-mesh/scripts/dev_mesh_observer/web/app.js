@@ -5,13 +5,13 @@ const state = {
   status: null,
   report: null,
   storyline: null,
-  graph: null,
   issues: [],
   since: "48h",
   graphWorkspace: "",
-  projectView: "storyline",
   refreshGeneration: 0,
   timer: null,
+  observedEventTotal: null,
+  recentIngestion: { count: 0, at: 0 },
 };
 
 const $ = (id) => document.getElementById(id);
@@ -79,6 +79,8 @@ function renderCollectorStatus() {
   const container = $("collector-state");
   const label = $("collector-state-label");
   const pending = Number(collector.pending_events || 0);
+  const recent = state.recentIngestion;
+  const hasRecentIngestion = recent.count > 0 && Date.now() - recent.at < 15000;
   container.classList.remove("online", "warning", "error");
 
   if (collector.last_error) {
@@ -90,7 +92,9 @@ function renderCollectorStatus() {
   container.title = "";
   if (collector.running) {
     container.classList.add("online");
-    label.textContent = t("collector.collecting");
+    label.textContent = hasRecentIngestion
+      ? t("collector.collectingWithDelta", { count: formatNumber(recent.count) })
+      : t("collector.collecting");
     return;
   }
   if (pending > 0) {
@@ -108,7 +112,12 @@ function renderCollectorStatus() {
       Math.floor((Date.now() - new Date(collector.last_success_at).getTime()) / 1000),
     );
     container.classList.add("online");
-    label.textContent = t("collector.live", { seconds: formatNumber(elapsed) });
+    label.textContent = hasRecentIngestion
+      ? t("collector.liveWithDelta", {
+        count: formatNumber(recent.count),
+        seconds: formatNumber(elapsed),
+      })
+      : t("collector.live", { seconds: formatNumber(elapsed) });
     return;
   }
   container.classList.add("warning");
@@ -250,7 +259,6 @@ function renderFilterOptions() {
   ) {
     state.graphWorkspace = "";
     state.storyline = null;
-    state.graph = null;
   }
   populateSelect(
     "filter-workspace",
@@ -264,38 +272,25 @@ function renderFilterOptions() {
   populateSelect(
     "graph-workspace",
     t("projectOverview.selector"),
-    workspaces.map((workspace) => ({ value: workspace.workspace_id, label: shortPath(workspace.workspace_root) })),
+    workspaces.map((workspace) => ({
+      value: workspace.workspace_id,
+      label: shortPath(workspace.workspace_root),
+    })),
     state.graphWorkspace,
   );
 }
 
 function selectGraphWorkspace(workspaceId) {
   state.graphWorkspace = workspaceId || "";
-  state.projectView = "storyline";
   state.storyline = null;
-  state.graph = null;
   $("graph-workspace").value = state.graphWorkspace;
-  refreshDashboard();
-}
-
-function selectProjectView(view) {
-  if (!state.graphWorkspace || !["storyline", "entities"].includes(view)) return;
-  state.projectView = view;
   refreshDashboard();
 }
 
 function renderCollaborationView() {
   const overviewVisible = !state.graphWorkspace;
-  const storylineVisible = !overviewVisible && state.projectView === "storyline";
-  const graphVisible = !overviewVisible && state.projectView === "entities";
   $("project-overview").hidden = !overviewVisible;
-  $("project-view-modes").hidden = overviewVisible;
-  $("storyline-layout").hidden = !storylineVisible;
-  $("graph-layout").hidden = !graphVisible;
-  document.querySelectorAll("[data-project-view]").forEach((button) => {
-    button.classList.toggle("active", button.dataset.projectView === state.projectView);
-    button.setAttribute("aria-pressed", button.dataset.projectView === state.projectView ? "true" : "false");
-  });
+  $("storyline-layout").hidden = overviewVisible;
   if (overviewVisible) {
     const overview = state.report?.project_overview || {};
     const summary = overview.summary || {};
@@ -310,8 +305,11 @@ function renderCollaborationView() {
     );
     return;
   }
-  if (storylineVisible) window.DevMeshStorylineView.render(state.storyline || {});
-  else window.DevMeshGraphView.render(state.graph || {});
+  const project = (state.report?.project_overview?.projects || [])
+    .find((item) => item.workspace_id === state.graphWorkspace);
+  window.DevMeshStorylineView.render(state.storyline || {}, {
+    latestProjectAt: project?.last_activity_at || null,
+  });
 }
 
 function renderIssues() {
@@ -407,32 +405,32 @@ async function refreshDashboard({ quiet = false } = {}) {
   if (!quiet) setConnection("", t("connection.refreshing"));
   try {
     let storylineRequest = Promise.resolve(null);
-    let graphRequest = Promise.resolve(null);
     if (state.graphWorkspace) {
       const parameters = new URLSearchParams({
         since: state.since,
         workspace_id: state.graphWorkspace,
       });
-      if (state.projectView === "storyline") {
-        parameters.set("limit", "28");
-        storylineRequest = api(`/api/v1/storyline?${parameters}`);
-      } else {
-        parameters.set("limit", "120");
-        graphRequest = api(`/api/v1/graph?${parameters}`);
-      }
+      parameters.set("limit", "28");
+      storylineRequest = api(`/api/v1/storyline?${parameters}`);
     }
-    const [status, report, storyline, graph, issues] = await Promise.all([
+    const [status, report, storyline, issues] = await Promise.all([
       api("/api/v1/status"),
       api(`/api/v1/report?since=${encodeURIComponent(state.since)}&limit=10`),
       storylineRequest,
-      graphRequest,
       api("/api/v1/issues?limit=100"),
     ]);
     if (generation !== state.refreshGeneration) return;
+    const eventTotal = Number(status.summary?.events || 0);
+    if (state.observedEventTotal !== null && eventTotal > state.observedEventTotal) {
+      state.recentIngestion = {
+        count: eventTotal - state.observedEventTotal,
+        at: Date.now(),
+      };
+    }
+    state.observedEventTotal = eventTotal;
     state.status = status;
     state.report = report;
     state.storyline = storyline;
-    state.graph = graph;
     state.issues = issues.issues;
     renderDashboard();
     await loadEvents(generation);
@@ -521,9 +519,6 @@ $("since-select").addEventListener("change", (event) => {
 });
 $("graph-workspace").addEventListener("change", (event) => {
   selectGraphWorkspace(event.target.value);
-});
-document.querySelectorAll("[data-project-view]").forEach((button) => {
-  button.addEventListener("click", () => selectProjectView(button.dataset.projectView));
 });
 $("refresh-button").addEventListener("click", () => refreshDashboard());
 $("collect-button").addEventListener("click", collectNow);

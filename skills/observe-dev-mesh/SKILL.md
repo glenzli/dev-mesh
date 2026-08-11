@@ -79,19 +79,49 @@ remote interfaces. Use the dashboard to inspect summaries, workspaces, open runs
 activity rankings, explicit conflict signals, conflict-related paths, transaction lifecycles,
 protocol-use heuristics, stalled active contentions, a bounded causal collaboration graph, filtered
 event timelines, raw event details, and collection issues. The collaboration section defaults to a
-per-workspace project overview. Select one workspace to load its bounded graph of Agent, handoff,
-contention, transaction, and published commit entities; it is not a one-node-per-log event view.
-The selected project defaults to a chronological collaboration storyline: Agent swimlanes contain
-task and claim slices, a coordination lane exposes explicit contention and decision points, and a
-system lane shows transaction and publish checkpoints. Handoff, contention, decision, and publish
-links require their recorded protocol ids; same-lane links mean chronological sequence only. Paths,
-semantic resources, event names, lease facts, and ids remain in the click inspector instead of the
-initial canvas. Use **Entity diagnostics** when the lower-level Agent/handoff/contention/transaction
-topology is needed.
-Storyline nodes are compact dots by default. Hover or keyboard-focus a dot for a bounded action,
-owner, status, and time card; select it to keep the full protocol facts in the inspector. Dot
-spacing is intentionally denser than the entity graph so the visible shape exposes sequences and
-cross-lane intersections before labels.
+per-workspace project overview. Select one workspace to load its chronological collaboration
+storyline. The default canvas focuses one explicit collaboration episode instead of treating every
+owner label in the selected window as a simultaneously live Agent. The header distinguishes owner
+labels, joined runs, and peak observed run concurrency. A canonical Git rail stays at the top; only
+owners attached to the focused contention, wait, handoff, transaction, or message receive lanes.
+Each observed Agent run is a neutral execution spine with an outlined play node at its start and an
+arrow showing reading direction. Agent identity comes from its numbered lane, never from color.
+Colors encode workflow meaning: a temporary transaction becomes a distinct offset branch inside
+the responsible Agent lane, publication turns its rejoin checkpoint green, waiting is amber,
+contention is red, diversion is violet, and communication is cyan. The Agent's main execution spine
+is cut while an explicitly correlated transaction branch is active, then resumes after rejoin.
+Native action nodes sit on that spine. A complete
+legacy claim episode may attach with a dotted stem only when it falls inside exactly one complete
+run interval for the same owner; this is labeled `inferred`, never fills authoritative `run_id`, and
+disappears when run intervals overlap or an episode boundary is unknown. Other unbound claims remain
+independent dashed nodes. A claim created for the same explicit run at the same recorded moment as
+the session start becomes a badge attached to the session node rather than a second floating point.
+Actions and checkpoints carrying the same verified `transaction_id` sit directly on that temporary
+branch. Give a local transaction one Git-graph-style fork node on the Agent spine, a clean offset
+branch, and one green rejoin node before neutral progress resumes. Its short entry and rejoin bends
+may be smooth curves, but ordinary cross-owner relations stay straight when aligned and use 90-degree
+orthogonal paths when they change lanes. Keep every arrowhead the same semantic color as its line.
+Use the canonical lane as an aggregate branch topology: keep the canonical trunk visible and stack
+one derived branch arc per overlapping recorded transaction so concurrent branch count and explicit
+merge times are visible without inventing a cross-project relationship.
+Hide the neutral run spine while a waiting, diversion, or temporary branch interval owns that time;
+let the semantic segment carry direction, then resume the neutral spine afterward.
+Simultaneous actions can branch locally from one moment without inventing task causality. Only
+the canonical Git context, a native short-lived transaction branch owned by its responsible Agent,
+and explicit dependency or
+communication relations otherwise remain lines. A transaction forks from its recorded base and
+rejoins only after its recorded publish. There is no invented
+coordination owner. Legacy events never gain guessed branch, dependency, or authority facts.
+Keep relation lines free of persistent text. Distinguish handoff, message, waiting, diversion,
+contention, run progress, and transaction branches through color, dash pattern, arrow shape, and the
+bilingual legend; retain their exact label and status in hover cards and the inspector.
+Number visible owner lanes by first appearance (`Actor 01`, `Actor 02`, and so on) because protocol
+owner ids are coordination identities, not guaranteed Agent display names. Keep the raw owner id in
+hover cards and the inspector. Make storyline labels, nodes, and the bilingual legend comfortably
+readable at normal desktop scale. Hover or keyboard-focus an item for a bounded action, owner,
+status, and time card; select it to keep the full protocol facts in the inspector. Keep moment
+spacing dense enough that forks, rejoins, waits, diversion, notification, and cross-lane
+intersections remain legible without expanding into a topology dashboard.
 Do not describe the overview as a cross-project graph. The current event contract has no
 cross-workspace correlation, so the console keeps same-name agents and all edges workspace-scoped
 and explicitly reports that cross-project tracking is unavailable. Never infer such relationships
@@ -101,12 +131,17 @@ solo-protocol runs as a closed-run heuristic only; open runs remain unclassified
 grants no authority. The console follows the operating-system light or dark appearance by default,
 offers an explicit theme override, and ships Chinese and English locale catalogs whose choice
 remains local to the browser.
-
+Keep the console operator-first: place the observation window and collection actions in the top
+bar, omit marketing-style hero copy, and keep metric, diagnostic, activity, and timeline cards dense
+enough for scanning. Preserve extra vertical separation inside storyline lanes when cross-owner
+relations or inferred attachments would otherwise crowd adjacent progress spines.
 The console performs one collection immediately on startup and then repeats it at the configured
 interval. It serializes automatic collection, **Collect now**, and **Add workspace** through one
 operation slot. Set `--collect-interval 0` to disable the background loop. The header reports the
-last successful cycle, collection errors, and source event files still pending in the catalog so a
-fresh-looking dashboard cannot silently hide ingestion lag.
+last successful cycle, recent ingestion deltas, collection errors, and source event files still
+pending in the catalog so a fresh-looking dashboard cannot silently hide ingestion lag. A selected
+project storyline also reports its latest recorded event time: global ingestion may be live while
+that one project is quiet.
 
 Use **Add workspace** only after the user identifies the exact workspace or parent-directory path.
 The dialog treats that explicit path as a new allowlisted scan root, bounds recursive discovery by

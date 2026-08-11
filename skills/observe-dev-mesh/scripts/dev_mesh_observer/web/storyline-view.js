@@ -5,12 +5,8 @@
   const preferences = window.DevMeshPreferences;
   const $ = (id) => document.getElementById(id);
   const t = (key, variables) => preferences.t(key, variables);
-  const NODE_RADIUS = 6;
-  const COLUMN_STEP = 36;
-  const LANE_HEIGHT = 36;
-  const TOP_OFFSET = 28;
-  const TOOLTIP_WIDTH = 214;
-  let currentStory = { lanes: [], nodes: [], links: [], summary: {} };
+  const TOOLTIP_WIDTH = 244;
+  let currentStory = { lanes: [], spans: [], markers: [], relations: [], summary: {}, focus: {} };
   let selectedId = null;
   let renderedWorkspace = null;
 
@@ -23,8 +19,24 @@
 
   function svgNode(tag, attributes = {}) {
     const element = document.createElementNS(SVG_NS, tag);
-    Object.entries(attributes).forEach(([name, value]) => element.setAttribute(name, String(value)));
+    Object.entries(attributes).forEach(([name, value]) => {
+      if (value !== undefined && value !== null) element.setAttribute(name, String(value));
+    });
     return element;
+  }
+
+  function arrowMarker(id, className) {
+    const marker = svgNode("marker", {
+      id,
+      viewBox: "0 0 10 10",
+      refX: "9",
+      refY: "5",
+      markerWidth: "5",
+      markerHeight: "5",
+      orient: "auto-start-reverse",
+    });
+    marker.append(svgNode("path", { d: "M 0 0 L 10 5 L 0 10 z", class: className }));
+    return marker;
   }
 
   function translate(prefix, value, fallback = value) {
@@ -33,21 +45,21 @@
     return translated === key ? String(fallback || value || "") : translated;
   }
 
-  function statusLabel(status) {
-    return translate("storyline.status", status, translate("graph.status", status, status));
+  function statusLabel(value) {
+    return translate("storyline.status", value, translate("graph.status", value, value));
   }
 
-  function typeLabel(type) {
-    return translate("storyline.type", type, type);
+  function kindLabel(value) {
+    return translate("storyline.type", value, value);
   }
 
-  function laneLabel(lane) {
-    if (lane.kind === "coordination") return t("storyline.lane.coordination");
+  function laneLabel(lane, actorNumber = null) {
+    if (lane.kind === "canonical") return t("storyline.lane.canonical", { branch: lane.label });
     if (lane.kind === "system") return t("storyline.lane.system");
-    return lane.label;
+    return t("storyline.lane.actor", { index: String(actorNumber || 0).padStart(2, "0") });
   }
 
-  function formatTime(value) {
+  function formatTime(value, seconds = false) {
     if (!value) return t("time.unknown");
     const date = new Date(value);
     if (Number.isNaN(date.getTime())) return String(value);
@@ -56,58 +68,77 @@
       day: "2-digit",
       hour: "2-digit",
       minute: "2-digit",
+      second: seconds ? "2-digit" : undefined,
       hour12: false,
     }).format(date);
   }
 
-  function truncate(value, maximum) {
-    const text = String(value || "");
-    return text.length > maximum ? `${text.slice(0, maximum - 1)}…` : text;
+  function latestRecordedAt(story) {
+    const values = [
+      ...(story.spans || []).flatMap((item) => [item.started_at, item.ended_at]),
+      ...(story.markers || []).map((item) => item.at),
+      ...(story.relations || []).map((item) => item.at),
+    ].filter(Boolean);
+    return values.sort((left, right) => String(left).localeCompare(String(right))).at(-1) || null;
   }
 
   function displayLabel(item) {
-    const details = item.details || {};
-    if (item.type === "handoff") {
-      const source = details.source_owner || "?";
-      const target = details.target_owner || "?";
-      return `${source} → ${target}`;
-    }
-    if (item.type === "contention") return t("storyline.intersection");
-    if (item.type === "decision") return t("storyline.decision", { mode: item.label });
-    if (item.type === "transaction") return truncate(item.label, 18);
-    if (item.type === "publish") return t("storyline.publish", { commit: item.label });
-    return item.label;
+    if (item.kind === "fork") return t("storyline.relation.fork");
+    if (item.kind === "rejoin") return t("storyline.relation.rejoin");
+    if (item.kind === "waits-for" || item.kind === "blocked") return t("storyline.relation.waiting");
+    if (item.kind === "diverts-to") return t("storyline.relation.diverted");
+    if (item.kind === "reassigned" || item.kind === "handoff") return t("storyline.relation.handoff");
+    if (item.kind === "message") return t("storyline.relation.message");
+    if (item.kind === "contention") return t("storyline.intersection");
+    return item.label || item.id;
+  }
+
+  function itemOwner(item) {
+    if (item.owner) return item.owner;
+    if (item.lane) return item.lane;
+    if (item.source_owner && item.target_owner) return `${item.source_owner} → ${item.target_owner}`;
+    if (item.owners?.length) return item.owners.join(" · ");
+    return "__canonical__";
   }
 
   function displayOwner(item) {
-    if (item.owner === "__coordination__") return t("storyline.lane.coordination");
-    if (item.owner === "__system__") return t("storyline.lane.system");
-    return item.owner;
+    const owner = itemOwner(item);
+    if (owner === "__canonical__") return t("storyline.lane.canonical", { branch: "" });
+    if (owner === "__system__") return t("storyline.lane.system");
+    return owner;
+  }
+
+  function allItems() {
+    return [...currentStory.spans, ...currentStory.markers, ...currentStory.relations];
+  }
+
+  function itemById(identifier) {
+    return allItems().find((item) => item.id === identifier);
   }
 
   function hideTooltip() {
     const tooltip = $("storyline-tooltip");
     tooltip.hidden = true;
-    tooltip.removeAttribute("data-node-id");
+    tooltip.removeAttribute("data-item-id");
   }
 
   function showTooltip(item, position, canvasWidth) {
     const tooltip = $("storyline-tooltip");
     const heading = htmlNode("div", "storyline-tooltip-heading");
     heading.append(
-      htmlNode("span", "", typeLabel(item.type)),
+      htmlNode("span", "", kindLabel(item.kind)),
       htmlNode("span", `status-${item.status || "observed"}`, statusLabel(item.status)),
     );
-    tooltip.className = `storyline-tooltip type-${item.type} status-${item.status || "observed"}`;
+    tooltip.className = `storyline-tooltip type-${item.kind} status-${item.status || "observed"}`;
     tooltip.replaceChildren(
       heading,
       htmlNode("strong", "", displayLabel(item)),
       htmlNode("span", "storyline-tooltip-owner", displayOwner(item)),
-      htmlNode("time", "", formatTime(item.started_at)),
+      htmlNode("time", "", formatTime(item.started_at || item.at, true)),
     );
-    tooltip.dataset.nodeId = item.id;
-    tooltip.style.left = `${Math.max(8, Math.min(position.x + 14, canvasWidth - TOOLTIP_WIDTH - 8))}px`;
-    tooltip.style.top = `${position.y > 112 ? position.y - 94 : position.y + 16}px`;
+    tooltip.dataset.itemId = item.id;
+    tooltip.style.left = `${Math.max(8, Math.min(position.x + 12, canvasWidth - TOOLTIP_WIDTH - 8))}px`;
+    tooltip.style.top = `${Math.max(8, position.y > 104 ? position.y - 92 : position.y + 15)}px`;
     tooltip.hidden = false;
   }
 
@@ -118,8 +149,7 @@
   }
 
   function renderEmptyInspector() {
-    const target = $("storyline-inspector");
-    target.replaceChildren(
+    $("storyline-inspector").replaceChildren(
       htmlNode("p", "kicker", t("storyline.inspectorKicker")),
       htmlNode("h3", "", t("storyline.selectNode")),
       htmlNode("p", "", t("storyline.selectHint")),
@@ -128,245 +158,470 @@
 
   function renderInspector(item) {
     const target = $("storyline-inspector");
-    const owner = item.owner === "__coordination__"
-      ? t("storyline.lane.coordination")
-      : item.owner === "__system__"
-        ? t("storyline.lane.system")
-        : item.owner;
-    target.replaceChildren();
-    target.append(
+    target.replaceChildren(
       htmlNode("p", "kicker", t("storyline.inspectorKicker")),
       htmlNode("h3", "", displayLabel(item)),
-      htmlNode("p", "inspector-subtitle", `${typeLabel(item.type)} · ${statusLabel(item.status)}`),
+      htmlNode("p", "inspector-subtitle", `${kindLabel(item.kind)} · ${statusLabel(item.status)}`),
     );
     const details = htmlNode("dl", "inspector-details");
     details.append(
-      detailRow(t("storyline.detail.owner"), owner),
-      detailRow(t("storyline.detail.time"), item.started_at === item.last_at
-        ? formatTime(item.started_at)
-        : `${formatTime(item.started_at)} → ${formatTime(item.last_at)}`),
-      detailRow(t("storyline.detail.events"), item.event_count || 0),
+      detailRow(t("storyline.detail.owner"), displayOwner(item)),
+      detailRow(t("storyline.detail.time"), item.ended_at
+        ? `${formatTime(item.started_at, true)} → ${formatTime(item.ended_at, true)}`
+        : formatTime(item.started_at || item.at, true)),
     );
+    const displayRun = item.run_id || item.inferred_run_id;
+    if (displayRun) {
+      details.append(detailRow(t("storyline.detail.run_id"), displayRun));
+    }
+    if (
+      ["session", "claim", "waiting", "diverted"].includes(item.kind)
+      && (!item.run_id || item.run_binding === "inferred")
+    ) {
+      details.append(detailRow(
+        t("storyline.detail.run_binding"),
+        translate("storyline.runBinding", item.run_binding || "unbound", item.run_binding || "unbound"),
+      ));
+    }
+    if (item.trace_quality) {
+      details.append(
+        detailRow(
+          t("storyline.detail.trace_quality"),
+          translate("storyline.quality", item.trace_quality, item.trace_quality),
+        ),
+      );
+    }
+    if (item.evidence) details.append(detailRow(t("storyline.detail.evidence"), item.evidence));
+    if (item.event_count) details.append(detailRow(t("storyline.detail.events"), item.event_count));
     const values = item.details || {};
-    ["runs", "scopes", "paths", "semantic_resources", "event_types", "missing_responses"].forEach((key) => {
-      const entries = Array.isArray(values[key]) ? values[key] : [];
-      if (entries.length) details.append(detailRow(t(`storyline.detail.${key}`), entries.join(" · ")));
-    });
-    [
-      "parent_owner", "source_owner", "target_owner", "intent", "outcome", "summary",
-      "recommendation", "recommendation_reason", "coordinator", "lease_until", "reason",
-      "decision_revision", "transaction_id", "candidate", "request_id", "request_status",
-    ].forEach((key) => {
-      if (values[key] !== undefined && values[key] !== null && values[key] !== "") {
-        details.append(detailRow(t(`storyline.detail.${key}`), values[key]));
-      }
+    Object.entries(values).forEach(([key, value]) => {
+      if (value === null || value === undefined || value === "") return;
+      const rendered = ["run_inference", "run_inference_authority"].includes(key)
+        ? translate(`storyline.${key}`, value, value)
+        : Array.isArray(value)
+        ? value.map((entry) => typeof entry === "object" ? JSON.stringify(entry) : entry).join(" · ")
+        : typeof value === "object" ? JSON.stringify(value) : value;
+      if (rendered !== "") details.append(detailRow(t(`storyline.detail.${key}`), rendered));
     });
     target.append(details);
   }
 
-  function selectNode(identifier) {
+  function selectItem(identifier) {
     selectedId = identifier;
-    document.querySelectorAll(".story-node").forEach((element) => {
-      element.classList.toggle("selected", element.dataset.nodeId === identifier);
+    document.querySelectorAll(".trace-item").forEach((element) => {
+      element.classList.toggle("selected", element.dataset.itemId === identifier);
     });
-    const item = currentStory.nodes.find((candidate) => candidate.id === identifier);
+    const item = itemById(identifier);
     if (item) renderInspector(item);
   }
 
-  function renderLaneLabels(lanes) {
+  function makeInteractive(element, item, position, width) {
+    element.classList.add("trace-item");
+    element.dataset.itemId = item.id;
+    element.setAttribute("tabindex", "0");
+    element.setAttribute("role", "button");
+    element.setAttribute("aria-label", `${kindLabel(item.kind)} ${displayLabel(item)}, ${statusLabel(item.status)}`);
+    element.addEventListener("mouseenter", () => showTooltip(item, position, width));
+    element.addEventListener("mouseleave", () => {
+      if (document.activeElement !== element) hideTooltip();
+    });
+    element.addEventListener("focus", () => showTooltip(item, position, width));
+    element.addEventListener("blur", hideTooltip);
+    element.addEventListener("click", () => selectItem(item.id));
+    element.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        selectItem(item.id);
+      }
+    });
+  }
+
+  function renderLaneLabels(story, layout) {
     const target = $("storyline-lanes");
     target.replaceChildren();
-    target.style.paddingTop = `${TOP_OFFSET}px`;
-    lanes.forEach((lane) => {
-      const row = htmlNode("div", `storyline-lane-label status-${lane.status || "observed"}`);
-      row.style.height = `${LANE_HEIGHT}px`;
+    let actorNumber = 0;
+    story.lanes.forEach((lane) => {
+      const geometry = layout.laneGeometry.get(lane.id);
+      const row = htmlNode("div", `storyline-lane-label lane-${lane.kind} status-${lane.status || "observed"}`);
+      row.style.height = `${geometry?.height || 48}px`;
+      if (lane.kind === "agent") {
+        actorNumber += 1;
+      }
       row.append(
-        htmlNode("strong", "", laneLabel(lane)),
-        htmlNode("span", "", t("storyline.laneItems", { count: lane.node_count || 0 })),
+        htmlNode("strong", "", laneLabel(lane, actorNumber)),
+        htmlNode("span", "", lane.kind === "agent"
+          ? t("storyline.laneStarted", { time: formatTime(lane.started_at) })
+          : t("storyline.laneItems", { count: lane.item_count || 0 })),
       );
       target.append(row);
     });
   }
 
-  function layout(story) {
-    const laneIndex = new Map(story.lanes.map((lane, index) => [lane.id, index]));
-    const ordered = [...story.nodes].sort((left, right) => {
-      const time = String(left.started_at || "").localeCompare(String(right.started_at || ""));
-      return time || String(left.id).localeCompare(String(right.id));
-    });
-    const positions = new Map();
-    ordered.forEach((item, index) => {
-      positions.set(item.id, {
-        x: 24 + index * COLUMN_STEP,
-        y: TOP_OFFSET + (laneIndex.get(item.owner) || 0) * LANE_HEIGHT + LANE_HEIGHT / 2,
-      });
-    });
-    return {
-      positions,
-      width: Math.max(820, 48 + Math.max(0, ordered.length - 1) * COLUMN_STEP),
-      height: Math.max(260, TOP_OFFSET + story.lanes.length * LANE_HEIGHT + 20),
-    };
-  }
-
-  function drawBackground(svg, story, width) {
-    const layer = svgNode("g", { class: "story-lane-guides" });
+  function drawGuides(svg, story, layout) {
+    const layer = svgNode("g", { class: "trace-guides" });
     story.lanes.forEach((lane, index) => {
-      const y = TOP_OFFSET + index * LANE_HEIGHT;
+      const geometry = layout.laneGeometry.get(lane.id);
+      if (!geometry) return;
       layer.append(svgNode("rect", {
         x: 0,
-        y,
-        width,
-        height: LANE_HEIGHT,
-        class: index % 2 ? "lane-even" : "lane-odd",
+        y: geometry.y,
+        width: layout.width,
+        height: geometry.height,
+        class: `lane-background lane-${lane.kind} ${index % 2 ? "lane-even" : "lane-odd"}`,
       }));
-      layer.append(svgNode("line", { x1: 0, y1: y + LANE_HEIGHT, x2: width, y2: y + LANE_HEIGHT }));
-    });
-    svg.append(layer);
-  }
-
-  function drawTimeRuler(svg, story, positions, width) {
-    const layer = svgNode("g", { class: "story-time-ruler" });
-    layer.append(svgNode("line", { x1: 24, y1: 24, x2: width - 24, y2: 24 }));
-    story.nodes.forEach((item, index) => {
-      const position = positions.get(item.id);
-      if (!position) return;
-      layer.append(svgNode("line", { x1: position.x, y1: 20, x2: position.x, y2: 28 }));
-      if (index % 4 === 0 || story.nodes.length < 12) {
-        const label = svgNode("text", { x: position.x + 5, y: 17 });
-        label.textContent = formatTime(item.started_at);
-        layer.append(label);
+      layer.append(svgNode("line", {
+        x1: 0,
+        y1: geometry.y + geometry.height,
+        x2: layout.width,
+        y2: geometry.y + geometry.height,
+      }));
+      if (lane.kind === "canonical") {
+        layer.append(svgNode("line", {
+          x1: 12,
+          y1: geometry.center,
+          x2: layout.width - 14,
+          y2: geometry.center,
+          class: "canonical-rail",
+        }));
       }
     });
+    const tickInterval = layout.moments.length > 6 ? 3 : 2;
+    layout.momentGeometry.forEach(({ moment, x }, index) => {
+      if (index % tickInterval !== 0) return;
+      const tick = svgNode("text", { x: x + 3, y: 10, class: "trace-time" });
+      tick.textContent = formatTime(moment);
+      layer.append(tick);
+    });
     svg.append(layer);
   }
 
-  function drawLinks(svg, story, positions) {
-    const layer = svgNode("g", { class: "story-links" });
-    story.links.forEach((item) => {
-      const source = positions.get(item.source);
-      const target = positions.get(item.target);
-      if (!source || !target) return;
-      const direction = target.x >= source.x ? 1 : -1;
-      const startX = source.x + NODE_RADIUS * direction;
-      const startY = source.y;
-      const endX = target.x - NODE_RADIUS * direction;
-      const endY = target.y;
-      const delta = Math.max(18, Math.abs(endX - startX) * 0.4);
-      const path = svgNode("path", {
-        class: `story-link link-${item.type}`,
-        d: `M ${startX} ${startY} C ${startX + delta * direction} ${startY}, ${endX - delta * direction} ${endY}, ${endX} ${endY}`,
-        "marker-end": "url(#story-arrow)",
+  function canonicalBranchPath(branch) {
+    const span = Math.max(1, branch.x2 - branch.x1);
+    const bend = Math.min(9, Math.max(5, span / 6));
+    const branchStart = branch.x1 + bend * 1.7;
+    const branchDepth = branch.y - branch.railY;
+    const forkCurve = `M ${branch.x1} ${branch.railY} C ${branch.x1} ${branch.railY + branchDepth * 0.6} ${branchStart - bend * 0.55} ${branch.y} ${branchStart} ${branch.y}`;
+    if (!branch.merged) {
+      return `${forkCurve} H ${branch.x2}`;
+    }
+    const branchEnd = branch.x2 - bend * 1.7;
+    return `${forkCurve} H ${branchEnd} C ${branch.x2 - bend} ${branch.y} ${branch.x2 - bend} ${branch.railY} ${branch.x2} ${branch.railY}`;
+  }
+
+  function drawCanonicalBranches(svg, layout) {
+    const layer = svgNode("g", { class: "canonical-branch-graph" });
+    layout.canonicalBranchGeometry.forEach((branch) => {
+      layer.append(
+        svgNode("path", {
+          class: `canonical-branch-path status-${branch.status || "active"}`,
+          d: canonicalBranchPath(branch),
+        }),
+        svgNode("circle", {
+          class: "canonical-fork-node",
+          cx: branch.x1,
+          cy: branch.railY,
+          r: 3.6,
+        }),
+        svgNode("circle", {
+          class: branch.merged ? "canonical-rejoin-node" : "canonical-branch-tip",
+          cx: branch.x2,
+          cy: branch.merged ? branch.railY : branch.y,
+          r: branch.merged ? 3.8 : 3.2,
+        }),
+      );
+    });
+    svg.append(layer);
+  }
+
+  function drawSpans(svg, story, layout) {
+    const layer = svgNode("g", { class: "trace-spans" });
+    story.spans.forEach((span) => {
+      const geometry = layout.spanGeometry.get(span.id);
+      if (!geometry) return;
+      const binding = span.run_binding || (span.run_id ? "native" : "unbound");
+      const compound = geometry.compoundRole ? ` compound-${geometry.compoundRole}` : "";
+      const group = svgNode("g", {
+        class: `trace-span span-${span.kind} status-${span.status || "observed"} run-${binding}${compound}${geometry.branchContext ? " branch-context" : ""}`,
+      });
+      if (span.kind === "transaction") {
+        group.append(svgNode("line", {
+          class: "trace-branch-segment",
+          x1: geometry.x1,
+          y1: geometry.y,
+          x2: geometry.x2,
+          y2: geometry.y,
+        }));
+      } else if (["waiting", "diverted"].includes(span.kind)) {
+        group.append(
+          svgNode("line", {
+            class: "trace-state-segment",
+            x1: geometry.x1,
+            y1: geometry.y,
+            x2: geometry.x2,
+            y2: geometry.y,
+            "marker-end": span.kind === "waiting"
+              ? "url(#waiting-arrow)"
+              : "url(#diverted-arrow)",
+          }),
+          svgNode("path", {
+            class: "trace-work-node",
+            d: `M ${geometry.x1} ${geometry.y - 6} L ${geometry.x1 + 6} ${geometry.y} L ${geometry.x1} ${geometry.y + 6} L ${geometry.x1 - 6} ${geometry.y} Z`,
+          }),
+        );
+      } else if (geometry.compoundRole === "claim") {
+        group.append(svgNode("circle", {
+          class: "trace-work-node trace-compound-badge",
+          cx: geometry.x1,
+          cy: geometry.y,
+          r: 3.8,
+        }));
+      } else {
+        group.append(svgNode("circle", {
+          class: "trace-work-node",
+          cx: geometry.x1,
+          cy: geometry.y,
+          r: geometry.compoundRole === "session" ? 7.4 : 6,
+        }));
+        if (span.kind === "session") {
+          group.append(svgNode("path", {
+            class: "trace-session-glyph",
+            d: `M ${geometry.x1 - 1.5} ${geometry.y - 2.2} L ${geometry.x1 + 2.3} ${geometry.y} L ${geometry.x1 - 1.5} ${geometry.y + 2.2} Z`,
+          }));
+        }
+      }
+      group.append(svgNode("circle", {
+        class: "trace-span-hit",
+        cx: geometry.x1,
+        cy: geometry.y,
+        r: geometry.compoundRole === "claim" ? 7 : 14,
+      }));
+      makeInteractive(group, span, { x: geometry.x1, y: geometry.y }, layout.width);
+      layer.append(group);
+    });
+    svg.append(layer);
+  }
+
+  function drawProgress(svg, story, layout) {
+    const layer = svgNode("g", {
+      class: "trace-progress",
+      "aria-label": t("storyline.progressAria"),
+    });
+    layout.runSpineGeometry.forEach((spine) => {
+      const path = svgNode("line", {
+        class: `run-spine-line status-${spine.status || "observed"}`,
+        x1: spine.x1,
+        y1: spine.y,
+        x2: spine.x2,
+        y2: spine.y,
+        "marker-end": spine.final ? "url(#progress-arrow)" : undefined,
+      });
+      layer.append(path);
+    });
+    layout.attachmentGeometry.forEach((attachment) => {
+      const path = svgNode("line", {
+        class: `run-attachment binding-${attachment.binding || "native"}`,
+        x1: attachment.source.x,
+        y1: attachment.source.y,
+        x2: attachment.target.x,
+        y2: attachment.target.y,
       });
       layer.append(path);
     });
     svg.append(layer);
   }
 
-  function drawNodes(svg, story, positions, canvasWidth) {
-    const layer = svgNode("g", { class: "story-nodes" });
-    story.nodes.forEach((item) => {
-      const position = positions.get(item.id);
-      if (!position) return;
-      const label = displayLabel(item);
+  function relationPath(source, target) {
+    const axisAligned = Math.abs(target.x - source.x) < 0.5 || Math.abs(target.y - source.y) < 0.5;
+    if (axisAligned) return `M ${source.x} ${source.y} L ${target.x} ${target.y}`;
+    const middleX = source.x + (target.x - source.x) / 2;
+    return `M ${source.x} ${source.y} H ${middleX} V ${target.y} H ${target.x}`;
+  }
+
+  function branchTransitionPath(source, target, kind) {
+    const deltaX = target.x - source.x;
+    const deltaY = target.y - source.y;
+    if (kind === "fork") {
+      return `M ${source.x} ${source.y} C ${source.x} ${source.y + deltaY * 0.6} ${target.x - deltaX * 0.35} ${target.y} ${target.x} ${target.y}`;
+    }
+    return `M ${source.x} ${source.y} C ${source.x + deltaX * 0.7} ${source.y} ${target.x} ${target.y - deltaY * 0.35} ${target.x} ${target.y}`;
+  }
+
+  function relationArrow(kind) {
+    if (kind === "fork") return "url(#branch-arrow)";
+    if (kind === "rejoin") return "url(#publish-arrow)";
+    if (["waits-for", "blocked"].includes(kind)) return "url(#waiting-arrow)";
+    if (kind === "diverts-to") return "url(#diverted-arrow)";
+    if (["handoff", "reassigned", "message"].includes(kind)) return "url(#communication-arrow)";
+    return kind === "contention" ? undefined : "url(#trace-arrow)";
+  }
+
+  function drawRelations(svg, story, layout) {
+    const layer = svgNode("g", { class: "trace-relations" });
+    story.relations.forEach((relation) => {
+      const geometry = layout.relationGeometry.get(relation.id);
+      if (!geometry) return;
       const group = svgNode("g", {
-        class: `story-node node-${item.type} status-${item.status || "observed"}`,
-        transform: `translate(${position.x} ${position.y})`,
-        tabindex: "0",
-        role: "button",
-        "aria-label": `${typeLabel(item.type)} ${label}, ${statusLabel(item.status)}`,
-        "aria-describedby": "storyline-tooltip",
+        class: `trace-relation relation-${relation.kind} status-${relation.status || "observed"}${geometry.branchContext ? " branch-context" : ""}`,
       });
-      group.dataset.nodeId = item.id;
-      group.append(
-        svgNode("circle", { class: "story-node-hit", r: 14 }),
-        svgNode("circle", { class: "story-node-ring", r: 10 }),
-        svgNode("circle", { class: "story-node-dot", r: NODE_RADIUS }),
-      );
-      group.addEventListener("mouseenter", () => showTooltip(item, position, canvasWidth));
-      group.addEventListener("mouseleave", () => {
-        if (document.activeElement !== group) hideTooltip();
-      });
-      group.addEventListener("focus", () => showTooltip(item, position, canvasWidth));
-      group.addEventListener("blur", hideTooltip);
-      group.addEventListener("click", () => selectNode(item.id));
-      group.addEventListener("keydown", (event) => {
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          selectNode(item.id);
+      let position = { x: geometry.x, y: 20 };
+      if (relation.kind === "contention" && geometry.owners.length) {
+        const ys = geometry.owners.map((point) => point.y);
+        const top = Math.min(...ys);
+        const bottom = Math.max(...ys);
+        position = { x: geometry.x, y: (top + bottom) / 2 };
+        group.append(
+          svgNode("line", { class: "relation-line", x1: geometry.x, y1: top, x2: geometry.x, y2: bottom }),
+          svgNode("path", { class: "relation-symbol", d: `M ${geometry.x} ${top - 5} l 5 5 l -5 5 l -5 -5 z` }),
+        );
+      } else if (geometry.source && geometry.target) {
+        const localBranch = geometry.branchContext && ["fork", "rejoin"].includes(relation.kind);
+        position = {
+          x: (geometry.source.x + geometry.target.x) / 2,
+          y: (geometry.source.y + geometry.target.y) / 2,
+        };
+        group.append(svgNode("path", {
+          class: "relation-line",
+          d: localBranch
+            ? branchTransitionPath(geometry.source, geometry.target, relation.kind)
+            : relationPath(geometry.source, geometry.target),
+          "marker-end": localBranch ? undefined : relationArrow(relation.kind),
+        }));
+        if (localBranch) {
+          const anchor = relation.kind === "fork" ? geometry.source : geometry.target;
+          group.append(svgNode("circle", {
+            class: relation.kind === "fork" ? "local-fork-node" : "local-rejoin-node",
+            cx: anchor.x,
+            cy: anchor.y,
+            r: relation.kind === "fork" ? 4.2 : 4.5,
+          }));
         }
-      });
+      }
+      group.append(svgNode("circle", { class: "relation-hit", cx: position.x, cy: position.y, r: 10 }));
+      makeInteractive(group, relation, position, layout.width);
       layer.append(group);
     });
     svg.append(layer);
   }
 
-  function render(story = {}) {
+  function drawMarkers(svg, story, layout) {
+    const layer = svgNode("g", { class: "trace-markers" });
+    story.markers.forEach((marker) => {
+      const position = layout.markerGeometry.get(marker.id);
+      if (!position) return;
+      const group = svgNode("g", {
+        class: `trace-marker marker-${marker.kind} status-${marker.status || "observed"}`,
+        transform: `translate(${position.x} ${position.y})`,
+      });
+      if (["contention", "decision"].includes(marker.kind)) {
+        group.append(svgNode("path", { class: "trace-marker-shape", d: "M 0 -6 L 6 0 L 0 6 L -6 0 Z" }));
+      } else {
+        group.append(svgNode("circle", { class: "trace-marker-shape", r: marker.kind === "publish" ? 6 : 5 }));
+      }
+      group.append(svgNode("circle", { class: "trace-marker-hit", r: 14 }));
+      makeInteractive(group, marker, position, layout.width);
+      layer.append(group);
+    });
+    svg.append(layer);
+  }
+
+  function render(story = {}, context = {}) {
     const workspaceChanged = renderedWorkspace !== story.workspace_id;
     renderedWorkspace = story.workspace_id || null;
+    const focusedStory = window.DevMeshStorylineFocus.select(story);
     currentStory = {
-      workspace_id: story.workspace_id || null,
-      lanes: story.lanes || [],
-      nodes: story.nodes || [],
-      links: story.links || [],
-      summary: story.summary || {},
+      workspace_id: focusedStory.workspace_id || null,
+      lanes: focusedStory.lanes || [],
+      spans: focusedStory.spans || [],
+      markers: focusedStory.markers || [],
+      relations: focusedStory.relations || [],
+      summary: focusedStory.summary || {},
+      focus: focusedStory.focus || {},
     };
     const svg = $("collaboration-storyline");
     const empty = $("storyline-empty");
     hideTooltip();
     svg.replaceChildren();
-    renderLaneLabels(currentStory.lanes);
     const summary = currentStory.summary;
-    $("graph-count").textContent = summary.truncated
-      ? t("storyline.truncated", { visible: summary.visible_nodes || 0, total: summary.total_nodes || 0 })
-      : t("storyline.count", {
-        slices: summary.visible_nodes || 0,
-        intersections: summary.intersections || 0,
-      });
-    if (!currentStory.nodes.length) {
+    const latest = context.latestProjectAt || latestRecordedAt(currentStory);
+    const countKey = context.latestProjectAt
+      ? "storyline.countWithProjectLatest"
+      : latest
+        ? "storyline.countWithLatest"
+        : "storyline.count";
+    $("graph-count").textContent = t(countKey, {
+      actors: summary.actors || 0,
+      nodes: (summary.work_spans || 0) + (summary.markers || 0),
+      relations: summary.relations || 0,
+      time: latest ? formatTime(latest, true) : "",
+    });
+    $("storyline-focus-note").textContent = t("storyline.focusNote", {
+      owners: summary.owner_labels_in_window || 0,
+      runs: summary.joined_runs || 0,
+      peak: summary.max_concurrent_runs || 0,
+      actors: summary.actors || 0,
+    });
+    if (!currentStory.spans.length && !currentStory.markers.length && !currentStory.relations.length) {
       selectedId = null;
       renderEmptyInspector();
+      $("storyline-lanes").replaceChildren();
       svg.hidden = true;
       empty.hidden = false;
       return;
     }
     empty.hidden = true;
     svg.hidden = false;
-    const { positions, width, height } = layout(currentStory);
-    svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
-    svg.setAttribute("width", width);
-    svg.setAttribute("height", height);
+    const layout = window.DevMeshStorylineLayout.compute(currentStory);
+    renderLaneLabels(currentStory, layout);
+    svg.setAttribute("viewBox", `0 0 ${layout.width} ${layout.height}`);
+    svg.setAttribute("width", layout.width);
+    svg.setAttribute("height", layout.height);
     const definitions = svgNode("defs");
-    const marker = svgNode("marker", {
-      id: "story-arrow",
-      viewBox: "0 0 10 10",
-      refX: "9",
-      refY: "5",
-      markerWidth: "5",
-      markerHeight: "5",
-      orient: "auto-start-reverse",
-    });
-    marker.append(svgNode("path", { d: "M 0 0 L 10 5 L 0 10 z", class: "story-arrow" }));
-    definitions.append(marker);
+    definitions.append(
+      arrowMarker("trace-arrow", "trace-arrow"),
+      arrowMarker("progress-arrow", "progress-arrow"),
+      arrowMarker("branch-arrow", "branch-arrow"),
+      arrowMarker("publish-arrow", "publish-arrow"),
+      arrowMarker("communication-arrow", "communication-arrow"),
+      arrowMarker("waiting-arrow", "waiting-arrow"),
+      arrowMarker("diverted-arrow", "diverted-arrow"),
+    );
     svg.append(definitions);
-    drawBackground(svg, currentStory, width);
-    drawTimeRuler(svg, currentStory, positions, width);
-    drawLinks(svg, currentStory, positions);
-    drawNodes(svg, currentStory, positions, width);
+    drawGuides(svg, currentStory, layout);
+    drawCanonicalBranches(svg, layout);
+    drawProgress(svg, currentStory, layout);
+    drawSpans(svg, currentStory, layout);
+    drawRelations(svg, currentStory, layout);
+    drawMarkers(svg, currentStory, layout);
+
     if (workspaceChanged) {
-      const focus = currentStory.nodes.find((item) => item.type === "contention" && item.status === "stalled")
-        || currentStory.nodes.find((item) => item.status === "active")
-        || currentStory.nodes[currentStory.nodes.length - 1];
-      const focusPosition = focus ? positions.get(focus.id) : null;
-      if (focusPosition) {
+      const focus = itemById(currentStory.focus.relation_id)
+        || currentStory.relations.find((item) => ["contention", "waits-for"].includes(item.kind) && ["stalled", "waiting"].includes(item.status))
+        || currentStory.spans.find((item) => item.status === "active")
+        || currentStory.markers.at(-1)
+        || currentStory.spans.at(-1);
+      const geometry = focus
+        ? layout.relationGeometry.get(focus.id) || layout.markerGeometry.get(focus.id) || layout.spanGeometry.get(focus.id)
+        : null;
+      const focusX = geometry?.x ?? geometry?.x1;
+      const focusY = geometry?.owners?.[0]?.y
+        ?? geometry?.source?.y
+        ?? geometry?.target?.y
+        ?? geometry?.y;
+      if (focusX !== undefined || focusY !== undefined) {
         window.requestAnimationFrame(() => {
           const scroll = $("storyline-scroll");
-          scroll.scrollLeft = Math.max(0, focusPosition.x - scroll.clientWidth * 0.34);
+          if (focusX !== undefined) {
+            scroll.scrollLeft = Math.max(0, focusX - scroll.clientWidth * 0.42);
+          }
+          if (focusY !== undefined) {
+            scroll.scrollTop = Math.max(0, focusY - scroll.clientHeight * 0.36);
+            $("storyline-lanes").scrollTop = scroll.scrollTop;
+          }
         });
       }
     }
-    if (selectedId && currentStory.nodes.some((item) => item.id === selectedId)) {
-      selectNode(selectedId);
-    } else {
+    if (selectedId && itemById(selectedId)) selectItem(selectedId);
+    else {
       selectedId = null;
       renderEmptyInspector();
     }

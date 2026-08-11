@@ -61,7 +61,7 @@ Create a normal direct claim:
 
 ```bash
 python3 <skill>/scripts/coord.py claim --root <workspace> \
-  --scope route-health --owner agent-a \
+  --scope route-health --owner agent-a --run <run-id> \
   --task "Add the health route" \
   --paths src/router.ts tests/router.test.ts \
   --intent additive \
@@ -81,13 +81,18 @@ Use these intents:
 Declare `semantic-writes` when same-path work may be independent. Use `sensitive-to` only when a
 resource change would invalidate implementation or validation; omit incidental reads.
 
+Pass the current joined `--run` to claim, update, pause, resume, and release operations. A new
+claim may infer its run only when exactly one active run belongs to its owner; multiple active runs
+require an explicit id. The correlation is diagnostic and immutable for that claim episode: it
+grants no authority, and another run must not silently rebind it.
+
 ## Record overlap without granting write authority
 
 If a second request overlaps, record it as pending and stop new writes on the overlap:
 
 ```bash
 python3 <skill>/scripts/coord.py claim --root <workspace> \
-  --scope route-metrics --owner agent-b \
+  --scope route-metrics --owner agent-b --run <run-id> \
   --task "Add the metrics route" \
   --paths src/router.ts tests/router.test.ts \
   --intent additive \
@@ -234,12 +239,14 @@ on the blocked scope; use `diverted` when the owner continues an explicit altern
 ```bash
 python3 <skill>/scripts/coord.py work-suspend --root <workspace> \
   --scope route-health --owner agent-a --disposition waiting \
+  --run <run-id> \
   --reason "Agent B owns the overlapping routing contract" \
   --contention <contention-id> --request <request-id> \
   --blocked-by-owner agent-b --blocked-by-scope route-refactor
 
 python3 <skill>/scripts/coord.py work-suspend --root <workspace> \
   --scope route-health --owner agent-a --disposition diverted \
+  --run <run-id> \
   --reason "Continue independent documentation while routing is blocked" \
   --alternate-scope routing-docs
 ```
@@ -255,7 +262,9 @@ python3 <skill>/scripts/coord.py work-resume --root <workspace> \
 If a claim has already been promoted, pass its active `--transaction`. A diverted event requires
 an alternate scope or joined alternate run; a waiting event rejects alternate work metadata. The
 active work-disposition snapshot exists only to correlate `work-suspended` and `work-resumed` and
-is archived after resume.
+is archived after resume. Pass the current joined run whenever the suspended claim or transaction
+belongs to it so the Observer can overlay the waiting or diverted interval on that run's execution
+spine; omitting it leaves the disposition owner-scoped but unbound.
 
 Cancel an ungranted request only with the exact owner set recorded by it:
 
@@ -482,6 +491,12 @@ contentions. Treat reports as diagnostics, not authority; recover from Git facts
 snapshots.
 
 Trace-aware queue events carry the affected `owners` and `scopes` plus structured `blocker_refs`.
+Trace-aware claim lifecycle events carry the verified `run_id` when the claim episode is correlated
+with a joined Agent run. Producers never backfill an old claim from owner or timestamp similarity.
+An Observer may separately show a presentation-only `inferred` attachment when the complete legacy
+claim episode fits exactly one observed run interval for that owner. It must keep authoritative
+`run_id` empty, label the attachment as inferred, and omit it whenever intervals overlap or either
+episode boundary is unknown.
 Trace-aware transaction events carry `owner`, `work_owner`, `actor_owner`, `scope`, temporary
 `branch`, `base_revision`, `canonical_branch`, `group_id`, and `request_id` when available.
 `work-suspended` distinguishes `waiting` from `diverted`; `work-resumed` closes the same

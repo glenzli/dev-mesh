@@ -1,6 +1,6 @@
 interface:
   display_name: "Dev Mesh Observer"
-  short_description: "Inspect project storylines, coordination stalls, and causal facts"
-  default_prompt: "Use $observe-dev-mesh to collect coordination evidence and open a local console with a per-project overview, semantic collaboration storylines, stalled-contention diagnostics, and explicit entity graphs."
+  short_description: "Inspect collaboration storylines, branches, waits, and stalls"
+  default_prompt: "Use $observe-dev-mesh to collect coordination evidence and open a local console showing per-project collaboration storylines, temporary branches, waits, handoffs, and stalled-contention diagnostics."
 policy:
   allow_implicit_invocation: false

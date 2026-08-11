@@ -28,6 +28,7 @@ from shared_coord.lifecycle import (
     record_handoff_accepted,
     record_handoff_offered,
     require_joined_run,
+    resolve_claim_run,
 )
 from shared_coord.state import emit_event as emit_coordination_event
 from shared_coord.work_lifecycle import (
@@ -588,6 +589,39 @@ def record_metadata_from_claim_arguments(
     return metadata
 
 
+def bind_claim_run(
+    location: Path,
+    record: dict[str, object],
+    *,
+    owner: str,
+    requested_run: str | None,
+    infer_if_unbound: bool = False,
+) -> bool:
+    previous = record.get("run_id")
+    run_id = resolve_claim_run(
+        location,
+        owner=owner,
+        requested_run=requested_run,
+        existing_run=previous,
+        infer_if_unbound=infer_if_unbound,
+    )
+    if run_id is None:
+        return False
+    record["run_id"] = run_id
+    return previous != run_id
+
+
+def traced_claim_event(
+    record: dict[str, object],
+    details: dict[str, object],
+) -> dict[str, object]:
+    details["trace_schema"] = 1
+    run_id = record.get("run_id")
+    if isinstance(run_id, str) and run_id:
+        details["run_id"] = run_id
+    return details
+
+
 def apply_update_metadata(
     record: dict[str, object],
     arguments: argparse.Namespace,
@@ -738,6 +772,13 @@ def command_claim(arguments: argparse.Namespace) -> int:
             "heartbeat_at": now(),
         }
         record.update(record_metadata_from_claim_arguments(arguments, scope))
+        bind_claim_run(
+            location,
+            record,
+            owner=owner,
+            requested_run=arguments.run,
+            infer_if_unbound=True,
+        )
         if conflicts:
             if arguments.pending_on_conflict:
                 record["status"] = "pending-arbitration"
@@ -748,7 +789,7 @@ def command_claim(arguments: argparse.Namespace) -> int:
             location,
             "claim-created",
             None,
-            {
+            traced_claim_event(record, {
                 "scope": scope,
                 "owner": owner,
                 "status": record.get("status", "active"),
@@ -759,7 +800,7 @@ def command_claim(arguments: argparse.Namespace) -> int:
                     | set(record.get("sensitive_to", []))
                 ),
                 "conflicts": conflicts,
-            },
+            }),
         )
         if record.get("status") == "pending-arbitration":
             contention = open_or_join_contention(
@@ -790,6 +831,12 @@ def command_update(arguments: argparse.Namespace) -> int:
             raise ValueError(f"claim belongs to {record.get('owner')!r}, not {owner!r}")
         if record.get("status", "active") == "paused":
             raise ValueError("claim is paused; resume it or release it before updating work")
+        run_changed = bind_claim_run(
+            location,
+            record,
+            owner=owner,
+            requested_run=arguments.run,
+        )
         existing_paths = record.get("paths", [])
         if not isinstance(existing_paths, list) or not all(
             isinstance(path, str) for path in existing_paths
@@ -806,7 +853,13 @@ def command_update(arguments: argparse.Namespace) -> int:
             raise ValueError("an active claim must retain at least one likely write path")
         task = arguments.task.strip()
         metadata_changed = apply_update_metadata(record, arguments, scope)
-        if not task and not arguments.add_paths and not arguments.remove_paths and not metadata_changed:
+        if (
+            not task
+            and not arguments.add_paths
+            and not arguments.remove_paths
+            and not metadata_changed
+            and not run_changed
+        ):
             raise ValueError(
                 "update requires task, path, or coordination-metadata changes"
             )
@@ -843,7 +896,7 @@ def command_update(arguments: argparse.Namespace) -> int:
             location,
             "claim-updated",
             None,
-            {
+            traced_claim_event(record, {
                 "scope": scope,
                 "owner": owner,
                 "status": record.get("status", "active"),
@@ -853,7 +906,7 @@ def command_update(arguments: argparse.Namespace) -> int:
                     set(record.get("semantic_writes", []))
                     | set(record.get("sensitive_to", []))
                 ),
-            },
+            }),
         )
     print(claim_path)
     return 0
@@ -1023,6 +1076,12 @@ def command_pause(arguments: argparse.Namespace) -> int:
         record = read_json(path)
         if record.get("owner") != owner:
             raise ValueError(f"claim belongs to {record.get('owner')!r}, not {owner!r}")
+        bind_claim_run(
+            location,
+            record,
+            owner=owner,
+            requested_run=arguments.run,
+        )
         if record.get("status", "active") == "paused":
             raise ValueError("claim is already paused")
         claimed_paths = record.get("paths")
@@ -1063,7 +1122,7 @@ def command_pause(arguments: argparse.Namespace) -> int:
             location,
             "claim-paused",
             None,
-            {
+            traced_claim_event(record, {
                 "scope": scope,
                 "owner": owner,
                 "paths": claimed_paths,
@@ -1073,7 +1132,7 @@ def command_pause(arguments: argparse.Namespace) -> int:
                 "error_kind": error_kind,
                 "resume_condition": record["resume_condition"],
                 "retained_paths": bool(retain_reason),
-            },
+            }),
         )
     print(path)
     return 0
@@ -1088,6 +1147,12 @@ def command_resume(arguments: argparse.Namespace) -> int:
         record = read_json(path)
         if record.get("owner") != owner:
             raise ValueError(f"claim belongs to {record.get('owner')!r}, not {owner!r}")
+        bind_claim_run(
+            location,
+            record,
+            owner=owner,
+            requested_run=arguments.run,
+        )
         if record.get("status", "active") != "paused":
             raise ValueError("only a paused claim can be resumed")
         pause = record.get("pause", {})
@@ -1120,7 +1185,7 @@ def command_resume(arguments: argparse.Namespace) -> int:
             location,
             "claim-resumed",
             None,
-            {
+            traced_claim_event(record, {
                 "scope": scope,
                 "owner": owner,
                 "paths": record.get("paths", []),
@@ -1128,7 +1193,7 @@ def command_resume(arguments: argparse.Namespace) -> int:
                 "operation": pause.get("operation"),
                 "resources": pause.get("resources", []),
                 "resume_evidence": evidence,
-            },
+            }),
         )
     print(path)
     return 0
@@ -1444,6 +1509,12 @@ def command_release(arguments: argparse.Namespace) -> int:
         record = read_json(path)
         if record.get("owner") != owner:
             raise ValueError(f"claim belongs to {record.get('owner')!r}, not {owner!r}")
+        bind_claim_run(
+            location,
+            record,
+            owner=owner,
+            requested_run=arguments.run,
+        )
         record["released_at"] = now()
         record["summary"] = arguments.summary
         replace_json(path, record)
@@ -1454,7 +1525,7 @@ def command_release(arguments: argparse.Namespace) -> int:
             location,
             "claim-released",
             None,
-            {
+            traced_claim_event(record, {
                 "scope": scope,
                 "owner": owner,
                 "paths": record.get("paths", []),
@@ -1464,7 +1535,7 @@ def command_release(arguments: argparse.Namespace) -> int:
                 ),
                 "summary": arguments.summary,
                 "archive": str(destination),
-            },
+            }),
         )
         try:
             scheduling_updates = drive_ready_requests(arguments.root, location)
@@ -1498,6 +1569,7 @@ def parser() -> argparse.ArgumentParser:
     add_root(claim_parser)
     claim_parser.add_argument("--scope", required=True)
     claim_parser.add_argument("--owner", required=True)
+    claim_parser.add_argument("--run")
     claim_parser.add_argument("--task", required=True)
     claim_parser.add_argument("--paths", nargs="+", required=True)
     claim_parser.add_argument("--first-release")
@@ -1522,6 +1594,7 @@ def parser() -> argparse.ArgumentParser:
     add_root(update_parser)
     update_parser.add_argument("--scope", required=True)
     update_parser.add_argument("--owner", required=True)
+    update_parser.add_argument("--run")
     update_parser.add_argument("--task", default="")
     update_parser.add_argument("--add-paths", nargs="*", default=[])
     update_parser.add_argument("--remove-paths", nargs="*", default=[])
@@ -1550,6 +1623,7 @@ def parser() -> argparse.ArgumentParser:
     add_root(pause_parser)
     pause_parser.add_argument("--scope", required=True)
     pause_parser.add_argument("--owner", required=True)
+    pause_parser.add_argument("--run")
     pause_parser.add_argument("--checkpoint", required=True)
     pause_parser.add_argument("--resume-condition", required=True)
     pause_parser.add_argument("--retain-paths-reason", default="")
@@ -1567,6 +1641,7 @@ def parser() -> argparse.ArgumentParser:
     add_root(resume_parser)
     resume_parser.add_argument("--scope", required=True)
     resume_parser.add_argument("--owner", required=True)
+    resume_parser.add_argument("--run")
     resume_parser.add_argument("--evidence", default="")
     resume_parser.set_defaults(handler=command_resume)
 
@@ -1688,6 +1763,7 @@ def parser() -> argparse.ArgumentParser:
     add_root(release_parser)
     release_parser.add_argument("--scope", required=True)
     release_parser.add_argument("--owner", required=True)
+    release_parser.add_argument("--run")
     release_parser.add_argument("--summary", required=True)
     release_parser.set_defaults(handler=command_release)
     return result
