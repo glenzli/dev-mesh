@@ -8,6 +8,8 @@ import sqlite3
 
 MAX_QUERY_TEXT = 256
 MAX_EVENT_LIMIT = 500
+MAX_EVENT_PAGE = 10_000
+MAX_SQLITE_ROWID = 2**63 - 1
 
 
 def _bounded(value: str | None, *, name: str) -> str | None:
@@ -28,12 +30,31 @@ def bounded_limit(value: str | int | None, *, default: int = 100) -> int:
     return limit
 
 
-def list_events(
-    connection: sqlite3.Connection,
-    *,
+def bounded_page(value: str | int | None, *, default: int = 1) -> int:
+    try:
+        page = default if value is None else int(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError("page must be an integer") from error
+    if page < 1 or page > MAX_EVENT_PAGE:
+        raise ValueError(f"page must be between 1 and {MAX_EVENT_PAGE}")
+    return page
+
+
+def bounded_anchor(value: str | int | None) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        anchor = int(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError("anchor must be an integer") from error
+    if anchor < 0 or anchor > MAX_SQLITE_ROWID:
+        raise ValueError(f"anchor must be between 0 and {MAX_SQLITE_ROWID}")
+    return anchor
+
+
+def _event_filter(
     filters: dict[str, str | None],
-    limit: int,
-) -> list[dict[str, object]]:
+) -> tuple[list[str], list[object]]:
     columns = {
         "workspace_id": "e.workspace_id",
         "event": "e.event_type",
@@ -50,8 +71,50 @@ def list_events(
         if value is not None:
             conditions.append(f"{column} = ?")
             parameters.append(value)
-    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
-    parameters.append(bounded_limit(limit))
+    return conditions, parameters
+
+
+def event_page(
+    connection: sqlite3.Connection,
+    *,
+    filters: dict[str, str | None],
+    limit: int,
+    page: int,
+    anchor: int | None,
+) -> dict[str, object]:
+    page_size = bounded_limit(limit)
+    requested_page = bounded_page(page)
+    snapshot_anchor = bounded_anchor(anchor)
+    if snapshot_anchor is None:
+        snapshot_anchor = int(
+            connection.execute("SELECT COALESCE(MAX(rowid), 0) FROM events").fetchone()[0]
+        )
+
+    filter_conditions, filter_parameters = _event_filter(filters)
+    snapshot_conditions = [*filter_conditions, "e.rowid <= ?"]
+    snapshot_parameters = [*filter_parameters, snapshot_anchor]
+    snapshot_where = f"WHERE {' AND '.join(snapshot_conditions)}"
+    total = int(
+        connection.execute(
+            f"SELECT COUNT(*) FROM events e {snapshot_where}",
+            snapshot_parameters,
+        ).fetchone()[0]
+    )
+    page_count = max(1, (total + page_size - 1) // page_size)
+    current_page = min(requested_page, page_count)
+    offset = (current_page - 1) * page_size
+
+    newer_conditions = [*filter_conditions, "e.rowid > ?"]
+    newer_parameters = [*filter_parameters, snapshot_anchor]
+    newer_where = f"WHERE {' AND '.join(newer_conditions)}"
+    newer = int(
+        connection.execute(
+            f"SELECT COUNT(*) FROM events e {newer_where}",
+            newer_parameters,
+        ).fetchone()[0]
+    )
+
+    query_parameters = [*snapshot_parameters, page_size, offset]
     rows = connection.execute(
         f"""
         SELECT e.workspace_id, w.workspace_root, e.source_name, e.digest,
@@ -60,13 +123,26 @@ def list_events(
                e.scope, e.owner, e.ingested_at
         FROM events e
         JOIN workspaces w ON w.workspace_id = e.workspace_id
-        {where}
-        ORDER BY COALESCE(e.event_at, e.ingested_at) DESC, e.source_name DESC
-        LIMIT ?
+        {snapshot_where}
+        ORDER BY COALESCE(e.event_at, e.ingested_at) DESC,
+                 e.source_name DESC, e.workspace_id DESC, e.rowid DESC
+        LIMIT ? OFFSET ?
         """,
-        parameters,
+        query_parameters,
     )
-    return [dict(row) for row in rows]
+    return {
+        "events": [dict(row) for row in rows],
+        "pagination": {
+            "page": current_page,
+            "page_size": page_size,
+            "total": total,
+            "pages": page_count,
+            "anchor": snapshot_anchor,
+            "newer": newer,
+            "has_previous": current_page > 1,
+            "has_next": current_page < page_count,
+        },
+    }
 
 
 def event_detail(

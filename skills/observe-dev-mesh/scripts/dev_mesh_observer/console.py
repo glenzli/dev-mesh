@@ -12,7 +12,14 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from .collector import LiveCollector
-from .console_data import bounded_limit, event_detail, list_events, list_issues
+from .console_data import (
+    bounded_anchor,
+    bounded_limit,
+    bounded_page,
+    event_detail,
+    event_page,
+    list_issues,
+)
 from .graph import build_collaboration_graph
 from .reports import build_report, parse_since
 from .store import ObserverStore
@@ -313,10 +320,18 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                         "transaction_id",
                     )
                 }
-                limit = bounded_limit(self._single(parameters, "limit"))
+                limit = bounded_limit(self._single(parameters, "limit"), default=25)
+                page = bounded_page(self._single(parameters, "page"))
+                anchor = bounded_anchor(self._single(parameters, "anchor"))
                 self._send_json(
                     HTTPStatus.OK,
-                    {"events": list_events(store.connection, filters=filters, limit=limit)},
+                    event_page(
+                        store.connection,
+                        filters=filters,
+                        limit=limit,
+                        page=page,
+                        anchor=anchor,
+                    ),
                 )
                 return
             if request.path == "/api/v1/event":

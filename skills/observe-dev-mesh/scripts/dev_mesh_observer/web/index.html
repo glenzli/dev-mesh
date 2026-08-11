@@ -229,6 +229,21 @@
             </form>
           </div>
           <div class="event-list" id="event-list"><p class="empty" data-i18n="events.waiting">等待事件</p></div>
+          <nav class="event-pagination" id="event-pagination" aria-label="协作时间线分页" data-i18n-aria-label="events.pagination" hidden>
+            <button class="button event-newer" id="event-newer" type="button" hidden></button>
+            <div class="event-page-controls">
+              <label class="event-page-size">
+                <span data-i18n="events.pageSize">每页</span>
+                <select id="event-page-size">
+                  <option value="25">25</option>
+                  <option value="50">50</option>
+                </select>
+              </label>
+              <button class="button ghost" id="event-page-previous" type="button" data-i18n="events.previous">上一页</button>
+              <span class="event-page-summary" id="event-page-summary" aria-live="polite"></span>
+              <button class="button ghost" id="event-page-next" type="button" data-i18n="events.next">下一页</button>
+            </div>
+          </nav>
         </section>
 
         <section class="panel issues-panel" aria-labelledby="issues-title">

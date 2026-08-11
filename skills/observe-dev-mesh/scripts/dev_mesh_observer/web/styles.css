@@ -480,6 +480,14 @@ select:focus, input:focus, button:focus-visible { border-color: var(--lime); box
 .event-time { color: var(--dim); font: 500 10px/1.4 var(--mono); }
 .event-name { color: var(--cyan); font: 650 11px/1.3 var(--mono); }
 .event-meta { min-width: 0; overflow: hidden; color: var(--muted); font: 500 11px/1.3 var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+.event-pagination { min-height: 46px; padding: 7px 14px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-top: 1px solid var(--line); }
+.event-pagination[hidden], .event-newer[hidden] { display: none; }
+.event-page-controls { display: flex; align-items: center; justify-content: flex-end; gap: 7px; margin-left: auto; }
+.event-page-controls .button, .event-newer { min-height: 30px; padding: 6px 10px; font-size: 10px; }
+.event-page-size { display: flex; align-items: center; gap: 6px; color: var(--dim); font: 550 10px/1 var(--mono); }
+.event-page-size select { min-height: 30px; padding: 4px 24px 4px 8px; font-size: 10px; }
+.event-page-summary { min-width: 148px; color: var(--muted); font: 550 10px/1 var(--mono); text-align: center; }
+.event-newer { border-color: var(--cyan); color: var(--cyan); }
 
 .timeline-panel, .issues-panel { min-width: 0; }
 .issue-kind { color: var(--amber); font: 650 11px/1.3 var(--mono); }
@@ -528,6 +536,8 @@ pre { max-height: 58vh; margin: 0; padding: 24px; overflow: auto; background: va
   .filters { width: 100%; grid-template-columns: repeat(2, 1fr); }
   .event-row { grid-template-columns: 135px 1fr 1fr; }
   .event-row .event-meta:last-child { display: none; }
+  .event-pagination { align-items: flex-start; flex-direction: column; }
+  .event-page-controls { width: 100%; margin-left: 0; justify-content: space-between; }
 }
 
 @media (max-width: 680px) {
@@ -557,6 +567,8 @@ pre { max-height: 58vh; margin: 0; padding: 24px; overflow: auto; background: va
   .filters { grid-template-columns: 1fr; }
   .event-row { grid-template-columns: 1fr; gap: 7px; }
   .event-row .event-meta:last-child { display: block; }
+  .event-page-controls { flex-wrap: wrap; justify-content: flex-start; }
+  .event-page-summary { min-width: 132px; }
   .panel-heading { padding: 14px; }
   .heading-actions { align-items: flex-end; flex-direction: column; }
   .dialog-body { padding: 20px; }

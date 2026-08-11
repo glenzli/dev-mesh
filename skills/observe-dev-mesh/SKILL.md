@@ -135,6 +135,10 @@ Keep the console operator-first: place the observation window and collection act
 bar, omit marketing-style hero copy, and keep metric, diagnostic, activity, and timeline cards dense
 enough for scanning. Preserve extra vertical separation inside storyline lanes when cross-owner
 relations or inferred attachments would otherwise crowd adjacent progress spines.
+Paginate the collaboration timeline over a stable event snapshot, 25 rows by default. Preserve that
+snapshot while the collector appends events so historical pages do not shift; report matching newer
+events separately and rebuild page one only when the operator returns to the latest snapshot or
+changes a filter. Keep 25 and 50 as the compact page-size choices.
 The console performs one collection immediately on startup and then repeats it at the configured
 interval. It serializes automatic collection, **Collect now**, and **Add workspace** through one
 operation slot. Set `--collect-interval 0` to disable the background loop. The header reports the

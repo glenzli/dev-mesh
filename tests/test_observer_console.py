@@ -129,6 +129,8 @@ class ObserverConsoleTest(unittest.TestCase):
         self.assertIn(b"storyline.legend.contention", payload)
         self.assertIn(b'class="compact-control window-control"', payload)
         self.assertIn(b'id="since-select"', payload)
+        self.assertIn(b'id="event-pagination"', payload)
+        self.assertIn(b'id="event-page-size"', payload)
         self.assertNotIn(b'class="hero"', payload)
         self.assertNotIn(b'id="page-title"', payload)
         self.assertNotIn(b"storyline.mode.entities", payload)
@@ -141,6 +143,8 @@ class ObserverConsoleTest(unittest.TestCase):
         self.assertIn(b"/api/v1/workspaces", script)
         self.assertIn(b"collector.liveWithDelta", script)
         self.assertIn(b"collector.collectingWithDelta", script)
+        self.assertIn(b"resetTimelineSnapshot", script)
+        self.assertIn(b"payload.pagination", script)
         self.assertNotIn(b"DEMO_WORKSPACE_ID", script)
         self.assertNotIn(b"DevMeshStorylineDemo", script)
         self.assertNotIn(b"/api/v1/graph", script)
@@ -280,6 +284,11 @@ class ObserverConsoleTest(unittest.TestCase):
         )
         self.assertEqual(status, 200)
         self.assertEqual(len(result["events"]), 1)
+        self.assertEqual(result["pagination"]["page"], 1)
+        self.assertEqual(result["pagination"]["page_size"], 10)
+        self.assertEqual(result["pagination"]["total"], 1)
+        self.assertEqual(result["pagination"]["pages"], 1)
+        self.assertEqual(result["pagination"]["newer"], 0)
         event = result["events"][0]
         self.assertNotIn("payload", event)
 
@@ -324,6 +333,71 @@ class ObserverConsoleTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(collected["collection"]["inserted"], 1)
         self.assertEqual(self.source_snapshot(), before)
+
+    def test_event_pages_remain_stable_while_new_events_are_collected(self) -> None:
+        self.write_event(
+            "002-agent-left.json",
+            {
+                "at": "2026-08-11T00:05:00Z",
+                "event": "agent-left",
+                "run_id": "run-console",
+                "owner": "agent-console",
+            },
+        )
+        status, collected = self.json_request(
+            "POST",
+            "/api/v1/collect",
+            body="{}",
+            headers={"Content-Type": "application/json", "X-Dev-Mesh-Console": "1"},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(collected["collection"]["inserted"], 1)
+
+        status, first_page = self.json_request(
+            "GET",
+            "/api/v1/events?owner=agent-console&limit=1&page=1",
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(first_page["events"][0]["event_type"], "agent-left")
+        self.assertEqual(first_page["pagination"]["total"], 2)
+        self.assertEqual(first_page["pagination"]["pages"], 2)
+        anchor = first_page["pagination"]["anchor"]
+
+        self.write_event(
+            "003-agent-joined.json",
+            {
+                "at": "2026-08-11T00:10:00Z",
+                "event": "agent-joined",
+                "run_id": "run-later",
+                "owner": "agent-console",
+            },
+        )
+        status, collected = self.json_request(
+            "POST",
+            "/api/v1/collect",
+            body="{}",
+            headers={"Content-Type": "application/json", "X-Dev-Mesh-Console": "1"},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(collected["collection"]["inserted"], 1)
+
+        status, second_page = self.json_request(
+            "GET",
+            f"/api/v1/events?owner=agent-console&limit=1&page=2&anchor={anchor}",
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(second_page["events"][0]["event_type"], "agent-joined")
+        self.assertEqual(second_page["events"][0]["run_id"], "run-console")
+        self.assertEqual(second_page["pagination"]["total"], 2)
+        self.assertEqual(second_page["pagination"]["newer"], 1)
+
+        status, latest_page = self.json_request(
+            "GET",
+            "/api/v1/events?owner=agent-console&limit=1&page=1",
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(latest_page["pagination"]["total"], 3)
+        self.assertEqual(latest_page["events"][0]["run_id"], "run-later")
 
     def test_adds_an_explicit_workspace_root_and_collects_without_source_writes(self) -> None:
         added_workspace = self.base / "added-workspace"
@@ -379,6 +453,12 @@ class ObserverConsoleTest(unittest.TestCase):
         status, result = self.json_request("GET", "/api/v1/events?limit=0")
         self.assertEqual(status, 400)
         self.assertIn("between", result["error"])
+        status, result = self.json_request("GET", "/api/v1/events?page=0")
+        self.assertEqual(status, 400)
+        self.assertIn("page", result["error"])
+        status, result = self.json_request("GET", "/api/v1/events?anchor=-1")
+        self.assertEqual(status, 400)
+        self.assertIn("anchor", result["error"])
         status, _ = self.json_request("GET", "/api/v1/report?limit=101")
         self.assertEqual(status, 400)
         status, result = self.json_request("GET", "/api/v1/graph?limit=9")

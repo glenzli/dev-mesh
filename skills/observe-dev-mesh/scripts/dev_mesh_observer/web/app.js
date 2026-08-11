@@ -12,6 +12,13 @@ const state = {
   timer: null,
   observedEventTotal: null,
   recentIngestion: { count: 0, at: 0 },
+  timeline: {
+    page: 1,
+    pageSize: 25,
+    anchor: null,
+    requestGeneration: 0,
+    pagination: null,
+  },
 };
 
 const $ = (id) => document.getElementById(id);
@@ -332,8 +339,41 @@ function renderIssues() {
   });
 }
 
+function resetTimelineSnapshot() {
+  state.timeline.page = 1;
+  state.timeline.anchor = null;
+  state.timeline.pagination = null;
+}
+
+function renderEventPagination() {
+  const pagination = state.timeline.pagination;
+  if (!pagination) return;
+  const controls = $("event-pagination");
+  controls.hidden = false;
+  $("event-page-summary").textContent = t("events.pageSummary", {
+    page: formatNumber(pagination.page),
+    pages: formatNumber(pagination.pages),
+    count: formatNumber(pagination.total),
+  });
+  $("event-page-previous").disabled = !pagination.has_previous;
+  $("event-page-next").disabled = !pagination.has_next;
+  $("event-page-size").value = String(pagination.page_size);
+  const newer = $("event-newer");
+  newer.hidden = !pagination.newer;
+  newer.textContent = pagination.newer
+    ? t("events.newer", { count: formatNumber(pagination.newer) })
+    : "";
+}
+
 async function loadEvents(expectedGeneration = state.refreshGeneration) {
-  const parameters = new URLSearchParams({ limit: "120" });
+  const requestGeneration = ++state.timeline.requestGeneration;
+  const parameters = new URLSearchParams({
+    limit: String(state.timeline.pageSize),
+    page: String(state.timeline.page),
+  });
+  if (state.timeline.anchor !== null) {
+    parameters.set("anchor", String(state.timeline.anchor));
+  }
   const filters = {
     workspace_id: $("filter-workspace").value,
     event: $("filter-event").value,
@@ -344,7 +384,15 @@ async function loadEvents(expectedGeneration = state.refreshGeneration) {
     if (value) parameters.set(key, value);
   });
   const payload = await api(`/api/v1/events?${parameters}`);
-  if (expectedGeneration !== state.refreshGeneration) return;
+  if (
+    expectedGeneration !== state.refreshGeneration
+    || requestGeneration !== state.timeline.requestGeneration
+  ) return;
+  state.timeline.pagination = payload.pagination;
+  state.timeline.page = payload.pagination.page;
+  state.timeline.pageSize = payload.pagination.page_size;
+  state.timeline.anchor = payload.pagination.anchor;
+  renderEventPagination();
   const target = $("event-list");
   target.replaceChildren();
   if (!payload.events.length) {
@@ -520,10 +568,31 @@ $("since-select").addEventListener("change", (event) => {
 $("graph-workspace").addEventListener("change", (event) => {
   selectGraphWorkspace(event.target.value);
 });
-$("refresh-button").addEventListener("click", () => refreshDashboard());
+$("refresh-button").addEventListener("click", () => {
+  resetTimelineSnapshot();
+  refreshDashboard();
+});
 $("collect-button").addEventListener("click", collectNow);
 $("event-filters").addEventListener("submit", (event) => {
   event.preventDefault();
+  resetTimelineSnapshot();
+  loadEvents().catch((error) => toast(error.message, true));
+});
+$("event-page-previous").addEventListener("click", () => {
+  state.timeline.page -= 1;
+  loadEvents().catch((error) => toast(error.message, true));
+});
+$("event-page-next").addEventListener("click", () => {
+  state.timeline.page += 1;
+  loadEvents().catch((error) => toast(error.message, true));
+});
+$("event-page-size").addEventListener("change", (event) => {
+  state.timeline.pageSize = Number(event.target.value);
+  state.timeline.page = 1;
+  loadEvents().catch((error) => toast(error.message, true));
+});
+$("event-newer").addEventListener("click", () => {
+  resetTimelineSnapshot();
   loadEvents().catch((error) => toast(error.message, true));
 });
 $("dialog-close").addEventListener("click", () => $("event-dialog").close());
