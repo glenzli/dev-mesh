@@ -38,12 +38,9 @@ TRANSACTION_CHECKPOINTS = {
     "refresh-completed": "refreshed",
     "publish-started": "publishing",
 }
-IMPORTANT_STATUSES = {
-    "active",
+ATTENTION_STATUSES = {
     "blocked",
     "conflicted",
-    "paused",
-    "publishing",
     "stalled",
     "waiting",
 }
@@ -55,6 +52,7 @@ FOCUS_KIND_PRIORITY = {
     "handoff": 5,
     "fork": 4,
     "rejoin": 4,
+    "return": 4,
     "diverts-to": 3,
     "message": 2,
 }
@@ -214,6 +212,7 @@ class StorylineProjection:
                 "status": status,
                 "started_at": at,
                 "ended_at": None,
+                "last_at": at,
                 "trace_quality": quality,
                 "run_id": run_id,
                 "run_ids": [run_id] if run_id else [],
@@ -231,6 +230,8 @@ class StorylineProjection:
                 span["run_binding"] = "mixed"
         if at and (span["started_at"] is None or at < span["started_at"]):
             span["started_at"] = at
+        if at and (span["last_at"] is None or at > span["last_at"]):
+            span["last_at"] = at
         span["status"] = status
         span["event_count"] += 1
         sources = span["details"].setdefault("source_events", [])
@@ -255,6 +256,8 @@ class StorylineProjection:
             return
         if at and (span["ended_at"] is None or at > span["ended_at"]):
             span["ended_at"] = at
+        if at and (span["last_at"] is None or at > span["last_at"]):
+            span["last_at"] = at
         if status is not None:
             span["status"] = status
 
@@ -280,6 +283,7 @@ class StorylineProjection:
                 "kind": kind,
                 "label": label,
                 "at": at,
+                "last_at": at,
                 "status": status,
                 "trace_quality": quality,
                 "owners": [],
@@ -288,6 +292,8 @@ class StorylineProjection:
             },
         )
         marker["status"] = status
+        if at and (marker["last_at"] is None or at > marker["last_at"]):
+            marker["last_at"] = at
         marker["event_count"] += 1
         marker["owners"] = sorted(set(marker["owners"]) | set(owners))
         sources = marker["details"].setdefault("source_events", [])
@@ -795,10 +801,61 @@ class StorylineProjection:
                     target_item=checkpoint,
                     details=details,
                 )
+            self._close_transaction_branch(
+                transaction_id,
+                at=at,
+                status="published",
+                terminal_event=event,
+                details=details,
+            )
             state["current"] = None
         elif event == "transaction-aborted":
             self.close_span(current_id, at, status="aborted")
+            if state["forked"]:
+                self.add_relation(
+                    f"return:{self.workspace_id}:{transaction_id}",
+                    kind="return",
+                    at=at,
+                    label="return-to-mainline",
+                    status="aborted",
+                    evidence="transaction_id+transaction-aborted",
+                    source_owner=str(span["owner"]),
+                    target_owner=str(span["owner"]),
+                    source_item=current_id,
+                    details=details,
+                )
+            self._close_transaction_branch(
+                transaction_id,
+                at=at,
+                status="aborted",
+                terminal_event=event,
+                details=details,
+            )
             state["current"] = None
+
+    def _close_transaction_branch(
+        self,
+        transaction_id: str,
+        *,
+        at: str | None,
+        status: str,
+        terminal_event: str,
+        details: Mapping[str, object],
+    ) -> None:
+        relation = self.relations.get(
+            f"fork:{self.workspace_id}:{transaction_id}"
+        )
+        if relation is None:
+            return
+        relation["status"] = status
+        relation["last_at"] = at or relation.get("at")
+        relation_details = relation.setdefault("details", {})
+        relation_details["terminal_event"] = terminal_event
+        if at:
+            relation_details["terminal_at"] = at
+        for key, value in details.items():
+            if value is not None and value != "" and value != []:
+                relation_details[key] = value
 
     def _new_transaction_segment(
         self,
@@ -905,18 +962,18 @@ class StorylineProjection:
             anchor = max(
                 candidates,
                 key=lambda relation: (
+                    str(relation.get("last_at") or relation.get("at") or ""),
                     FOCUS_KIND_PRIORITY.get(str(relation.get("kind")), 1)
                     + FOCUS_STATUS_BONUS.get(
                         str(relation.get("status")), 0
                     ),
-                    str(relation.get("at") or ""),
                     str(relation.get("id") or ""),
                 ),
             )
             return {
                 "kind": str(anchor.get("kind") or "relation"),
                 "status": str(anchor.get("status") or "observed"),
-                "at": anchor.get("at"),
+                "at": anchor.get("last_at") or anchor.get("at"),
                 "relation_id": anchor["id"],
                 "owners": self._relation_owners(anchor),
                 "evidence": anchor.get("evidence"),
@@ -1023,41 +1080,67 @@ class StorylineProjection:
             inferred += 1
         return inferred
 
-    def serialise(self, *, limit: int, source_events: int) -> dict[str, object]:
+    def serialise(
+        self,
+        *,
+        limit: int,
+        source_events: int,
+        page: int = 1,
+    ) -> dict[str, object]:
         inferred_run_bindings = self._infer_presentation_runs()
         all_items = [*self.spans.values(), *self.markers.values()]
-        ordered = sorted(
-            all_items,
-            key=lambda item: (
-                str(item.get("started_at") or item.get("at") or ""),
-                str(item["id"]),
+
+        def moment_at(category: str, item: Mapping[str, object]) -> str:
+            if category == "span":
+                return str(
+                    item.get("last_at")
+                    or item.get("ended_at")
+                    or item.get("started_at")
+                    or ""
+                )
+            return str(item.get("last_at") or item.get("at") or "")
+
+        ordered_moments = sorted(
+            [
+                *(('span', item) for item in self.spans.values()),
+                *(('marker', item) for item in self.markers.values()),
+                *(('relation', item) for item in self.relations.values()),
+            ],
+            key=lambda entry: (
+                moment_at(entry[0], entry[1]),
+                entry[0],
+                str(entry[1]["id"]),
             ),
         )
-        if len(ordered) > limit:
-            important = [
-                item for item in ordered if item.get("status") in IMPORTANT_STATUSES
-            ]
-            selected = {str(item["id"]) for item in important[-limit:]}
-            for item in reversed(ordered):
-                if len(selected) >= limit:
-                    break
-                selected.add(str(item["id"]))
-        else:
-            selected = {str(item["id"]) for item in ordered}
+        total_moments = len(ordered_moments)
+        total_pages = max(1, (total_moments + limit - 1) // limit)
+        current_page = min(page, total_pages)
+        end = max(0, total_moments - (current_page - 1) * limit)
+        start = max(0, end - limit)
+        visible_moments = ordered_moments[start:end]
+        selected: dict[str, set[str]] = {
+            "span": set(),
+            "marker": set(),
+            "relation": set(),
+        }
+        for category, item in visible_moments:
+            selected[category].add(str(item["id"]))
 
-        spans = [item for item in self.spans.values() if item["id"] in selected]
-        markers = [
-            item for item in self.markers.values() if item["id"] in selected
+        spans = [
+            item
+            for item in self.spans.values()
+            if item["id"] in selected["span"]
         ]
-        visible_relations: list[dict[str, Any]] = []
-        for relation in self.relations.values():
-            source_item = relation.get("source_item")
-            target_item = relation.get("target_item")
-            if source_item and source_item not in selected:
-                continue
-            if target_item and target_item not in selected:
-                continue
-            visible_relations.append(relation)
+        markers = [
+            item
+            for item in self.markers.values()
+            if item["id"] in selected["marker"]
+        ]
+        visible_relations = [
+            item
+            for item in self.relations.values()
+            if item["id"] in selected["relation"]
+        ]
 
         owners = {
             str(span["owner"])
@@ -1084,12 +1167,41 @@ class StorylineProjection:
                 if owner not in {"__canonical__", "__system__"}
             )
 
+        visible_first_activity: dict[str, str] = {}
+
+        def record_activity(owner: str | None, at: object) -> None:
+            if not owner or owner in {"__canonical__", "__system__"} or not at:
+                return
+            value = str(at)
+            current = visible_first_activity.get(owner)
+            if current is None or value < current:
+                visible_first_activity[owner] = value
+
+        for span in spans:
+            record_activity(str(span["owner"]), span.get("started_at"))
+        for marker in markers:
+            record_activity(str(marker.get("lane") or ""), marker.get("at"))
+            for owner in marker.get("owners", []):
+                record_activity(str(owner), marker.get("at"))
+        for relation in visible_relations:
+            record_activity(_text(relation.get("source_owner")), relation.get("at"))
+            record_activity(_text(relation.get("target_owner")), relation.get("at"))
+            for owner in relation.get("owners", []):
+                record_activity(str(owner), relation.get("at"))
+
         canonical_labels = [
             str(marker["details"].get("canonical_branch"))
             for marker in markers
             if marker["lane"] == "__canonical__"
             and marker["details"].get("canonical_branch")
         ]
+        if not canonical_labels:
+            canonical_labels = [
+                str(marker["details"].get("canonical_branch"))
+                for marker in self.markers.values()
+                if marker["lane"] == "__canonical__"
+                and marker["details"].get("canonical_branch")
+            ]
         canonical_label = canonical_labels[-1] if canonical_labels else "canonical"
         lanes: list[dict[str, object]] = [
             {
@@ -1104,7 +1216,7 @@ class StorylineProjection:
         ]
         for owner in sorted(
             owners,
-            key=lambda value: (self.first_activity.get(value, "\uffff"), value),
+            key=lambda value: (visible_first_activity.get(value, "\uffff"), value),
         ):
             owner_spans = [span for span in spans if span["owner"] == owner]
             statuses = {str(span["status"]) for span in owner_spans}
@@ -1121,7 +1233,7 @@ class StorylineProjection:
                         else "observed"
                     ),
                     "item_count": len(owner_spans),
-                    "started_at": self.first_activity.get(owner),
+                    "started_at": visible_first_activity.get(owner),
                 }
             )
         if any(span["owner"] == "__system__" for span in spans):
@@ -1188,7 +1300,22 @@ class StorylineProjection:
                 "inferred_run_bindings": inferred_run_bindings,
                 "total_items": len(all_items),
                 "visible_items": len(spans) + len(markers),
-                "truncated": len(all_items) > len(spans) + len(markers),
+                "total_moments": total_moments,
+                "visible_moments": len(visible_moments),
+                "hidden_moments": total_moments - len(visible_moments),
+                "attention_moments": sum(
+                    str(item.get("status") or "") in ATTENTION_STATUSES
+                    for _, item in ordered_moments
+                ),
+                "truncated": total_moments > len(visible_moments),
+                "pagination": {
+                    "page": current_page,
+                    "page_size": limit,
+                    "total": total_moments,
+                    "pages": total_pages,
+                    "has_older": current_page < total_pages,
+                    "has_newer": current_page > 1,
+                },
             },
             "focus": focus,
             "lanes": lanes,

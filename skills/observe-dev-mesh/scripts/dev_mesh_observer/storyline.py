@@ -31,12 +31,15 @@ def build_collaboration_storyline(
     since: datetime,
     workspace_id: str,
     limit: int = 36,
+    page: int = 1,
 ) -> dict[str, object]:
     """Return compressed Git context, owner work spans, and exact relations."""
     if not workspace_id:
         raise ValueError("storyline workspace_id is required")
-    if limit < 8 or limit > 60:
-        raise ValueError("storyline limit must be between 8 and 60")
+    if limit < 8 or limit > 300:
+        raise ValueError("storyline limit must be between 8 and 300")
+    if page < 1:
+        raise ValueError("storyline page must be positive")
 
     workspace = connection.execute(
         "SELECT workspace_root FROM workspaces WHERE workspace_id = ?",
@@ -81,6 +84,10 @@ def build_collaboration_storyline(
         projection.annotate_active_contentions(
             snapshot for snapshot in snapshots if isinstance(snapshot, dict)
         )
-    result = projection.serialise(limit=limit, source_events=len(rows))
+    result = projection.serialise(
+        limit=limit,
+        source_events=len(rows),
+        page=page,
+    )
     result["since"] = since.isoformat()
     return result

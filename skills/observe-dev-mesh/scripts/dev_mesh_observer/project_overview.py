@@ -1,9 +1,11 @@
-"""Per-workspace collaboration summaries without cross-workspace inference."""
+"""Per-workspace summaries and presentation-only cross-project identity."""
 
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from typing import Any
+
+from .cross_project import build_cross_project_projection
 
 
 COLLABORATION_EVENTS = {
@@ -31,7 +33,7 @@ def build_project_overview(
     window_rows: Sequence[Mapping[str, Any]],
     coordination_state: Mapping[str, object],
 ) -> dict[str, object]:
-    """Summarize each workspace while explicitly declining cross-project edges."""
+    """Summarize each workspace and attach bounded cross-project inference."""
 
     projects: dict[str, dict[str, Any]] = {
         workspace_id: {
@@ -144,9 +146,8 @@ def build_project_overview(
             ),
         },
         "projects": ordered,
-        "cross_project": {
-            "tracking_supported": False,
-            "observed_relations": 0,
-            "reason": "no cross-workspace correlation contract",
-        },
+        "cross_project": build_cross_project_projection(
+            workspace_names=workspace_names,
+            rows=window_rows,
+        ),
     }

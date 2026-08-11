@@ -245,8 +245,8 @@ class ObserverStorylineTest(unittest.TestCase):
         )
         self.assertEqual(transaction["owner"], "__system__")
         self.assertEqual(transaction["trace_quality"], "legacy-unknown")
-        self.assertEqual(story["focus"]["kind"], "contention")
-        self.assertEqual(story["focus"]["status"], "stalled")
+        self.assertEqual(story["focus"]["kind"], "handoff")
+        self.assertEqual(story["focus"]["status"], "accepted")
         self.assertEqual(story["focus"]["owners"], ["agent-a", "agent-b"])
 
     def test_orders_agent_lanes_by_first_visible_activity(self) -> None:
@@ -286,8 +286,19 @@ class ObserverStorylineTest(unittest.TestCase):
                     "task_summary": "Bound the visible storyline",
                 },
             )
+        self.write_event(
+            17,
+            {
+                "at": "2026-08-11T00:04:10Z",
+                "event": "message-sent",
+                "owner": "agent-extra-16",
+                "target_owner": "agent-extra-15",
+                "message_id": "latest-message",
+                "message_type": "progress",
+            },
+        )
         with ObserverStore(self.data_dir) as store:
-            self.assertEqual(store.collect()["inserted"], 3)
+            self.assertEqual(store.collect()["inserted"], 4)
             with self.assertRaisesRegex(ValueError, "workspace_id"):
                 build_collaboration_storyline(
                     store.connection,
@@ -300,19 +311,44 @@ class ObserverStorylineTest(unittest.TestCase):
                 workspace_id=self.workspace_id,
                 limit=8,
             )
-
-        self.assertEqual(story["summary"]["visible_items"], 8)
-        self.assertTrue(story["summary"]["truncated"])
-        visible = {
-            item["id"] for item in [*story["spans"], *story["markers"]]
-        }
-        self.assertTrue(
-            all(
-                (not relation.get("source_item") or relation["source_item"] in visible)
-                and (not relation.get("target_item") or relation["target_item"] in visible)
-                for relation in story["relations"]
+            older_story = build_collaboration_storyline(
+                store.connection,
+                since=datetime(2026, 8, 10, tzinfo=UTC),
+                workspace_id=self.workspace_id,
+                limit=8,
+                page=2,
             )
-        )
+            with self.assertRaisesRegex(ValueError, "positive"):
+                build_collaboration_storyline(
+                    store.connection,
+                    since=datetime(2026, 8, 10, tzinfo=UTC),
+                    workspace_id=self.workspace_id,
+                    limit=8,
+                    page=0,
+                )
+
+        self.assertEqual(story["summary"]["visible_moments"], 8)
+        self.assertTrue(story["summary"]["truncated"])
+        self.assertEqual(story["summary"]["pagination"]["page"], 1)
+        self.assertTrue(story["summary"]["pagination"]["has_older"])
+        self.assertEqual(story["focus"]["kind"], "message")
+        self.assertEqual(story["focus"]["at"], "2026-08-11T00:04:10Z")
+        self.assertEqual(older_story["summary"]["pagination"]["page"], 2)
+        self.assertTrue(older_story["summary"]["pagination"]["has_newer"])
+        latest_ids = {
+            item["id"]
+            for item in [*story["spans"], *story["markers"], *story["relations"]]
+        }
+        older_ids = {
+            item["id"]
+            for item in [
+                *older_story["spans"],
+                *older_story["markers"],
+                *older_story["relations"],
+            ]
+        }
+        self.assertTrue(latest_ids.isdisjoint(older_ids))
+        self.assertGreater(story["summary"]["attention_moments"], 0)
 
     def test_active_intersection_connects_to_in_window_claim_update(self) -> None:
         self.write_event(
@@ -549,6 +585,92 @@ class ObserverStorylineTest(unittest.TestCase):
         self.assertEqual(claim["run_binding"], "unbound")
         self.assertNotIn("inferred_run_id", claim)
 
+    def test_aborted_transaction_returns_execution_without_git_rejoin(self) -> None:
+        self.write_event(
+            14,
+            {
+                "at": "2026-08-11T00:04:00Z",
+                "event": "transaction-recorded",
+                "trace_schema": 1,
+                "transaction_id": "tx-aborted",
+                "owner": "agent-a",
+                "work_owner": "agent-a",
+                "scope": "route-a",
+                "branch": "agent-tx/tx-aborted",
+                "base_revision": "base111111111111",
+                "canonical_branch": "main",
+            },
+        )
+        self.write_event(
+            15,
+            {
+                "at": "2026-08-11T00:04:20Z",
+                "event": "transaction-aborted",
+                "trace_schema": 1,
+                "transaction_id": "tx-aborted",
+                "owner": "agent-a",
+                "work_owner": "agent-a",
+                "branch": "agent-tx/tx-aborted",
+                "base_revision": "base111111111111",
+                "canonical_branch": "main",
+                "reason": "Empty checkout; use direct coordination",
+            },
+        )
+        with ObserverStore(self.data_dir) as store:
+            self.assertEqual(store.collect()["inserted"], 2)
+            story = build_collaboration_storyline(
+                store.connection,
+                since=datetime(2026, 8, 10, tzinfo=UTC),
+                workspace_id=self.workspace_id,
+            )
+
+        transaction = next(
+            span
+            for span in story["spans"]
+            if span["details"].get("transaction_id") == "tx-aborted"
+        )
+        self.assertEqual(transaction["status"], "aborted")
+        self.assertEqual(transaction["ended_at"], "2026-08-11T00:04:20Z")
+        fork = next(
+            relation
+            for relation in story["relations"]
+            if relation["kind"] == "fork"
+            and relation["details"].get("transaction_id") == "tx-aborted"
+        )
+        self.assertEqual(fork["status"], "aborted")
+        self.assertEqual(fork["at"], "2026-08-11T00:04:00Z")
+        self.assertEqual(fork["last_at"], "2026-08-11T00:04:20Z")
+        self.assertEqual(fork["details"]["terminal_event"], "transaction-aborted")
+        self.assertEqual(fork["details"]["terminal_at"], "2026-08-11T00:04:20Z")
+        self.assertEqual(
+            fork["details"]["reason"],
+            "Empty checkout; use direct coordination",
+        )
+        self.assertFalse(
+            any(
+                relation["kind"] == "rejoin"
+                and relation["details"].get("transaction_id") == "tx-aborted"
+                for relation in story["relations"]
+            )
+        )
+        execution_return = next(
+            relation
+            for relation in story["relations"]
+            if relation["kind"] == "return"
+            and relation["details"].get("transaction_id") == "tx-aborted"
+        )
+        self.assertEqual(execution_return["status"], "aborted")
+        self.assertEqual(execution_return["at"], "2026-08-11T00:04:20Z")
+        self.assertEqual(execution_return["source_owner"], "agent-a")
+        self.assertEqual(execution_return["target_owner"], "agent-a")
+        self.assertEqual(
+            execution_return["evidence"],
+            "transaction_id+transaction-aborted",
+        )
+        self.assertEqual(story["focus"]["kind"], "return")
+        self.assertEqual(story["focus"]["status"], "aborted")
+        self.assertEqual(story["focus"]["at"], "2026-08-11T00:04:20Z")
+
     def test_native_trace_draws_fork_rejoin_wait_diversion_and_reassignment(
         self,
     ) -> None:
@@ -681,6 +803,15 @@ class ObserverStorylineTest(unittest.TestCase):
             {"fork", "rejoin", "reassigned", "waits-for", "diverts-to", "message"}
             <= relation_kinds
         )
+        fork = next(
+            relation
+            for relation in story["relations"]
+            if relation["kind"] == "fork"
+            and relation["details"].get("transaction_id") == "tx-native"
+        )
+        self.assertEqual(fork["status"], "published")
+        self.assertEqual(fork["last_at"], "2026-08-11T00:04:40Z")
+        self.assertEqual(fork["details"]["terminal_event"], "publish-completed")
         self.assertEqual(story["summary"]["branch_forks"], 1)
         self.assertEqual(story["summary"]["waits"], 2)
         self.assertEqual(story["summary"]["messages"], 1)

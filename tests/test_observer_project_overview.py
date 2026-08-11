@@ -22,6 +22,7 @@ class ObserverProjectOverviewTest(unittest.TestCase):
         run_id: str | None = None,
         handoff_id: str | None = None,
         transaction_id: str | None = None,
+        owner: str | None = None,
     ) -> dict[str, object]:
         return {
             "workspace_id": workspace_id,
@@ -30,6 +31,8 @@ class ObserverProjectOverviewTest(unittest.TestCase):
             "run_id": run_id,
             "handoff_id": handoff_id,
             "transaction_id": transaction_id,
+            "owner": owner,
+            "payload_json": "{}",
         }
 
     def test_summarizes_projects_without_inventing_cross_project_edges(self) -> None:
@@ -88,8 +91,41 @@ class ObserverProjectOverviewTest(unittest.TestCase):
         self.assertEqual(alpha["transactions_observed"], 1)
         self.assertEqual(alpha["transaction_conflicts"], 1)
         self.assertEqual(alpha["collaboration_signals"], 4)
-        self.assertFalse(result["cross_project"]["tracking_supported"])
+        self.assertTrue(result["cross_project"]["tracking_supported"])
+        self.assertFalse(result["cross_project"]["causal_tracking_supported"])
         self.assertEqual(result["cross_project"]["observed_relations"], 0)
+
+    def test_includes_owner_identity_projection_for_global_project_view(self) -> None:
+        project_rows = [
+            self.row(
+                "workspace-a",
+                "2026-08-11T00:00:00Z",
+                "agent-joined",
+                run_id="run-a",
+                owner="agent-shared",
+            ),
+            self.row(
+                "workspace-b",
+                "2026-08-11T00:00:10Z",
+                "agent-joined",
+                run_id="run-b",
+                owner="agent-shared",
+            ),
+        ]
+        result = build_project_overview(
+            workspace_names={
+                "workspace-a": "/workspaces/alpha",
+                "workspace-b": "/workspaces/beta",
+            },
+            rows=project_rows,
+            window_rows=project_rows,
+            coordination_state={"active_contentions": []},
+        )
+
+        cross_project = result["cross_project"]
+        self.assertEqual(cross_project["summary"]["owners"], 1)
+        self.assertEqual(cross_project["summary"]["projects"], 2)
+        self.assertEqual(cross_project["observed_relations"], 1)
 
 
 if __name__ == "__main__":

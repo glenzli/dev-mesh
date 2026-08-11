@@ -126,6 +126,7 @@
             railY: canonicalLane.center,
             y: canonicalLane.center + (episode.level + 1) * CANONICAL_BRANCH_STEP,
             merged: Boolean(episode.rejoinAt),
+            aborted: episode.status === "aborted",
           };
         })
       : [];
@@ -420,7 +421,7 @@
       const x = xAt(relation.at);
       const transactionIdentifier = relation.kind === "fork"
         ? relation.target_item
-        : relation.kind === "rejoin"
+        : ["rejoin", "return"].includes(relation.kind)
           ? relation.source_item
           : null;
       const transactionGeometry = transactionIdentifier

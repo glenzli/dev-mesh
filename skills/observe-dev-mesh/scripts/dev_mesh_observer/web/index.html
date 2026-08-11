@@ -10,7 +10,7 @@
     <link rel="stylesheet" href="/styles.css">
     <script src="/analytics-view.js" defer></script>
     <script src="/project-overview.js" defer></script>
-    <script src="/storyline-focus.js" defer></script>
+    <script src="/cross-project-view.js" defer></script>
     <script src="/storyline-layout.js" defer></script>
     <script src="/storyline-view.js" defer></script>
     <script src="/app.js" defer></script>
@@ -89,17 +89,45 @@
           </div>
         </div>
         <div class="project-overview" id="project-overview">
-          <div class="cross-project-boundary" role="note">
-            <span class="boundary-mark" aria-hidden="true">↯</span>
-            <div>
-              <strong data-i18n="projectOverview.crossProjectTitle">当前没有跨项目协作追踪</strong>
-              <p data-i18n="projectOverview.crossProjectBody">这里分别汇总各项目；只有协议记录明确的跨工作区 correlation 后，才会建立项目之间的关系。</p>
+          <div class="project-overview-toolbar">
+            <div class="storyline-modes" role="group" data-i18n-aria-label="projectOverview.modeLabel">
+              <button class="storyline-mode active" id="overview-mode-cross" type="button" aria-pressed="true" data-i18n="projectOverview.mode.cross">跨项目图</button>
+              <button class="storyline-mode" id="overview-mode-projects" type="button" aria-pressed="false" data-i18n="projectOverview.mode.projects">项目状态</button>
+            </div>
+            <span id="cross-project-summary" class="cross-project-summary" data-i18n="crossProject.waiting">等待跨项目活动</span>
+          </div>
+          <div class="cross-project-view" id="cross-project-view">
+            <div class="cross-project-legend" data-i18n-aria-label="crossProject.legend">
+              <span><i class="activity"></i><b data-i18n="crossProject.legend.activity">项目内活动</b></span>
+              <span><i class="identity"></i><b data-i18n="crossProject.legend.identity">相同 owner · 推断关联</b></span>
+              <small data-i18n="crossProject.legend.hint">虚线不表示因果、依赖或交接；悬停查看证据</small>
+            </div>
+            <div class="cross-project-canvas">
+              <div class="cross-project-lanes" id="cross-project-lanes" aria-hidden="true"></div>
+              <div class="cross-project-scroll" id="cross-project-scroll">
+                <svg id="cross-project-graph" role="img" data-i18n-aria-label="crossProject.aria"></svg>
+                <div class="cross-project-tooltip" id="cross-project-tooltip" role="tooltip" hidden></div>
+                <p class="empty cross-project-empty" id="cross-project-empty" data-i18n="crossProject.empty">当前窗口没有足够可靠的跨项目身份关联</p>
+              </div>
             </div>
           </div>
-          <div class="project-overview-grid" id="project-overview-grid"><p class="empty" data-i18n="projectOverview.waiting">等待项目数据</p></div>
+          <div class="project-overview-grid" id="project-overview-grid" hidden><p class="empty" data-i18n="projectOverview.waiting">等待项目数据</p></div>
         </div>
         <div class="storyline-layout" id="storyline-layout" hidden>
           <div class="storyline-stage">
+            <div class="storyline-toolbar">
+              <div class="storyline-modes" role="group" data-i18n-aria-label="storyline.modeLabel">
+                <button class="storyline-mode active" id="storyline-mode-latest" type="button" aria-pressed="true" data-i18n="storyline.mode.latest">最新片段</button>
+                <button class="storyline-mode" id="storyline-mode-window" type="button" aria-pressed="false" data-i18n="storyline.mode.window">全窗口</button>
+              </div>
+              <span class="storyline-range" id="storyline-range" data-i18n="storyline.rangeEmpty">图内暂无时间</span>
+              <span class="storyline-attention" id="storyline-attention" hidden></span>
+              <nav class="storyline-pagination" data-i18n-aria-label="storyline.paginationLabel">
+                <button class="button ghost compact-button" id="storyline-page-older" type="button" data-i18n="storyline.page.older">较早片段</button>
+                <span id="storyline-page-label">第 1 / 1 段</span>
+                <button class="button ghost compact-button" id="storyline-page-newer" type="button" data-i18n="storyline.page.newer">较新片段</button>
+              </nav>
+            </div>
             <div class="storyline-legend" data-i18n-aria-label="storyline.legend">
               <span><i class="canonical"></i><b data-i18n="storyline.legend.canonical">当前分支</b></span>
               <span><i class="session"></i><b data-i18n="storyline.legend.session">会话起点</b></span>
@@ -108,6 +136,8 @@
               <span><i class="unbound"></i><b data-i18n="storyline.legend.unbound">未关联 Run</b></span>
               <span><i class="progress"></i><b data-i18n="storyline.legend.progress">Run 执行主干</b></span>
               <span><i class="branch"></i><b data-i18n="storyline.legend.branch">临时分支 · 分叉 / 合回</b></span>
+              <span><i class="aborted"></i><b data-i18n="storyline.legend.aborted">分支中止</b></span>
+              <span><i class="return"></i><b data-i18n="storyline.legend.return">中止后返回执行主线</b></span>
               <span><i class="handoff"></i><b data-i18n="storyline.legend.handoff">交接 / 重分配</b></span>
               <span><i class="message"></i><b data-i18n="storyline.legend.message">通知</b></span>
               <span><i class="waiting"></i><b data-i18n="storyline.legend.waiting">等待 / 依赖</b></span>

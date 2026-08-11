@@ -4,6 +4,9 @@ const preferences = window.DevMeshPreferences;
 const initialParameters = new URLSearchParams(window.location.search);
 const supportedWindows = new Set(["1h", "24h", "48h", "7d", "4w"]);
 const initialWindow = initialParameters.get("since");
+const initialStorylineMode = initialParameters.get("storyline");
+const initialStorylinePage = Number(initialParameters.get("storyline_page") || 1);
+const initialOverviewMode = initialParameters.get("overview");
 const state = {
   status: null,
   report: null,
@@ -12,6 +15,11 @@ const state = {
   issueTotal: 0,
   since: supportedWindows.has(initialWindow) ? initialWindow : "48h",
   workspaceScope: initialParameters.get("workspace") || "",
+  storylineMode: initialStorylineMode === "window" ? "window" : "latest",
+  storylinePage: Number.isInteger(initialStorylinePage) && initialStorylinePage > 0
+    ? initialStorylinePage
+    : 1,
+  overviewMode: initialOverviewMode === "projects" ? "projects" : "cross",
   refreshGeneration: 0,
   timer: null,
   observedEventTotal: null,
@@ -72,6 +80,13 @@ function syncLocation() {
   const parameters = new URLSearchParams();
   parameters.set("since", state.since);
   if (state.workspaceScope) parameters.set("workspace", state.workspaceScope);
+  if (state.workspaceScope && state.storylineMode === "window") parameters.set("storyline", "window");
+  if (state.workspaceScope && state.storylinePage > 1) {
+    parameters.set("storyline_page", String(state.storylinePage));
+  }
+  if (!state.workspaceScope && state.overviewMode === "projects") {
+    parameters.set("overview", "projects");
+  }
   const query = parameters.toString();
   window.history.replaceState(null, "", `${window.location.pathname}${query ? `?${query}` : ""}`);
 }
@@ -85,6 +100,7 @@ function validateWorkspaceScope(status) {
   ) {
     state.workspaceScope = "";
     state.storyline = null;
+    state.storylinePage = 1;
     resetTimelineSnapshot();
     syncLocation();
   }
@@ -325,6 +341,7 @@ function selectWorkspaceScope(workspaceId) {
   if (nextScope === state.workspaceScope) return;
   state.workspaceScope = nextScope;
   state.storyline = null;
+  state.storylinePage = 1;
   $("scope-workspace").value = state.workspaceScope;
   $("filter-workspace").value = state.workspaceScope;
   $("filter-event").value = "";
@@ -343,15 +360,38 @@ function renderCollaborationView() {
     $("scope-hint").textContent = t("scope.allHint");
     const overview = state.report?.project_overview || {};
     const summary = overview.summary || {};
-    $("graph-count").textContent = t("projectOverview.count", {
-      projects: formatNumber(summary.projects),
-      active: formatNumber(summary.active_projects),
+    const crossProject = overview.cross_project || {};
+    const crossSummary = crossProject.summary || {};
+    const crossVisible = state.overviewMode === "cross";
+    $("overview-mode-cross").classList.toggle("active", crossVisible);
+    $("overview-mode-projects").classList.toggle("active", !crossVisible);
+    $("overview-mode-cross").setAttribute("aria-pressed", crossVisible ? "true" : "false");
+    $("overview-mode-projects").setAttribute("aria-pressed", crossVisible ? "false" : "true");
+    $("cross-project-view").hidden = !crossVisible;
+    $("project-overview-grid").hidden = crossVisible;
+    $("cross-project-summary").textContent = t("crossProject.summary", {
+      owners: formatNumber(crossSummary.owners),
+      projects: formatNumber(crossSummary.projects),
+      relations: formatNumber(crossSummary.inferred_relations),
     });
-    window.DevMeshProjectOverview.render(
-      overview,
-      state.status?.workspaces || [],
-      selectWorkspaceScope,
-    );
+    if (crossVisible) {
+      $("graph-count").textContent = t("crossProject.count", {
+        owners: formatNumber(crossSummary.owners),
+        projects: formatNumber(crossSummary.projects),
+        relations: formatNumber(crossSummary.inferred_relations),
+      });
+      window.DevMeshCrossProjectView.render(crossProject, selectWorkspaceScope);
+    } else {
+      $("graph-count").textContent = t("projectOverview.count", {
+        projects: formatNumber(summary.projects),
+        active: formatNumber(summary.active_projects),
+      });
+      window.DevMeshProjectOverview.render(
+        overview,
+        state.status?.workspaces || [],
+        selectWorkspaceScope,
+      );
+    }
     return;
   }
   const project = (state.report?.project_overview?.projects || [])
@@ -360,7 +400,7 @@ function renderCollaborationView() {
     project: shortPath(project?.workspace_root || selectedWorkspace()?.workspace_root),
   });
   window.DevMeshStorylineView.render(state.storyline || {}, {
-    latestProjectAt: project?.last_activity_at || null,
+    mode: state.storylineMode,
   });
 }
 
@@ -520,8 +560,9 @@ async function refreshDashboard({ quiet = false } = {}) {
       const parameters = new URLSearchParams({
         since: state.since,
         workspace_id: state.workspaceScope,
+        page: String(state.storylinePage),
       });
-      parameters.set("limit", "28");
+      parameters.set("limit", state.storylineMode === "window" ? "300" : "28");
       storylineRequest = api(`/api/v1/storyline?${parameters}`);
     }
     const [report, storyline, issues] = await Promise.all([
@@ -541,6 +582,10 @@ async function refreshDashboard({ quiet = false } = {}) {
     state.status = status;
     state.report = report;
     state.storyline = storyline;
+    if (storyline?.summary?.pagination?.page) {
+      state.storylinePage = Number(storyline.summary.pagination.page);
+      syncLocation();
+    }
     state.issues = issues.issues;
     state.issueTotal = Number(issues.total ?? issues.issues.length);
     renderDashboard();
@@ -627,11 +672,48 @@ $("locale-select").addEventListener("change", (event) => {
 $("theme-select").addEventListener("change", (event) => preferences.setTheme(event.target.value));
 $("since-select").addEventListener("change", (event) => {
   state.since = event.target.value;
+  state.storylinePage = 1;
   syncLocation();
   refreshDashboard();
 });
 $("scope-workspace").addEventListener("change", (event) => {
   selectWorkspaceScope(event.target.value);
+});
+$("overview-mode-cross").addEventListener("click", () => {
+  if (state.overviewMode === "cross") return;
+  state.overviewMode = "cross";
+  syncLocation();
+  renderCollaborationView();
+});
+$("overview-mode-projects").addEventListener("click", () => {
+  if (state.overviewMode === "projects") return;
+  state.overviewMode = "projects";
+  syncLocation();
+  renderCollaborationView();
+});
+$("storyline-mode-latest").addEventListener("click", () => {
+  if (state.storylineMode === "latest") return;
+  state.storylineMode = "latest";
+  state.storylinePage = 1;
+  syncLocation();
+  refreshDashboard();
+});
+$("storyline-mode-window").addEventListener("click", () => {
+  if (state.storylineMode === "window") return;
+  state.storylineMode = "window";
+  state.storylinePage = 1;
+  syncLocation();
+  refreshDashboard();
+});
+$("storyline-page-older").addEventListener("click", () => {
+  state.storylinePage += 1;
+  syncLocation();
+  refreshDashboard();
+});
+$("storyline-page-newer").addEventListener("click", () => {
+  state.storylinePage = Math.max(1, state.storylinePage - 1);
+  syncLocation();
+  refreshDashboard();
 });
 $("refresh-button").addEventListener("click", () => {
   resetTimelineSnapshot();

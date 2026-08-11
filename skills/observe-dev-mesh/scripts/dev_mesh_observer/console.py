@@ -35,7 +35,10 @@ STATIC_FILES = {
     "/app.js": ("app.js", "text/javascript; charset=utf-8"),
     "/analytics-view.js": ("analytics-view.js", "text/javascript; charset=utf-8"),
     "/project-overview.js": ("project-overview.js", "text/javascript; charset=utf-8"),
-    "/storyline-focus.js": ("storyline-focus.js", "text/javascript; charset=utf-8"),
+    "/cross-project-view.js": (
+        "cross-project-view.js",
+        "text/javascript; charset=utf-8",
+    ),
     "/storyline-layout.js": ("storyline-layout.js", "text/javascript; charset=utf-8"),
     "/storyline-view.js": ("storyline-view.js", "text/javascript; charset=utf-8"),
     "/graph-view.js": ("graph-view.js", "text/javascript; charset=utf-8"),
@@ -309,8 +312,9 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                 limit = bounded_limit(
                     self._single(parameters, "limit"), default=28
                 )
-                if limit < 8 or limit > 60:
-                    raise ValueError("storyline limit must be between 8 and 60")
+                if limit < 8 or limit > 300:
+                    raise ValueError("storyline limit must be between 8 and 300")
+                page = bounded_page(self._single(parameters, "page"))
                 self._send_json(
                     HTTPStatus.OK,
                     build_collaboration_storyline(
@@ -318,6 +322,7 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                         since=parse_since(since),
                         workspace_id=workspace_id,
                         limit=limit,
+                        page=page,
                     ),
                 )
                 return

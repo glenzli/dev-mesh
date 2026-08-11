@@ -127,6 +127,10 @@ class ObserverConsoleTest(unittest.TestCase):
         self.assertIn(b"storyline.legend.message", payload)
         self.assertIn(b"storyline.legend.diverted", payload)
         self.assertIn(b"storyline.legend.contention", payload)
+        self.assertIn(b"storyline.legend.aborted", payload)
+        self.assertIn(b"storyline.legend.return", payload)
+        self.assertIn(b'id="cross-project-view"', payload)
+        self.assertIn(b'id="overview-mode-cross"', payload)
         self.assertIn(b'class="compact-control window-control"', payload)
         self.assertIn(b'id="since-select"', payload)
         self.assertIn(b'id="scope-workspace"', payload)
@@ -158,6 +162,11 @@ class ObserverConsoleTest(unittest.TestCase):
         status, _, project_overview = self.request("GET", "/project-overview.js")
         self.assertEqual(status, 200)
         self.assertIn(b"DevMeshProjectOverview", project_overview)
+        status, _, cross_project = self.request("GET", "/cross-project-view.js")
+        self.assertEqual(status, 200)
+        self.assertIn(b"DevMeshCrossProjectView", cross_project)
+        self.assertIn(b"crossProject.inferredIdentity", cross_project)
+        self.assertNotIn(b"marker-end", cross_project)
         status, _, storyline = self.request("GET", "/storyline-view.js")
         self.assertEqual(status, 200)
         self.assertIn(b"DevMeshStorylineView", storyline)
@@ -167,6 +176,8 @@ class ObserverConsoleTest(unittest.TestCase):
         self.assertIn(b"run_binding", storyline)
         self.assertIn(b"storyline.lane.actor", storyline)
         self.assertIn(b"latestRecordedAt", storyline)
+        self.assertIn(b"itemTimeLabel", storyline)
+        self.assertIn(b"item.last_at", storyline)
         self.assertIn(b"branch-arrow", storyline)
         self.assertIn(b"publish-arrow", storyline)
         self.assertIn(b"communication-arrow", storyline)
@@ -183,13 +194,16 @@ class ObserverConsoleTest(unittest.TestCase):
         self.assertIn(b"drawCanonicalBranches", storyline)
         self.assertIn(b"local-fork-node", storyline)
         self.assertIn(b"local-rejoin-node", storyline)
+        self.assertIn(b"local-return-node", storyline)
+        self.assertIn(b"canonical-abort-node", storyline)
+        self.assertIn(b"local-abort-node", storyline)
+        self.assertIn(b"abortGlyph", storyline)
         self.assertNotIn(b"trace-branch-glyph", storyline)
         self.assertNotIn(b"OWNER_COLORS", storyline)
         self.assertNotIn(b"relation-label", storyline)
         status, _, storyline_focus = self.request("GET", "/storyline-focus.js")
-        self.assertEqual(status, 200)
-        self.assertIn(b"DevMeshStorylineFocus", storyline_focus)
-        self.assertIn(b"relationOwners", storyline_focus)
+        self.assertEqual(status, 404)
+        self.assertEqual(storyline_focus, b'{"error":"not found"}')
         status, _, storyline_layout = self.request("GET", "/storyline-layout.js")
         self.assertEqual(status, 200)
         self.assertIn(b"DevMeshStorylineLayout", storyline_layout)
@@ -205,6 +219,7 @@ class ObserverConsoleTest(unittest.TestCase):
         self.assertIn(b"coveredIntervalsBySpine", storyline_layout)
         self.assertIn(b"branchEpisodes", storyline_layout)
         self.assertIn(b"canonicalBranchGeometry", storyline_layout)
+        self.assertIn(b'aborted: episode.status === "aborted"', storyline_layout)
         self.assertIn(b"CANONICAL_BRANCH_STEP", storyline_layout)
         self.assertIn(b"momentGeometry", storyline_layout)
         self.assertIn(b'["waiting", "diverted"].includes(span.kind)', storyline_layout)
@@ -218,8 +233,14 @@ class ObserverConsoleTest(unittest.TestCase):
         self.assertIn(b"DevMeshPreferences", preferences)
         self.assertIn(b"storyline.runBinding.inferred", preferences)
         self.assertIn(b"storyline.runBinding.unbound", preferences)
-        self.assertIn(b"storyline.countWithLatest", preferences)
-        self.assertIn(b"storyline.countWithProjectLatest", preferences)
+        self.assertIn(b"storyline.countLatest", preferences)
+        self.assertIn(b"storyline.countWindow", preferences)
+        self.assertIn(b"storyline.page.older", preferences)
+        self.assertIn(b"storyline.legend.aborted", preferences)
+        self.assertIn(b"storyline.legend.return", preferences)
+        self.assertIn(b"crossProject.noCausality", preferences)
+        self.assertIn(b"storyline.detail.terminal_event", preferences)
+        self.assertIn(b"storyline.detail.terminal_at", preferences)
         self.assertNotIn(b"storyline.demo.selector", preferences)
         self.assertNotIn(b"storyline.quality.synthetic", preferences)
         status, _, storyline_demo = self.request("GET", "/storyline-demo.js")
@@ -238,6 +259,8 @@ class ObserverConsoleTest(unittest.TestCase):
         self.assertIn(b".canonical-branch-path", stylesheet)
         self.assertIn(b".canonical-fork-node", stylesheet)
         self.assertIn(b".canonical-rejoin-node", stylesheet)
+        self.assertIn(b".canonical-abort-node", stylesheet)
+        self.assertIn(b".local-abort-node", stylesheet)
 
     def test_reads_status_reports_events_and_details(self) -> None:
         before = self.source_snapshot()
@@ -256,8 +279,13 @@ class ObserverConsoleTest(unittest.TestCase):
         self.assertIn("coordination_state", report)
         self.assertIn("project_overview", report)
         self.assertEqual(report["project_overview"]["summary"]["projects"], 1)
-        self.assertFalse(
+        self.assertTrue(
             report["project_overview"]["cross_project"]["tracking_supported"]
+        )
+        self.assertFalse(
+            report["project_overview"]["cross_project"][
+                "causal_tracking_supported"
+            ]
         )
         self.assertEqual(
             report["coordination_analytics"]["protocol_use"]["summary"][
@@ -299,6 +327,8 @@ class ObserverConsoleTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(storyline["schema"], 2)
         self.assertEqual(storyline["summary"]["visible_items"], 1)
+        self.assertEqual(storyline["summary"]["visible_moments"], 1)
+        self.assertEqual(storyline["summary"]["pagination"]["page"], 1)
         self.assertEqual(storyline["spans"][0]["kind"], "session")
         self.assertEqual(storyline["lanes"][0]["kind"], "canonical")
         self.assertEqual(storyline["workspace_id"], workspace_id)
@@ -538,6 +568,16 @@ class ObserverConsoleTest(unittest.TestCase):
         )
         self.assertEqual(status, 400)
         self.assertIn("between", result["error"])
+        status, result = self.json_request(
+            "GET", "/api/v1/storyline?workspace_id=unknown&limit=301"
+        )
+        self.assertEqual(status, 400)
+        self.assertIn("between", result["error"])
+        status, result = self.json_request(
+            "GET", "/api/v1/storyline?workspace_id=unknown&page=0"
+        )
+        self.assertEqual(status, 400)
+        self.assertIn("page", result["error"])
         status, _ = self.json_request("GET", "/../DESIGN.md")
         self.assertEqual(status, 404)
         status, result = self.json_request(

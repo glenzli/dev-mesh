@@ -39,6 +39,13 @@
     return marker;
   }
 
+  function abortGlyph(className, x, y, size = 4.2) {
+    return svgNode("path", {
+      class: className,
+      d: `M ${x - size} ${y - size} L ${x + size} ${y + size} M ${x + size} ${y - size} L ${x - size} ${y + size}`,
+    });
+  }
+
   function translate(prefix, value, fallback = value) {
     const key = `${prefix}.${value || "observed"}`;
     const translated = t(key);
@@ -76,10 +83,28 @@
   function latestRecordedAt(story) {
     const values = [
       ...(story.spans || []).flatMap((item) => [item.started_at, item.ended_at]),
+      ...(story.markers || []).flatMap((item) => [item.at, item.last_at]),
+      ...(story.relations || []).flatMap((item) => [item.at, item.last_at]),
+    ].filter(Boolean);
+    return values.sort((left, right) => String(left).localeCompare(String(right))).at(-1) || null;
+  }
+
+  function earliestRecordedAt(story) {
+    const values = [
+      ...(story.spans || []).flatMap((item) => [item.started_at, item.ended_at]),
       ...(story.markers || []).map((item) => item.at),
       ...(story.relations || []).map((item) => item.at),
     ].filter(Boolean);
-    return values.sort((left, right) => String(left).localeCompare(String(right))).at(-1) || null;
+    return values.sort((left, right) => String(left).localeCompare(String(right)))[0] || null;
+  }
+
+  function itemTimeLabel(item) {
+    const start = item.started_at || item.at;
+    const terminal = item.ended_at
+      || (item.last_at && item.last_at !== start ? item.last_at : null);
+    return terminal
+      ? `${formatTime(start, true)} → ${formatTime(terminal, true)}`
+      : formatTime(start, true);
   }
 
   function displayLabel(item) {
@@ -134,7 +159,7 @@
       heading,
       htmlNode("strong", "", displayLabel(item)),
       htmlNode("span", "storyline-tooltip-owner", displayOwner(item)),
-      htmlNode("time", "", formatTime(item.started_at || item.at, true)),
+      htmlNode("time", "", itemTimeLabel(item)),
     );
     tooltip.dataset.itemId = item.id;
     tooltip.style.left = `${Math.max(8, Math.min(position.x + 12, canvasWidth - TOOLTIP_WIDTH - 8))}px`;
@@ -166,9 +191,7 @@
     const details = htmlNode("dl", "inspector-details");
     details.append(
       detailRow(t("storyline.detail.owner"), displayOwner(item)),
-      detailRow(t("storyline.detail.time"), item.ended_at
-        ? `${formatTime(item.started_at, true)} → ${formatTime(item.ended_at, true)}`
-        : formatTime(item.started_at || item.at, true)),
+      detailRow(t("storyline.detail.time"), itemTimeLabel(item)),
     );
     const displayRun = item.run_id || item.inferred_run_id;
     if (displayRun) {
@@ -311,6 +334,21 @@
   function drawCanonicalBranches(svg, layout) {
     const layer = svgNode("g", { class: "canonical-branch-graph" });
     layout.canonicalBranchGeometry.forEach((branch) => {
+      const terminal = branch.merged
+        ? svgNode("circle", {
+            class: "canonical-rejoin-node",
+            cx: branch.x2,
+            cy: branch.railY,
+            r: 3.8,
+          })
+        : branch.aborted
+          ? abortGlyph("canonical-abort-node", branch.x2, branch.y)
+          : svgNode("circle", {
+              class: "canonical-branch-tip",
+              cx: branch.x2,
+              cy: branch.y,
+              r: 3.2,
+            });
       layer.append(
         svgNode("path", {
           class: `canonical-branch-path status-${branch.status || "active"}`,
@@ -322,12 +360,7 @@
           cy: branch.railY,
           r: 3.6,
         }),
-        svgNode("circle", {
-          class: branch.merged ? "canonical-rejoin-node" : "canonical-branch-tip",
-          cx: branch.x2,
-          cy: branch.merged ? branch.railY : branch.y,
-          r: branch.merged ? 3.8 : 3.2,
-        }),
+        terminal,
       );
     });
     svg.append(layer);
@@ -351,6 +384,9 @@
           x2: geometry.x2,
           y2: geometry.y,
         }));
+        if (span.status === "aborted" && span.ended_at) {
+          group.append(abortGlyph("local-abort-node", geometry.x2, geometry.y));
+        }
       } else if (["waiting", "diverted"].includes(span.kind)) {
         group.append(
           svgNode("line", {
@@ -474,7 +510,8 @@
           svgNode("path", { class: "relation-symbol", d: `M ${geometry.x} ${top - 5} l 5 5 l -5 5 l -5 -5 z` }),
         );
       } else if (geometry.source && geometry.target) {
-        const localBranch = geometry.branchContext && ["fork", "rejoin"].includes(relation.kind);
+        const localBranch = geometry.branchContext
+          && ["fork", "rejoin", "return"].includes(relation.kind);
         position = {
           x: (geometry.source.x + geometry.target.x) / 2,
           y: (geometry.source.y + geometry.target.y) / 2,
@@ -489,7 +526,11 @@
         if (localBranch) {
           const anchor = relation.kind === "fork" ? geometry.source : geometry.target;
           group.append(svgNode("circle", {
-            class: relation.kind === "fork" ? "local-fork-node" : "local-rejoin-node",
+            class: relation.kind === "fork"
+              ? "local-fork-node"
+              : relation.kind === "return"
+                ? "local-return-node"
+                : "local-rejoin-node",
             cx: anchor.x,
             cy: anchor.y,
             r: relation.kind === "fork" ? 4.2 : 4.5,
@@ -527,39 +568,55 @@
   function render(story = {}, context = {}) {
     const workspaceChanged = renderedWorkspace !== story.workspace_id;
     renderedWorkspace = story.workspace_id || null;
-    const focusedStory = window.DevMeshStorylineFocus.select(story);
     currentStory = {
-      workspace_id: focusedStory.workspace_id || null,
-      lanes: focusedStory.lanes || [],
-      spans: focusedStory.spans || [],
-      markers: focusedStory.markers || [],
-      relations: focusedStory.relations || [],
-      summary: focusedStory.summary || {},
-      focus: focusedStory.focus || {},
+      workspace_id: story.workspace_id || null,
+      lanes: story.lanes || [],
+      spans: story.spans || [],
+      markers: story.markers || [],
+      relations: story.relations || [],
+      summary: story.summary || {},
+      focus: story.focus || {},
     };
     const svg = $("collaboration-storyline");
     const empty = $("storyline-empty");
     hideTooltip();
     svg.replaceChildren();
     const summary = currentStory.summary;
-    const latest = context.latestProjectAt || latestRecordedAt(currentStory);
-    const countKey = context.latestProjectAt
-      ? "storyline.countWithProjectLatest"
-      : latest
-        ? "storyline.countWithLatest"
-        : "storyline.count";
+    const earliest = earliestRecordedAt(currentStory);
+    const latest = latestRecordedAt(currentStory);
+    const countKey = context.mode === "window"
+      ? "storyline.countWindow"
+      : "storyline.countLatest";
     $("graph-count").textContent = t(countKey, {
       actors: summary.actors || 0,
       nodes: (summary.work_spans || 0) + (summary.markers || 0),
       relations: summary.relations || 0,
-      time: latest ? formatTime(latest, true) : "",
     });
     $("storyline-focus-note").textContent = t("storyline.focusNote", {
       owners: summary.owner_labels_in_window || 0,
       runs: summary.joined_runs || 0,
       peak: summary.max_concurrent_runs || 0,
-      actors: summary.actors || 0,
+      visible: summary.visible_moments || 0,
+      total: summary.total_moments || 0,
     });
+    $("storyline-range").textContent = earliest && latest
+      ? t("storyline.range", { start: formatTime(earliest, true), end: formatTime(latest, true) })
+      : t("storyline.rangeEmpty");
+    const attention = Number(summary.attention_moments || 0);
+    $("storyline-attention").hidden = attention === 0;
+    $("storyline-attention").textContent = attention
+      ? t("storyline.attention", { count: attention })
+      : "";
+    const pagination = summary.pagination || {};
+    const page = Number(pagination.page || 1);
+    const pages = Number(pagination.pages || 1);
+    $("storyline-page-label").textContent = t("storyline.page.label", { page, pages });
+    $("storyline-page-older").disabled = !pagination.has_older;
+    $("storyline-page-newer").disabled = !pagination.has_newer;
+    $("storyline-mode-latest").classList.toggle("active", context.mode !== "window");
+    $("storyline-mode-window").classList.toggle("active", context.mode === "window");
+    $("storyline-mode-latest").setAttribute("aria-pressed", context.mode === "window" ? "false" : "true");
+    $("storyline-mode-window").setAttribute("aria-pressed", context.mode === "window" ? "true" : "false");
     if (!currentStory.spans.length && !currentStory.markers.length && !currentStory.relations.length) {
       selectedId = null;
       renderEmptyInspector();
