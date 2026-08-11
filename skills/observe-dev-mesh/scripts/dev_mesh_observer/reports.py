@@ -9,6 +9,8 @@ from collections import Counter
 from datetime import UTC, datetime, timedelta
 
 from .analytics import build_coordination_analytics
+from .project_overview import build_project_overview
+from .state_projection import project_active_contentions
 
 
 DURATION = re.compile(r"^(\d+)([mhdw])$")
@@ -128,6 +130,10 @@ def build_report(
         connection.execute("SELECT COUNT(*) FROM collection_issues").fetchone()[0]
     )
     generated_at = datetime.now(UTC)
+    coordination_state = project_active_contentions(
+        connection,
+        current=generated_at,
+    )
     return {
         "generated_at": _iso(generated_at),
         "since": _iso(since),
@@ -182,5 +188,12 @@ def build_report(
             workspace_names=workspace_names,
             limit=limit,
             current=generated_at,
+        ),
+        "coordination_state": coordination_state,
+        "project_overview": build_project_overview(
+            workspace_names=workspace_names,
+            rows=rows,
+            window_rows=window_rows,
+            coordination_state=coordination_state,
         ),
     }

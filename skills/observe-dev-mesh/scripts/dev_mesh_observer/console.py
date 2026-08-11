@@ -11,10 +11,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
+from .collector import LiveCollector
 from .console_data import bounded_limit, event_detail, list_events, list_issues
-from .operations import collect_registered, discover_and_collect
+from .graph import build_collaboration_graph
 from .reports import build_report, parse_since
 from .store import ObserverStore
+from .storyline import build_collaboration_storyline
 
 
 STATIC_ROOT = Path(__file__).with_name("web")
@@ -22,6 +24,9 @@ STATIC_FILES = {
     "/": ("index.html", "text/html; charset=utf-8"),
     "/app.js": ("app.js", "text/javascript; charset=utf-8"),
     "/analytics-view.js": ("analytics-view.js", "text/javascript; charset=utf-8"),
+    "/project-overview.js": ("project-overview.js", "text/javascript; charset=utf-8"),
+    "/storyline-view.js": ("storyline-view.js", "text/javascript; charset=utf-8"),
+    "/graph-view.js": ("graph-view.js", "text/javascript; charset=utf-8"),
     "/preferences.js": ("preferences.js", "text/javascript; charset=utf-8"),
     "/styles.css": ("styles.css", "text/css; charset=utf-8"),
 }
@@ -36,6 +41,7 @@ CONTENT_SECURITY_POLICY = (
 class ConsoleConfig:
     data_dir: Path
     max_depth: int
+    collect_interval: float
 
 
 class ObserverConsole(ThreadingHTTPServer):
@@ -49,17 +55,38 @@ class ObserverConsole(ThreadingHTTPServer):
         *,
         data_dir: Path,
         max_depth: int,
+        collect_interval: float = 0,
     ) -> None:
         validate_loopback_host(host)
         if port < 0 or port > 65535:
             raise ValueError("port must be between 0 and 65535")
-        self.config = ConsoleConfig(data_dir=data_dir, max_depth=max_depth)
+        self.config = ConsoleConfig(
+            data_dir=data_dir,
+            max_depth=max_depth,
+            collect_interval=collect_interval,
+        )
+        self.collector = LiveCollector(
+            data_dir=data_dir,
+            max_depth=max_depth,
+            interval_seconds=collect_interval,
+        )
         super().__init__((host, port), ConsoleHandler)
 
     @property
     def url(self) -> str:
         host, port = self.server_address[:2]
         return f"http://{host}:{port}"
+
+    def serve_forever(self, poll_interval: float = 0.5) -> None:
+        self.collector.start()
+        try:
+            super().serve_forever(poll_interval=poll_interval)
+        finally:
+            self.collector.stop()
+
+    def server_close(self) -> None:
+        self.collector.stop()
+        super().server_close()
 
 
 def validate_loopback_host(host: str) -> None:
@@ -213,7 +240,49 @@ class ConsoleHandler(BaseHTTPRequestHandler):
         )
         with ObserverStore(self.server.config.data_dir) as store:
             if request.path == "/api/v1/status":
-                self._send_json(HTTPStatus.OK, store.status())
+                status = store.status()
+                collector = self.server.collector.status()
+                collector["pending_events"] = status["summary"]["pending_events"]
+                status["collector"] = collector
+                self._send_json(HTTPStatus.OK, status)
+                return
+            if request.path == "/api/v1/graph":
+                since = self._single(parameters, "since") or "48h"
+                workspace_id = self._single(parameters, "workspace_id")
+                limit = bounded_limit(
+                    self._single(parameters, "limit"), default=120
+                )
+                if limit < 10 or limit > 300:
+                    raise ValueError("graph limit must be between 10 and 300")
+                self._send_json(
+                    HTTPStatus.OK,
+                    build_collaboration_graph(
+                        store.connection,
+                        since=parse_since(since),
+                        workspace_id=workspace_id,
+                        limit=limit,
+                    ),
+                )
+                return
+            if request.path == "/api/v1/storyline":
+                since = self._single(parameters, "since") or "48h"
+                workspace_id = self._single(parameters, "workspace_id")
+                if not workspace_id:
+                    raise ValueError("storyline workspace_id is required")
+                limit = bounded_limit(
+                    self._single(parameters, "limit"), default=28
+                )
+                if limit < 8 or limit > 60:
+                    raise ValueError("storyline limit must be between 8 and 60")
+                self._send_json(
+                    HTTPStatus.OK,
+                    build_collaboration_storyline(
+                        store.connection,
+                        since=parse_since(since),
+                        workspace_id=workspace_id,
+                        limit=limit,
+                    ),
+                )
                 return
             if request.path == "/api/v1/report":
                 since = self._single(parameters, "since") or "48h"
@@ -287,19 +356,14 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             self._error(HTTPStatus.FORBIDDEN, "console request header required")
             return
         payload = self._read_json_object()
-        with ObserverStore(self.server.config.data_dir) as store:
-            if request.path == "/api/v1/collect":
-                result = collect_registered(
-                    store,
-                    max_depth=self.server.config.max_depth,
-                )
-            else:
-                root, max_depth = self._workspace_request(payload)
-                result = discover_and_collect(
-                    store,
-                    roots=[root],
-                    max_depth=max_depth,
-                )
+        if request.path == "/api/v1/collect":
+            result = self.server.collector.collect_now()
+        else:
+            root, max_depth = self._workspace_request(payload)
+            result = self.server.collector.add_workspace(
+                root,
+                max_depth=max_depth,
+            )
         self._send_json(HTTPStatus.OK, result)
 
 
@@ -309,12 +373,14 @@ def serve_console(
     host: str,
     port: int,
     max_depth: int,
+    collect_interval: float,
 ) -> None:
     server = ObserverConsole(
         host,
         port,
         data_dir=data_dir,
         max_depth=max_depth,
+        collect_interval=collect_interval,
     )
     print(f"Observer console: {server.url}", flush=True)
     try:

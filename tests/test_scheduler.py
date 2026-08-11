@@ -128,6 +128,22 @@ class SchedulingIntegrationTest(TransactionRepositoryCase):
         self.assertEqual([request["request_id"] for request in remaining], [exclusive["request_id"]])
         self.assertEqual(remaining[0]["status"], "blocked")
         self.assertIn("active claim health", remaining[0]["blockers"])
+        log = json.loads(
+            self.run_tx("log", "--request", str(exclusive["request_id"])).stdout
+        )["events"]
+        requested = next(event for event in log if event["event"] == "queue-requested")
+        blocked = next(event for event in log if event["event"] == "queue-blocked")
+        self.assertEqual(requested["trace_schema"], 1)
+        self.assertEqual(requested["owners"], ["agent-r"])
+        self.assertEqual(requested["scopes"], ["refactor"])
+        self.assertIn(
+            {
+                "kind": "claim",
+                "scope": "health",
+                "owner": "agent-a",
+            },
+            blocked["blocker_refs"],
+        )
 
     def test_exclusive_request_prevents_later_optimistic_starvation(self) -> None:
         self.custom_claim("health", "agent-a", "src/router.txt", "route:/health")

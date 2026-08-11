@@ -227,6 +227,36 @@ A unanimously accepted contention decision creates a correlated `wait`, `paralle
 advance only these contention-authorized requests. Legacy or manually enqueued requests retain
 explicit `schedule` semantics.
 
+Record what an affected owner actually does after the decision. This is diagnostic only: it does
+not pause, release, transfer, or grant a claim. Use `waiting` only when the owner is genuinely idle
+on the blocked scope; use `diverted` when the owner continues an explicit alternate task:
+
+```bash
+python3 <skill>/scripts/coord.py work-suspend --root <workspace> \
+  --scope route-health --owner agent-a --disposition waiting \
+  --reason "Agent B owns the overlapping routing contract" \
+  --contention <contention-id> --request <request-id> \
+  --blocked-by-owner agent-b --blocked-by-scope route-refactor
+
+python3 <skill>/scripts/coord.py work-suspend --root <workspace> \
+  --scope route-health --owner agent-a --disposition diverted \
+  --reason "Continue independent documentation while routing is blocked" \
+  --alternate-scope routing-docs
+```
+
+When the dependency changes, close the same work disposition with bounded evidence:
+
+```bash
+python3 <skill>/scripts/coord.py work-resume --root <workspace> \
+  --scope route-health --owner agent-a \
+  --evidence "Agent B released the routing contract"
+```
+
+If a claim has already been promoted, pass its active `--transaction`. A diverted event requires
+an alternate scope or joined alternate run; a waiting event rejects alternate work metadata. The
+active work-disposition snapshot exists only to correlate `work-suspended` and `work-resumed` and
+is archived after resume.
+
 Cancel an ungranted request only with the exact owner set recorded by it:
 
 ```bash
@@ -450,6 +480,19 @@ and malformed lifecycle counts. `workflow-report` derives decision revisions, re
 coordinator changes, time-to-decision, time-to-enact, total coordination time, and stalled
 contentions. Treat reports as diagnostics, not authority; recover from Git facts and durable active
 snapshots.
+
+Trace-aware queue events carry the affected `owners` and `scopes` plus structured `blocker_refs`.
+Trace-aware transaction events carry `owner`, `work_owner`, `actor_owner`, `scope`, temporary
+`branch`, `base_revision`, `canonical_branch`, `group_id`, and `request_id` when available.
+`work-suspended` distinguishes `waiting` from `diverted`; `work-resumed` closes the same
+`work_state_id`. These are bounded correlation facts for a collaboration timeline, never a new
+authority source.
+
+Do not delete or rewrite older events that predate this trace contract. A consumer may label an old
+fact `derived` only when the missing identity is recoverable from an exact same-workspace durable
+record and stable id. Otherwise retain it as legacy/unknown and omit unverifiable edges. Event
+retention or compaction requires a separately designed verifiable checkpoint; it is not part of
+normal cleanup.
 
 `claim-paused` records blocker kind, operation, resource, error kind, resume condition, and whether
 paths were retained. `claim-resumed` records the recheck evidence. Keep raw secrets and unbounded

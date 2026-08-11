@@ -96,11 +96,12 @@
     });
   }
 
-  function render(analytics = {}) {
+  function render(analytics = {}, coordinationState = {}) {
     const conflicts = analytics.conflicts || {};
     const conflictSummary = conflicts.summary || {};
     setNumber("conflict-signal-count", conflictSummary.signals);
     setNumber("conflict-contention-count", conflictSummary.contentions);
+    setNumber("stalled-contention-count", coordinationState.summary?.stalled);
     setNumber("conflict-refresh-count", conflictSummary.refresh_conflicts);
     setNumber("conflict-blocked-count", conflictSummary.queue_blocked);
     setNumber("conflict-attention-count", conflictSummary.attention);

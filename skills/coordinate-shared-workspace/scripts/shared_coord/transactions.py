@@ -11,6 +11,7 @@ from .activation import activate_transaction_group, load_claims
 from .arbitration import recommend_decision, record_paths
 from .contention import reconcile_contentions
 from .contention_store import active_contentions
+from .event_contract import transaction_event_details
 from .group_abort import (
     authorize_group_abort,
     reconcile_group_abort,
@@ -135,7 +136,18 @@ def command_init(arguments: argparse.Namespace) -> int:
                     "created_at": now(),
                 },
             )
-            emit_event(location, "coordinator-initialized", None, {"steward": steward})
+            emit_event(
+                location,
+                "coordinator-initialized",
+                None,
+                {
+                    "trace_schema": 1,
+                    "actor_owner": steward,
+                    "steward": steward,
+                    "canonical_branch": git.current_branch(arguments.root),
+                    "base_revision": git.current_head(arguments.root),
+                },
+            )
     print_json({"state": str(location), "steward": steward})
     return 0
 
@@ -381,7 +393,12 @@ def command_prepare(arguments: argparse.Namespace) -> int:
             location,
             "transaction-prepared",
             str(record["transaction_id"]),
-            {"candidate": candidate, "actual_paths": actual},
+            transaction_event_details(
+                record,
+                actor_owner=arguments.owner,
+                candidate=candidate,
+                actual_paths=actual,
+            ),
         )
         print_json(record)
     return 0
@@ -415,7 +432,11 @@ def command_validate(arguments: argparse.Namespace) -> int:
             location,
             "transaction-validated",
             str(record["transaction_id"]),
-            {"candidate": candidate},
+            transaction_event_details(
+                record,
+                actor_owner=arguments.owner,
+                candidate=candidate,
+            ),
         )
         print_json(record)
     return 0
@@ -521,7 +542,12 @@ def command_publish(arguments: argparse.Namespace) -> int:
                 location,
                 "refresh-started",
                 str(record["transaction_id"]),
-                {"old_base": base, "new_base": root_head},
+                transaction_event_details(
+                    record,
+                    actor_owner=steward,
+                    old_base=base,
+                    new_base=root_head,
+                ),
             )
             succeeded, output = git.rebase_onto(checkout, root_head)
             if not succeeded:
@@ -533,7 +559,11 @@ def command_publish(arguments: argparse.Namespace) -> int:
                     location,
                     "refresh-conflicted",
                     str(record["transaction_id"]),
-                    {"conflicts": record["conflicts"]},
+                    transaction_event_details(
+                        record,
+                        actor_owner=steward,
+                        conflicts=record["conflicts"],
+                    ),
                 )
                 print_json(record)
                 return 2
@@ -556,7 +586,11 @@ def command_publish(arguments: argparse.Namespace) -> int:
                 location,
                 "refresh-completed",
                 str(record["transaction_id"]),
-                {"candidate": refreshed_candidate},
+                transaction_event_details(
+                    record,
+                    actor_owner=steward,
+                    candidate=refreshed_candidate,
+                ),
             )
             print_json(record)
             return 2
@@ -604,7 +638,12 @@ def command_publish(arguments: argparse.Namespace) -> int:
             location,
             "publish-started",
             str(record["transaction_id"]),
-            {"expected_head": root_head, "candidate": candidate},
+            transaction_event_details(
+                record,
+                actor_owner=steward,
+                expected_head=root_head,
+                candidate=candidate,
+            ),
         )
         crash_if_testing("publish-recorded")
         git.fast_forward(arguments.root, str(record["branch"]))
@@ -619,7 +658,11 @@ def command_publish(arguments: argparse.Namespace) -> int:
             location,
             "publish-completed",
             str(record["transaction_id"]),
-            {"candidate": candidate},
+            transaction_event_details(
+                record,
+                actor_owner=steward,
+                candidate=candidate,
+            ),
         )
         crash_if_testing("publish-committed")
         archive, record, cleanup_result = archive_committed_and_cleanup(
@@ -661,7 +704,14 @@ def command_handoff(arguments: argparse.Namespace) -> int:
             location,
             "transaction-handed-off",
             str(record["transaction_id"]),
-            {"from": current_owner, "to": next_owner},
+            transaction_event_details(
+                record,
+                actor_owner=current_owner,
+                work_owner=next_owner,
+                source_owner=current_owner,
+                target_owner=next_owner,
+                **{"from": current_owner, "to": next_owner},
+            ),
         )
         print_json(record)
     return 0
@@ -681,7 +731,12 @@ def command_resume(arguments: argparse.Namespace) -> int:
         record["status"] = prior
         record["resumed_at"] = now()
         replace_json(path, record)
-        emit_event(location, "transaction-resumed", str(record["transaction_id"]))
+        emit_event(
+            location,
+            "transaction-resumed",
+            str(record["transaction_id"]),
+            transaction_event_details(record, actor_owner=arguments.owner),
+        )
         print_json(record)
     return 0
 
@@ -713,7 +768,11 @@ def command_abort(arguments: argparse.Namespace) -> int:
             location,
             "transaction-aborted",
             str(record["transaction_id"]),
-            {"reason": reason},
+            transaction_event_details(
+                record,
+                actor_owner=arguments.owner,
+                reason=reason,
+            ),
         )
         queue_updates = refresh_queue_states(arguments.root, location)
         print_json(

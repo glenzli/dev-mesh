@@ -227,3 +227,104 @@ class AgentLifecycleIntegrationTest(TransactionRepositoryCase):
         self.assertEqual(coverage["summary"]["runs_joined"], 1)
         self.assertEqual(coverage["summary"]["runs_closed"], 1)
         self.assertEqual(coverage["summary"]["issue_count"], 0)
+
+    def test_work_disposition_distinguishes_waiting_from_diverted_work(self) -> None:
+        self.claim("health", "agent-a", "route:/health")
+        self.run_coord(
+            "work-suspend",
+            "--scope",
+            "health",
+            "--owner",
+            "agent-a",
+            "--disposition",
+            "waiting",
+            "--reason",
+            "Agent-b owns the overlapping routing contract",
+            "--contention",
+            "routing-contention",
+            "--blocked-by-owner",
+            "agent-b",
+            "--blocked-by-scope",
+            "routing-refactor",
+        )
+
+        claim = json.loads(
+            (
+                self.repo / ".agent-coordination" / "claims" / "health.json"
+            ).read_text(encoding="utf-8")
+        )
+        self.assertEqual(claim["status"], "active")
+        waiting = json.loads(self.run_tx("log", "--scope", "health").stdout)[
+            "events"
+        ][-1]
+        self.assertEqual(waiting["event"], "work-suspended")
+        self.assertEqual(waiting["disposition"], "waiting")
+        self.assertEqual(waiting["owner"], "agent-a")
+        self.assertEqual(waiting["blocked_by_owners"], ["agent-b"])
+        self.assertEqual(waiting["authority_effect"], "none")
+        status = self.run_coord("status").stdout
+        self.assertIn("disposition=waiting", status)
+        self.assertIn("contention=routing-contention", status)
+
+        self.run_coord(
+            "work-resume",
+            "--scope",
+            "health",
+            "--owner",
+            "agent-a",
+            "--evidence",
+            "Agent-b released the routing contract",
+        )
+        events = json.loads(self.run_tx("log", "--scope", "health").stdout)[
+            "events"
+        ]
+        resumed = events[-1]
+        self.assertEqual(resumed["event"], "work-resumed")
+        self.assertEqual(resumed["work_state_id"], waiting["work_state_id"])
+        self.assertIsInstance(resumed["suspension_duration_ms"], int)
+        self.assertEqual(
+            list(
+                (
+                    self.repo
+                    / ".agent-coordination"
+                    / "work"
+                    / "active"
+                ).glob("*.json")
+            ),
+            [],
+        )
+
+        self.run_coord(
+            "work-suspend",
+            "--scope",
+            "health",
+            "--owner",
+            "agent-a",
+            "--disposition",
+            "diverted",
+            "--reason",
+            "Continue independent documentation while routing is blocked",
+            "--alternate-scope",
+            "routing-docs",
+        )
+        diverted = json.loads(self.run_tx("log", "--scope", "health").stdout)[
+            "events"
+        ][-1]
+        self.assertEqual(diverted["disposition"], "diverted")
+        self.assertEqual(diverted["alternate_scope"], "routing-docs")
+
+    def test_diverted_work_requires_an_explicit_alternate_task(self) -> None:
+        self.claim("health", "agent-a", "route:/health")
+        rejected = self.run_coord(
+            "work-suspend",
+            "--scope",
+            "health",
+            "--owner",
+            "agent-a",
+            "--disposition",
+            "diverted",
+            "--reason",
+            "Do something else",
+            expected=1,
+        )
+        self.assertIn("requires --alternate-scope or --alternate-run", rejected.stderr)

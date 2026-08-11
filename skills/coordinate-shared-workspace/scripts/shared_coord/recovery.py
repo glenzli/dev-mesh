@@ -9,6 +9,10 @@ from pathlib import Path
 
 from . import git_backend as git
 from .arbitration import record_paths
+from .event_contract import (
+    group_event_details,
+    transaction_event_details,
+)
 from .state import (
     archive_claim,
     crash_if_testing,
@@ -109,27 +113,7 @@ def create_group(
         location,
         "group-planned",
         None,
-        {
-            "group_id": group_id,
-            "request_id": request_id,
-            "mode": mode,
-            "transactions": [item["transaction_id"] for item in members],
-            "paths": sorted(
-                {
-                    path
-                    for transaction in transactions
-                    for path in record_paths(transaction)
-                }
-            ),
-            "semantic_resources": sorted(
-                {
-                    resource
-                    for transaction in transactions
-                    for resource in transaction.get("semantic_writes", [])
-                    if isinstance(resource, str)
-                }
-            ),
-        },
+        group_event_details(group),
     )
     crash_if_testing("group-planned")
     return path, group
@@ -174,7 +158,7 @@ def _ensure_transaction_record(
             location,
             "transaction-recorded",
             transaction_id,
-            {"group_id": planned["group_id"]},
+            transaction_event_details(planned),
         )
         return path, copy.deepcopy(planned)
     existing = read_json(path)
@@ -271,7 +255,7 @@ def _mark_attention(
         location,
         "group-needs-attention",
         None,
-        {"group_id": group["group_id"], "issue": issue},
+        group_event_details(group, issue=issue),
     )
 
 
@@ -327,7 +311,7 @@ def _promote_claims(
         location,
         "group-claims-promoted",
         None,
-        {"group_id": group["group_id"]},
+        group_event_details(group),
     )
 
 
@@ -359,11 +343,7 @@ def materialize_group(
                 location,
                 "materialize-started",
                 str(planned["transaction_id"]),
-                {
-                    "group_id": group["group_id"],
-                    "base_revision": planned["base_revision"],
-                    "branch": planned["branch"],
-                },
+                transaction_event_details(planned),
             )
             _ensure_materialized(root, planned)
             member["materialization"] = "materialized"
@@ -373,7 +353,7 @@ def materialize_group(
                 location,
                 "materialize-completed",
                 str(planned["transaction_id"]),
-                {"group_id": group["group_id"], "base_revision": planned["base_revision"]},
+                transaction_event_details(planned),
             )
             crash_if_testing(f"member-materialized:{planned['scope']}")
             live.append((transaction_record_path, transaction))
@@ -387,7 +367,7 @@ def materialize_group(
                     location,
                     "transaction-activated",
                     str(transaction["transaction_id"]),
-                    {"group_id": group["group_id"]},
+                    transaction_event_details(transaction),
                 )
             elif transaction.get("status") != "active":
                 raise RecoveryAttention(
@@ -402,7 +382,7 @@ def materialize_group(
             location,
             "group-activated",
             None,
-            {"group_id": group["group_id"]},
+            group_event_details(group),
         )
         crash_if_testing("group-activated")
         _promote_claims(location, path, group)
@@ -477,7 +457,7 @@ def _archive_closed_group(
 ) -> Path:
     archive = location / "groups" / "archive" / f"{time.time_ns()}-{path.name}"
     shutil.move(path, archive)
-    emit_event(location, "group-closed", None, {"group_id": group["group_id"]})
+    emit_event(location, "group-closed", None, group_event_details(group))
     return archive
 
 
@@ -511,7 +491,10 @@ def mark_group_member_terminal(
         location,
         "group-member-terminal",
         transaction_id,
-        {"group_id": group_id, "status": terminal_status},
+        transaction_event_details(
+            transaction,
+            status=terminal_status,
+        ),
     )
     if all(
         member.get("transaction_status") in TERMINAL_TRANSACTION_STATES

@@ -4,8 +4,13 @@ const preferences = window.DevMeshPreferences;
 const state = {
   status: null,
   report: null,
+  storyline: null,
+  graph: null,
   issues: [],
   since: "48h",
+  graphWorkspace: "",
+  projectView: "storyline",
+  refreshGeneration: 0,
   timer: null,
 };
 
@@ -67,6 +72,47 @@ function setConnection(kind, label) {
   container.classList.remove("online", "error");
   if (kind) container.classList.add(kind);
   $("live-state-label").textContent = label;
+}
+
+function renderCollectorStatus() {
+  const collector = state.status?.collector || {};
+  const container = $("collector-state");
+  const label = $("collector-state-label");
+  const pending = Number(collector.pending_events || 0);
+  container.classList.remove("online", "warning", "error");
+
+  if (collector.last_error) {
+    container.classList.add("error");
+    label.textContent = t("collector.error");
+    container.title = collector.last_error;
+    return;
+  }
+  container.title = "";
+  if (collector.running) {
+    container.classList.add("online");
+    label.textContent = t("collector.collecting");
+    return;
+  }
+  if (pending > 0) {
+    container.classList.add("warning");
+    label.textContent = t("collector.pending", { count: formatNumber(pending) });
+    return;
+  }
+  if (!collector.enabled) {
+    label.textContent = t("collector.disabled");
+    return;
+  }
+  if (collector.last_success_at) {
+    const elapsed = Math.max(
+      0,
+      Math.floor((Date.now() - new Date(collector.last_success_at).getTime()) / 1000),
+    );
+    container.classList.add("online");
+    label.textContent = t("collector.live", { seconds: formatNumber(elapsed) });
+    return;
+  }
+  container.classList.add("warning");
+  label.textContent = t("collector.waiting");
 }
 
 let toastTimer;
@@ -198,6 +244,14 @@ function populateSelect(selectId, firstLabel, values, currentValue) {
 
 function renderFilterOptions() {
   const workspaces = state.status?.workspaces || [];
+  if (
+    state.graphWorkspace
+    && !workspaces.some((workspace) => workspace.workspace_id === state.graphWorkspace)
+  ) {
+    state.graphWorkspace = "";
+    state.storyline = null;
+    state.graph = null;
+  }
   populateSelect(
     "filter-workspace",
     t("filters.allWorkspaces"),
@@ -207,6 +261,57 @@ function renderFilterOptions() {
   populateSelect("filter-event", t("filters.allEvents"), eventTypes.map((value) => ({ value, label: value })));
   const owners = (state.report?.owner_activity || []).map((item) => item.owner).sort();
   populateSelect("filter-owner", t("filters.allOwners"), owners.map((value) => ({ value, label: value })));
+  populateSelect(
+    "graph-workspace",
+    t("projectOverview.selector"),
+    workspaces.map((workspace) => ({ value: workspace.workspace_id, label: shortPath(workspace.workspace_root) })),
+    state.graphWorkspace,
+  );
+}
+
+function selectGraphWorkspace(workspaceId) {
+  state.graphWorkspace = workspaceId || "";
+  state.projectView = "storyline";
+  state.storyline = null;
+  state.graph = null;
+  $("graph-workspace").value = state.graphWorkspace;
+  refreshDashboard();
+}
+
+function selectProjectView(view) {
+  if (!state.graphWorkspace || !["storyline", "entities"].includes(view)) return;
+  state.projectView = view;
+  refreshDashboard();
+}
+
+function renderCollaborationView() {
+  const overviewVisible = !state.graphWorkspace;
+  const storylineVisible = !overviewVisible && state.projectView === "storyline";
+  const graphVisible = !overviewVisible && state.projectView === "entities";
+  $("project-overview").hidden = !overviewVisible;
+  $("project-view-modes").hidden = overviewVisible;
+  $("storyline-layout").hidden = !storylineVisible;
+  $("graph-layout").hidden = !graphVisible;
+  document.querySelectorAll("[data-project-view]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.projectView === state.projectView);
+    button.setAttribute("aria-pressed", button.dataset.projectView === state.projectView ? "true" : "false");
+  });
+  if (overviewVisible) {
+    const overview = state.report?.project_overview || {};
+    const summary = overview.summary || {};
+    $("graph-count").textContent = t("projectOverview.count", {
+      projects: formatNumber(summary.projects),
+      active: formatNumber(summary.active_projects),
+    });
+    window.DevMeshProjectOverview.render(
+      overview,
+      state.status?.workspaces || [],
+      selectGraphWorkspace,
+    );
+    return;
+  }
+  if (storylineVisible) window.DevMeshStorylineView.render(state.storyline || {});
+  else window.DevMeshGraphView.render(state.graph || {});
 }
 
 function renderIssues() {
@@ -229,7 +334,7 @@ function renderIssues() {
   });
 }
 
-async function loadEvents() {
+async function loadEvents(expectedGeneration = state.refreshGeneration) {
   const parameters = new URLSearchParams({ limit: "120" });
   const filters = {
     workspace_id: $("filter-workspace").value,
@@ -241,6 +346,7 @@ async function loadEvents() {
     if (value) parameters.set(key, value);
   });
   const payload = await api(`/api/v1/events?${parameters}`);
+  if (expectedGeneration !== state.refreshGeneration) return;
   const target = $("event-list");
   target.replaceChildren();
   if (!payload.events.length) {
@@ -278,34 +384,62 @@ async function showEvent(event) {
 }
 
 function renderDashboard() {
+  renderCollectorStatus();
   renderMetrics();
-  window.DevMeshAnalyticsView.render(state.report?.coordination_analytics || {});
+  window.DevMeshAnalyticsView.render(
+    state.report?.coordination_analytics || {},
+    state.report?.coordination_state || {},
+  );
+  renderFilterOptions();
+  renderCollaborationView();
   renderWorkspaces();
   renderScanRoots();
   renderInflight();
   renderBars("workspace-activity", state.report?.workspace_activity || [], "workspace_root");
   renderBars("owner-activity", state.report?.owner_activity || [], "owner");
   renderBars("resource-activity", state.report?.resource_activity || [], "resource");
-  renderFilterOptions();
   renderIssues();
   $("last-updated").textContent = t("footer.updated", { time: formatTime(new Date().toISOString()) });
 }
 
 async function refreshDashboard({ quiet = false } = {}) {
+  const generation = ++state.refreshGeneration;
   if (!quiet) setConnection("", t("connection.refreshing"));
   try {
-    const [status, report, issues] = await Promise.all([
+    let storylineRequest = Promise.resolve(null);
+    let graphRequest = Promise.resolve(null);
+    if (state.graphWorkspace) {
+      const parameters = new URLSearchParams({
+        since: state.since,
+        workspace_id: state.graphWorkspace,
+      });
+      if (state.projectView === "storyline") {
+        parameters.set("limit", "28");
+        storylineRequest = api(`/api/v1/storyline?${parameters}`);
+      } else {
+        parameters.set("limit", "120");
+        graphRequest = api(`/api/v1/graph?${parameters}`);
+      }
+    }
+    const [status, report, storyline, graph, issues] = await Promise.all([
       api("/api/v1/status"),
       api(`/api/v1/report?since=${encodeURIComponent(state.since)}&limit=10`),
+      storylineRequest,
+      graphRequest,
       api("/api/v1/issues?limit=100"),
     ]);
+    if (generation !== state.refreshGeneration) return;
     state.status = status;
     state.report = report;
+    state.storyline = storyline;
+    state.graph = graph;
     state.issues = issues.issues;
     renderDashboard();
-    await loadEvents();
+    await loadEvents(generation);
+    if (generation !== state.refreshGeneration) return;
     setConnection("online", t("connection.online"));
   } catch (error) {
+    if (generation !== state.refreshGeneration) return;
     setConnection("error", t("connection.failed"));
     if (!quiet) toast(error.message, true);
   }
@@ -385,6 +519,12 @@ $("since-select").addEventListener("change", (event) => {
   state.since = event.target.value;
   refreshDashboard();
 });
+$("graph-workspace").addEventListener("change", (event) => {
+  selectGraphWorkspace(event.target.value);
+});
+document.querySelectorAll("[data-project-view]").forEach((button) => {
+  button.addEventListener("click", () => selectProjectView(button.dataset.projectView));
+});
 $("refresh-button").addEventListener("click", () => refreshDashboard());
 $("collect-button").addEventListener("click", collectNow);
 $("event-filters").addEventListener("submit", (event) => {
@@ -406,4 +546,4 @@ $("workspace-dialog").addEventListener("click", (event) => {
 refreshDashboard();
 state.timer = window.setInterval(() => {
   if (!document.hidden) refreshDashboard({ quiet: true });
-}, 15000);
+}, 5000);

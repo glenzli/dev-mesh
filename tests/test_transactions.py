@@ -285,6 +285,34 @@ class TransactionIntegrationTest(TransactionRepositoryCase):
         )
         self.assertEqual(resumed["status"], "active")
         self.assertEqual(resumed["owner"], "agent-c")
+        events = json.loads(
+            self.run_tx(
+                "log",
+                "--transaction",
+                str(health["transaction_id"]),
+            ).stdout
+        )["events"]
+        recorded = next(
+            event for event in events if event["event"] == "transaction-recorded"
+        )
+        self.assertEqual(recorded["trace_schema"], 1)
+        self.assertEqual(recorded["owner"], "agent-a")
+        self.assertEqual(recorded["scope"], "health")
+        self.assertEqual(recorded["branch"], health["branch"])
+        self.assertEqual(recorded["base_revision"], health["base_revision"])
+        self.assertEqual(recorded["canonical_branch"], "main")
+        self.assertEqual(recorded["mode"], "parallel-tx")
+        handed_off_event = next(
+            event for event in events if event["event"] == "transaction-handed-off"
+        )
+        self.assertEqual(handed_off_event["actor_owner"], "agent-a")
+        self.assertEqual(handed_off_event["work_owner"], "agent-c")
+        self.assertEqual(handed_off_event["source_owner"], "agent-a")
+        self.assertEqual(handed_off_event["target_owner"], "agent-c")
+        resumed_event = next(
+            event for event in events if event["event"] == "transaction-resumed"
+        )
+        self.assertEqual(resumed_event["owner"], "agent-c")
 
 
 if __name__ == "__main__":

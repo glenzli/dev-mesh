@@ -825,6 +825,9 @@ event 和 materialized transaction snapshot。
 ├── waiting/
 │   ├── active/
 │   └── archive/
+├── work/
+│   ├── active/
+│   └── archive/
 ├── handoffs/
 ├── runs/
 ├── messages/
@@ -844,6 +847,7 @@ event 和 materialized transaction snapshot。
 - active group plan：materialization 的完整预期成员、共同 base 与授权 barrier；
 - active cleanup journal：已授权处置目标、精确 Git 事实和逐步完成状态；
 - active scheduling request：尚未授予的争用顺序、claim snapshot 和 blocker；
+- active work disposition：owner 当前是硬等待还是转做显式替代任务的诊断快照，不授予或冻结权限；
 - immutable event log：协调状态转换；
 - materialized JSON snapshot：可由 event 重建的快速查询视图；
 - messages/acks/handoffs：授权、协商与连续性证据；
@@ -1074,24 +1078,102 @@ event compatibility tests，但不得共享运行时 import。仓库根只是产
 Git top-level、common dir 和 remote fingerprint。路径移动默认形成新的 workspace instance；
 推测性的 Git 相似性不得自动合并观测历史。
 
-Observer 使用仓库外 SQLite 存储 scan roots、workspace catalog、event mirror 和 collection
-issues。事件以 `(workspace_id, source filename)` 幂等导入并保存首次 SHA-256 digest；重复 digest
+Observer 使用仓库外 SQLite 存储 scan roots、workspace catalog、event mirror、active contention
+diagnostic mirror 和 collection issues。事件以 `(workspace_id, source filename)` 幂等导入并保存首次 SHA-256 digest；重复 digest
 跳过，变化 digest 记录 immutable-integrity issue，但不替换首次镜像。单个事件有大小上限，
 symlink、非普通文件和 malformed JSON 只产生采集问题，不得扩大读取范围或中断其他 workspace。
 
+为了集中发现“协调者 lease 已过期、参与者仍未响应”的真实停滞，Collector 还可以只读扫描固定的
+`contentions/active/*.json`。这部分是可替换的当前状态镜像，不追加为 immutable event，也不能用于
+恢复、换届或 enact。扫描同样拒绝 symlink、非普通文件、超限 payload 与 malformed JSON；一次完整
+扫描以该 workspace 的当前文件集合替换旧镜像，一次不安全或不完整扫描则保留上次镜像并报告 issue。
+
 `discover` 只登记合法源，`collect` 重新发现已登记 roots 并增量采集，`status` 报告 source
-availability、event 和 issue 数，`report` 派生时间窗内 workspace、owner、resource activity、
+availability、source/central event 差额、event 和 issue 数，`report` 派生时间窗内 workspace、owner、resource activity、
 冲突信号、transaction lifecycle 和协议利用启发式，以及全局 open run 与 pending handoff。
 中央报告不是恢复来源；恢复仍以 source workspace 的 Git 事实、active snapshot 和 immutable event
 为准。
 
-### 19.2 本地 Web Console
+### 19.2 Owner-aware 协作时序契约
+
+基础 event `schema` 继续保持 `1`，避免把新增观测字段误解为权限或状态机迁移。能够直接参与协作
+时序重建的新事件额外携带 `trace_schema: 1`；这是 additive projection contract，不改变既有 event
+含义。所有 trace 字段必须有界，不写入 prompt、完整命令输出、secret 或 checkout 文件内容。
+
+queue 生命周期事件重复携带稳定 request identity：`request_id`、`mode`、`owners`、`scopes`、
+`paths`、`semantic_resources`、`steward`，以及可选 `contention_id`。阻塞状态除人类可读的
+`blockers` 外还携带 `blocker_refs`；ref 明确区分 claim、request、transaction、group、dependency
+和 canonical dirty path，并在已知时记录 blocker owner/scope/id。这样 Observer 可以画跨 owner
+依赖，而不必从错误文本或时间接近猜测。
+
+transaction 生命周期事件重复携带足以重建 Git context fork/rejoin 的稳定 identity：
+`owner`/`work_owner` 表示当前工作归属，`actor_owner` 表示执行该状态转换的 owner 或 steward，
+并带 `scope`、`group_id`、`request_id`、`mode`、temporary `branch`、`base_revision`、
+`canonical_branch`、paths 和 semantic resources。handoff 同时记录 `source_owner` 和
+`target_owner`；publish 由 steward 执行，但仍归入 transaction work owner 的 lane。全局 Git 事实
+没有 work owner 时保留在 canonical/system rail，不制造虚假的协调 Agent。
+
+`work-suspended` 显式区分两种执行状态：
+
+- `waiting`：owner 在该 scope 上硬等待，不允许声明 alternate task；
+- `diverted`：owner 暂停该 scope，但继续明确的 `alternate_scope` 或 joined alternate run。
+
+`work-resumed` 以同一 `work_state_id` 关闭区间，并记录 bounded evidence 与 duration。active
+work snapshot 只为 crash-safe correlation 和幂等 retry 存在，resume 后进入 archive；两类事件均
+声明 `authority_effect: none`，不得改变 claim、contention lease、transaction capability 或 publish
+authority。
+
+旧 immutable event 不清理、不回写、不伪造新字段。projection 对数据完整度使用以下迁移语义：
+
+- `native`：事件原生携带 `trace_schema` 和绘图所需 identity；
+- `derived`：只从同一 workspace、精确 id 关联的 durable snapshot/archive 安全补出缺失字段；
+- `legacy-unknown`：无法可靠归属，保留原事件但省略 owner lane 或 causal edge。
+
+Observer 可以删除并重建自己的派生 storyline cache，但不得为了新图修改 source event mirror 的
+首次 payload。当前不需要清理历史 `.agent-coordination/events/` 或中央 SQLite events；未来若数据量
+要求 retention/compaction，必须另行定义覆盖范围、digest/checkpoint、可验证重放边界和失败恢复，
+不能把普通 transaction cleanup 扩大为日志删除。
+
+### 19.3 本地 Web Console
 
 Observer 可以在 `127.0.0.1` 或 `localhost` 提供内嵌 Web Console。Console 由静态 HTML、CSS、
 JavaScript 与 Python HTTP API 组成，不引入前端构建链、远程服务或新的持久层。它展示 catalog
 summary、workspace availability、open run、pending handoff、owner/resource activity、冲突汇总、
 transaction lifecycle、协议利用启发式、可筛选 event timeline、单事件原始 payload 和 collection
-issues。
+issues。Server 启动后立即执行一次采集，并按 `--collect-interval` 重复；后台采集、手动采集和新增
+workspace 共用一个串行 operation slot，shutdown 时停止。`0` 禁用后台循环。状态 API 同时暴露
+last attempt、last success、last error、cycle 数与尚未镜像的 source event 数，前端以 5 秒刷新显示
+新鲜度和积压，不把“HTTP 在线”误当成“数据已更新”。
+
+协作可视化默认从 project overview 开始，而不是把所有 workspace 节点混在同一画布。overview 为
+每个 workspace 独立汇总窗口事件、open run、pending handoff、active/stalled contention、transaction
+和显式 collaboration signal；排序优先暴露 stalled 与 active 项目。用户显式选择一个 workspace 后，
+才加载该项目的 collaboration storyline；原 causal entity graph 保留为显式诊断视图。
+
+storyline 是独立的语义 projection，不是把 event timeline 横过来画。它把明确的 run lifecycle、
+claim episode、handoff、contention decision、transaction lifecycle、work disposition 和 publish
+checkpoint 折叠成有界工作切片；默认最多显示 28 个，硬上限 60 个。布局顶部以 canonical branch/
+HEAD rail 表达共享 Git 上下文，每个真实 owner 一条紧凑 swimlane；temporary transaction branch 从
+对应 owner lane 的 base checkpoint 分叉，publish 后回到 canonical rail。硬等待画成带 `waiting`
+区间的依赖边，转做别事则在原 work span 暂停后连接 alternate work span。message、handoff、
+reassignment 和 contention 作为跨 lane 关系，而不是伪造一条 coordination owner lane；只有无法从
+immutable event 可靠归属到 work owner 的全局 Git 事实才进入 system/canonical rail。相同 lane 的
+连线只表示展示顺序，不声明因果；handoff 必须匹配 source/target run id，contention 必须匹配 owner
+与 scope，decision 必须匹配 contention id，transaction fork/rejoin 必须匹配 transaction id、branch、
+base 和 canonical branch。没有这些 correlation 就省略连线，不从路径相似、同名 owner、时间接近
+或 transaction id 命名推断。节点第一层只显示动作、对象和状态，路径、semantic resource、lease、
+event type 与原始 id 只在点击检查器中出现。默认画布用紧凑 dot node 表达这些切片，hover 或键盘
+focus 才浮出 action、owner、status、time 简卡；sequence、branching 和 cross-lane dependency 的
+整体形状优先于常驻文字，点击仍把完整事实固定到 inspector。
+
+单项目协作图是有界 projection，而不是 event hairball：把时间窗内事实聚合为 Agent、handoff、
+contention、transaction 与 published commit 节点，以及 delegated、message、handoff、contends、
+owns、materializes 和 publishes 关系。最多读取 10,000 条 source events、显示 120 个节点，优先保留
+stalled/active contention。布局由本地原生 SVG 确定性绘制，不引入远程图库。所有 node identity 与
+edge correlation 都限定在一个 `workspace_id` 内；当前 event contract 不定义跨 workspace message、
+handoff、run 或 transaction correlation，因此 overview 必须明确显示“尚无跨项目追踪”，不得把并置
+项目、同名 owner、相似时间或 Git remote 猜成跨项目关系。图中缺边同样表示 producer 尚未记录可验证
+correlation，不得靠 transaction id 命名或时间接近猜测权限关系。
 
 冲突汇总只能使用显式冲突或阻塞证据：`contention-opened`、`queue-blocked`、
 `refresh-conflicted`、`contention-decision-rejected` 和各类 `*-needs-attention`。普通 claim lifecycle
@@ -1236,7 +1318,7 @@ observer discover    在 allowlisted roots 中登记本地 coordination sources
 observer collect     只读、幂等镜像已登记 workspace 的 immutable events
 observer status      报告中央 catalog、source availability、event 与 integrity issue
 observer report      派生跨 workspace 时间窗活动、open run 与 pending handoff
-observer serve       在 localhost 提供 Web Console、显式 root 登记和受限 collect action
+observer serve       在 localhost 提供自动采集、协作图、显式 root 登记和受限 collect action
 ```
 
 状态查询应该同时支持紧凑人类输出和稳定 JSON 输出，便于 Agent 低 token 成本地读取。
@@ -1443,8 +1525,20 @@ validation binding、shadow refresh、fast-forward publish、handoff、abort 和
 - Observer-owned workspace UUID、Git metadata fingerprint 与仓库外 SQLite catalog；
 - event filename + digest 的幂等导入和 immutable mutation detection；
 - 跨 workspace status、时间窗 activity、open run 与 pending handoff 报告；
-- localhost-only Web Console、自适应主题、中英 locale、显式 root 登记、过滤 event timeline 与受限手动采集；
+- localhost-only Web Console、自适应主题、中英 locale、显式 root 登记、自动采集、数据滞后提示、
+  stalled contention 诊断、默认 per-project overview、单项目 collaboration storyline、可切换 causal
+  entity graph、过滤 event timeline
+  与受限手动采集；
 - Collector 对 source workspace 的严格只读边界。
+
+阶段九 owner-aware trace contract 已经实现 producer 侧第一版：
+
+- queue lifecycle 的 owners/scopes 和结构化 blocker refs；
+- transaction/group lifecycle 的 work owner、actor owner、branch、base 与 canonical context；
+- transaction handoff 的 source/target owner 与 publish steward/work owner 分离；
+- diagnostic-only `waiting` / `diverted` work disposition 及 resume correlation；
+- additive `trace_schema` 和 native/derived/legacy-unknown 兼容策略；
+- 历史 immutable event 不回写、不删除，retention/compaction 继续保持独立设计边界。
 
 至此 direct claim、distributed semantic arbitration、temporary checkout、publish、cleanup、
 recovery、queue、fairness、external shared mutation 和 audit 已形成第一版核心闭环。下一阶段应以真实多 Agent 工作流验证

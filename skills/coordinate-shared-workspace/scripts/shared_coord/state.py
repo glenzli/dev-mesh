@@ -91,6 +91,8 @@ def initialize(root: Path, state_directory: str) -> Path:
         "checkouts",
         "waiting/active",
         "waiting/archive",
+        "work/active",
+        "work/archive",
         "handoffs",
         "runs",
         "messages",

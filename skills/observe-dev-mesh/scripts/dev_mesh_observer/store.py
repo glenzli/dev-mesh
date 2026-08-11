@@ -13,10 +13,11 @@ from pathlib import Path
 from typing import Iterable
 
 from .catalog import WorkspaceSource, ensure_external_data_dir
+from .state_mirror import scan_active_contentions
 
 
 MAX_EVENT_BYTES = 1024 * 1024
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def now() -> str:
@@ -80,6 +81,23 @@ CREATE INDEX IF NOT EXISTS events_at_idx ON events(event_at);
 CREATE INDEX IF NOT EXISTS events_type_idx ON events(event_type);
 CREATE INDEX IF NOT EXISTS events_run_idx ON events(workspace_id, run_id);
 CREATE INDEX IF NOT EXISTS events_handoff_idx ON events(workspace_id, handoff_id);
+
+CREATE TABLE IF NOT EXISTS active_contentions (
+    workspace_id TEXT NOT NULL REFERENCES workspaces(workspace_id),
+    contention_id TEXT NOT NULL,
+    source_name TEXT NOT NULL,
+    digest TEXT NOT NULL,
+    status TEXT,
+    coordinator TEXT,
+    coordinator_epoch INTEGER,
+    lease_until TEXT,
+    payload_json TEXT NOT NULL,
+    collected_at TEXT NOT NULL,
+    PRIMARY KEY (workspace_id, contention_id)
+);
+
+CREATE INDEX IF NOT EXISTS active_contentions_status_idx
+ON active_contentions(status);
 
 CREATE TABLE IF NOT EXISTS collection_issues (
     issue_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -352,6 +370,8 @@ class ObserverStore:
             "inserted": 0,
             "skipped": 0,
             "issues": 0,
+            "active_contentions": 0,
+            "state_issues": 0,
         }
         timestamp = now()
         with self.connection:
@@ -382,6 +402,51 @@ class ObserverStore:
                     summary["seen"] += 1
                     outcome = self._ingest_event(workspace_id, path)
                     summary[outcome] += 1
+                scan = scan_active_contentions(coordination_path)
+                for issue in scan.issues:
+                    self._record_issue(
+                        workspace_id=workspace_id,
+                        source_name=issue.source_name,
+                        kind=issue.kind,
+                        detail=issue.detail,
+                        observed_digest=issue.observed_digest,
+                    )
+                    summary["issues"] += 1
+                    summary["state_issues"] += 1
+                if scan.complete:
+                    self.connection.execute(
+                        "DELETE FROM active_contentions WHERE workspace_id=?",
+                        (workspace_id,),
+                    )
+                    for snapshot in scan.records:
+                        record = snapshot.record
+                        coordinator = record.get("coordinator")
+                        if not isinstance(coordinator, dict):
+                            coordinator = {}
+                        self.connection.execute(
+                            """
+                            INSERT INTO active_contentions(
+                                workspace_id, contention_id, source_name, digest,
+                                status, coordinator, coordinator_epoch, lease_until,
+                                payload_json, collected_at
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                workspace_id,
+                                str(record["contention_id"]),
+                                snapshot.source_name,
+                                snapshot.digest,
+                                self._event_string(record, "status"),
+                                self._event_string(coordinator, "owner"),
+                                coordinator.get("epoch")
+                                if isinstance(coordinator.get("epoch"), int)
+                                else None,
+                                self._event_string(coordinator, "lease_until"),
+                                snapshot.payload_json,
+                                timestamp,
+                            ),
+                        )
+                    summary["active_contentions"] += len(scan.records)
         return summary
 
     def status(self) -> dict[str, object]:
@@ -406,12 +471,31 @@ class ObserverStore:
                 and not events_path.is_symlink()
                 and events_path.is_dir()
             )
+            source_event_count = 0
+            if item["available"]:
+                try:
+                    source_event_count = sum(
+                        1
+                        for path in events_path.glob("*.json")
+                        if not path.is_symlink() and path.is_file()
+                    )
+                except OSError:
+                    source_event_count = int(item["event_count"])
+            item["source_event_count"] = source_event_count
+            item["pending_events"] = max(
+                0, source_event_count - int(item["event_count"])
+            )
             workspaces.append(item)
         event_count = int(
             self.connection.execute("SELECT COUNT(*) FROM events").fetchone()[0]
         )
         issue_count = int(
             self.connection.execute("SELECT COUNT(*) FROM collection_issues").fetchone()[0]
+        )
+        active_contention_count = int(
+            self.connection.execute(
+                "SELECT COUNT(*) FROM active_contentions"
+            ).fetchone()[0]
         )
         return {
             "data_dir": str(self.data_dir),
@@ -421,6 +505,10 @@ class ObserverStore:
                 "available": sum(bool(item["available"]) for item in workspaces),
                 "events": event_count,
                 "issues": issue_count,
+                "pending_events": sum(
+                    int(item["pending_events"]) for item in workspaces
+                ),
+                "active_contentions": active_contention_count,
             },
             "scan_roots": [str(path) for path in self.scan_roots()],
             "workspaces": workspaces,

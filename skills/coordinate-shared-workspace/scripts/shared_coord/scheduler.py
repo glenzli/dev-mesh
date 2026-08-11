@@ -16,6 +16,7 @@ from .activation import (
     resolve_scope_dependency,
 )
 from .arbitration import claim_intent, record_paths
+from .event_contract import request_event_details
 from .recovery import active_groups, group_declared_paths
 from .state import (
     EXCLUSIVE_INTENTS,
@@ -184,15 +185,7 @@ def create_request(
         location,
         "queue-requested",
         None,
-        {
-            "request_id": request_id,
-            "mode": mode,
-            "scopes": normalized_scopes,
-            "paths": paths,
-            "semantic_resources": semantic_resources,
-            "contention_id": contention_id,
-            "coordinator_epoch": coordinator_epoch,
-        },
+        request_event_details(record),
     )
     crash_if_testing("queue-requested")
     return path, record
@@ -247,13 +240,25 @@ def _work_blockers(
     location: Path,
     request: dict[str, object],
     earlier: list[dict[str, object]],
-) -> list[str]:
+) -> tuple[list[str], list[dict[str, object]]]:
     paths = _request_paths(request)
     scopes = set(string_list(request, "scopes"))
     blockers = _dependency_blockers(location, request)
+    references: list[dict[str, object]] = [
+        {"kind": "dependency", "description": blocker}
+        for blocker in blockers
+    ]
     for prior in earlier:
         if _requests_overlap(prior, request):
             blockers.append(f"earlier overlapping request {prior['request_id']}")
+            references.append(
+                {
+                    "kind": "request",
+                    "request_id": prior["request_id"],
+                    "owners": prior.get("owners", []),
+                    "scopes": prior.get("scopes", []),
+                }
+            )
             break
     for _, claim in active_claims(location):
         scope = str(claim.get("scope", ""))
@@ -265,6 +270,13 @@ def _work_blockers(
             for current in record_paths(claim)
         ):
             blockers.append(f"active claim {scope}")
+            references.append(
+                {
+                    "kind": "claim",
+                    "scope": scope,
+                    "owner": claim.get("owner"),
+                }
+            )
     for _, transaction in active_transactions(location):
         if any(
             paths_overlap(requested, current)
@@ -272,6 +284,14 @@ def _work_blockers(
             for current in record_paths(transaction)
         ):
             blockers.append(f"active transaction {transaction['transaction_id']}")
+            references.append(
+                {
+                    "kind": "transaction",
+                    "transaction_id": transaction["transaction_id"],
+                    "scope": transaction.get("scope"),
+                    "owner": transaction.get("owner"),
+                }
+            )
     for _, group in active_groups(location):
         if any(
             paths_overlap(requested, current)
@@ -279,10 +299,51 @@ def _work_blockers(
             for current in group_declared_paths(group)
         ):
             blockers.append(f"active group {group['group_id']}")
+            members = group.get("members", [])
+            references.append(
+                {
+                    "kind": "group",
+                    "group_id": group["group_id"],
+                    "scopes": sorted(
+                        {
+                            str(member["scope"])
+                            for member in members
+                            if isinstance(member, dict)
+                            and isinstance(member.get("scope"), str)
+                        }
+                    ),
+                    "owners": sorted(
+                        {
+                            str(member["owner"])
+                            for member in members
+                            if isinstance(member, dict)
+                            and isinstance(member.get("owner"), str)
+                        }
+                    ),
+                }
+            )
     for dirty in git.status_paths(root):
         if any(paths_overlap(dirty, requested) for requested in paths):
             blockers.append(f"dirty canonical path {dirty}")
-    return sorted(set(blockers))
+            references.append({"kind": "canonical-path", "path": dirty})
+    references.sort(
+        key=lambda reference: (
+            str(reference.get("kind", "")),
+            str(
+                reference.get(
+                    "request_id",
+                    reference.get(
+                        "transaction_id",
+                        reference.get(
+                            "group_id",
+                            reference.get("scope", reference.get("path", "")),
+                        ),
+                    ),
+                )
+            ),
+        )
+    )
+    return sorted(set(blockers)), references
 
 
 def _transition(
@@ -291,33 +352,38 @@ def _transition(
     request: dict[str, object],
     status: str,
     blockers: list[str] | None = None,
+    blocker_refs: list[dict[str, object]] | None = None,
 ) -> dict[str, object] | None:
     blockers = blockers or []
+    blocker_refs = blocker_refs or []
     prior_status = request.get("status")
     prior_blockers = request.get("blockers", [])
-    if prior_status == status and prior_blockers == blockers:
+    prior_refs = request.get("blocker_refs", [])
+    if (
+        prior_status == status
+        and prior_blockers == blockers
+        and prior_refs == blocker_refs
+    ):
         return None
     request["status"] = status
     request["updated_at"] = now()
     if blockers:
         request["blockers"] = blockers
+        request["blocker_refs"] = blocker_refs
     else:
         request.pop("blockers", None)
+        request.pop("blocker_refs", None)
     replace_json(path, request)
     event = f"queue-{status}"
     emit_event(
         location,
         event,
         None,
-        {
-            "request_id": request["request_id"],
-            "mode": request["mode"],
-            "paths": request["paths"],
-            "semantic_resources": request["semantic_resources"],
-            "blockers": blockers,
-            "contention_id": request.get("contention_id"),
-            "coordinator_epoch": request.get("coordinator_epoch"),
-        },
+        request_event_details(
+            request,
+            blockers=blockers,
+            blocker_refs=blocker_refs,
+        ),
     )
     return {
         "kind": "request",
@@ -359,16 +425,11 @@ def _archive_request(
         location,
         f"queue-{status}",
         None,
-        {
-            "request_id": request["request_id"],
-            "mode": request["mode"],
-            "paths": request["paths"],
-            "semantic_resources": request["semantic_resources"],
-            "wait_duration_ms": wait_ms,
-            "archive": str(archive),
-            "contention_id": request.get("contention_id"),
-            "coordinator_epoch": request.get("coordinator_epoch"),
-        },
+        request_event_details(
+            request,
+            wait_duration_ms=wait_ms,
+            archive=str(archive),
+        ),
     )
     return {
         "kind": "request",
@@ -438,15 +499,28 @@ def refresh_queue_states(
             continue
         issues = _snapshot_issues(location, request)
         if issues:
-            update = _transition(location, path, request, "needs-attention", issues)
+            update = _transition(
+                location,
+                path,
+                request,
+                "needs-attention",
+                issues,
+                [
+                    {"kind": "claim-snapshot", "description": issue}
+                    for issue in issues
+                ],
+            )
         else:
-            blockers = _work_blockers(root, location, request, earlier)
+            blockers, blocker_refs = _work_blockers(
+                root, location, request, earlier
+            )
             update = _transition(
                 location,
                 path,
                 request,
                 "blocked" if blockers else "ready",
                 blockers,
+                blocker_refs,
             )
         if update is not None:
             updates.append(update)
@@ -510,13 +584,7 @@ def schedule_ready_requests(
             location,
             "queue-activating",
             None,
-            {
-                "request_id": request["request_id"],
-                "mode": request["mode"],
-                "paths": request["paths"],
-                "contention_id": request.get("contention_id"),
-                "coordinator_epoch": request.get("coordinator_epoch"),
-            },
+            request_event_details(request),
         )
         crash_if_testing("queue-activation-recorded")
         try:

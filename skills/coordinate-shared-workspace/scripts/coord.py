@@ -30,6 +30,11 @@ from shared_coord.lifecycle import (
     require_joined_run,
 )
 from shared_coord.state import emit_event as emit_coordination_event
+from shared_coord.work_lifecycle import (
+    WORK_DISPOSITIONS,
+    command_work_resume,
+    command_work_suspend,
+)
 
 try:  # POSIX, including the supported macOS development environment.
     import fcntl
@@ -108,6 +113,8 @@ def initialize(root: Path, state_directory: str) -> Path:
         "tasks",
         "waiting/active",
         "waiting/archive",
+        "work/active",
+        "work/archive",
         "handoffs",
         "runs",
         "archive/claims",
@@ -892,6 +899,14 @@ def command_status(arguments: argparse.Namespace) -> int:
             f"coordinator={coordinator.get('owner') if isinstance(coordinator, dict) else '?'} "
             f"epoch={coordinator.get('epoch') if isinstance(coordinator, dict) else '?'}"
         )
+    for path in sorted((location / "work" / "active").glob("*.json")):
+        work = read_json(path)
+        print(
+            f"work {work.get('work_state_id')}: scope={work.get('scope')} "
+            f"owner={work.get('owner')} disposition={work.get('disposition')} "
+            f"request={work.get('request_id')} contention={work.get('contention_id')} "
+            f"alternate_scope={work.get('alternate_scope')}"
+        )
     return 0
 
 
@@ -1568,6 +1583,33 @@ def parser() -> argparse.ArgumentParser:
     audit_note_parser.add_argument("--resources", nargs="*", default=[])
     audit_note_parser.add_argument("--supersedes-event", default="")
     audit_note_parser.set_defaults(handler=command_audit_note)
+
+    work_suspend_parser = subparsers.add_parser("work-suspend")
+    add_root(work_suspend_parser)
+    work_suspend_parser.add_argument("--scope", required=True)
+    work_suspend_parser.add_argument("--owner", required=True)
+    work_suspend_parser.add_argument(
+        "--disposition",
+        choices=sorted(WORK_DISPOSITIONS),
+        required=True,
+    )
+    work_suspend_parser.add_argument("--reason", required=True)
+    work_suspend_parser.add_argument("--request")
+    work_suspend_parser.add_argument("--contention")
+    work_suspend_parser.add_argument("--transaction")
+    work_suspend_parser.add_argument("--run")
+    work_suspend_parser.add_argument("--alternate-scope")
+    work_suspend_parser.add_argument("--alternate-run")
+    work_suspend_parser.add_argument("--blocked-by-owner", nargs="*", default=[])
+    work_suspend_parser.add_argument("--blocked-by-scope", nargs="*", default=[])
+    work_suspend_parser.set_defaults(handler=command_work_suspend)
+
+    work_resume_parser = subparsers.add_parser("work-resume")
+    add_root(work_resume_parser)
+    work_resume_parser.add_argument("--scope", required=True)
+    work_resume_parser.add_argument("--owner", required=True)
+    work_resume_parser.add_argument("--evidence", required=True)
+    work_resume_parser.set_defaults(handler=command_work_resume)
 
     status_parser = subparsers.add_parser("status")
     add_root(status_parser)

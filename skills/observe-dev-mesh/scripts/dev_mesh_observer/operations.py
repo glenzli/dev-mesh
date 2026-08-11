@@ -44,7 +44,24 @@ def collect_registered(
             "discovery": empty_discovery(),
             "collection": store.collect(),
         }
-    return discover_and_collect(store, roots=roots, max_depth=max_depth)
+    available_roots = [
+        root for root in roots if not root.is_symlink() and root.is_dir()
+    ]
+    unavailable_roots = [
+        str(root) for root in roots if root not in available_roots
+    ]
+    if not available_roots:
+        discovery = empty_discovery()
+        discovery["roots"] = [str(root) for root in roots]
+        discovery["unavailable_roots"] = unavailable_roots
+        return {"discovery": discovery, "collection": store.collect()}
+    result = discover_and_collect(
+        store,
+        roots=available_roots,
+        max_depth=max_depth,
+    )
+    result["discovery"]["unavailable_roots"] = unavailable_roots
+    return result
 
 
 def discover_and_collect(

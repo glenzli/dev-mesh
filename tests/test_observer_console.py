@@ -119,6 +119,7 @@ class ObserverConsoleTest(unittest.TestCase):
         self.assertIn("geolocation=()", headers["Permissions-Policy"])
         self.assertNotIn("Access-Control-Allow-Origin", headers)
         self.assertIn(b"Dev Mesh Observer", payload)
+        self.assertIn(b"storyline-tooltip", payload)
 
         status, _, script = self.request("GET", "/app.js")
         self.assertEqual(status, 200)
@@ -127,6 +128,16 @@ class ObserverConsoleTest(unittest.TestCase):
         status, _, analytics = self.request("GET", "/analytics-view.js")
         self.assertEqual(status, 200)
         self.assertIn(b"DevMeshAnalyticsView", analytics)
+        status, _, project_overview = self.request("GET", "/project-overview.js")
+        self.assertEqual(status, 200)
+        self.assertIn(b"DevMeshProjectOverview", project_overview)
+        status, _, storyline = self.request("GET", "/storyline-view.js")
+        self.assertEqual(status, 200)
+        self.assertIn(b"DevMeshStorylineView", storyline)
+        self.assertIn(b"showTooltip", storyline)
+        status, _, graph = self.request("GET", "/graph-view.js")
+        self.assertEqual(status, 200)
+        self.assertIn(b"DevMeshGraphView", graph)
         status, _, preferences = self.request("GET", "/preferences.js")
         self.assertEqual(status, 200)
         self.assertIn(b"localStorage", preferences)
@@ -143,17 +154,40 @@ class ObserverConsoleTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(catalog["summary"]["workspaces"], 1)
         self.assertEqual(catalog["summary"]["events"], 1)
+        self.assertEqual(catalog["summary"]["pending_events"], 0)
+        self.assertFalse(catalog["collector"]["enabled"])
 
         status, report = self.json_request("GET", "/api/v1/report?since=7d")
         self.assertEqual(status, 200)
         self.assertEqual(report["summary"]["runs_open"], 1)
         self.assertIn("coordination_analytics", report)
+        self.assertIn("coordination_state", report)
+        self.assertIn("project_overview", report)
+        self.assertEqual(report["project_overview"]["summary"]["projects"], 1)
+        self.assertFalse(
+            report["project_overview"]["cross_project"]["tracking_supported"]
+        )
         self.assertEqual(
             report["coordination_analytics"]["protocol_use"]["summary"][
                 "open_unclassified"
             ],
             1,
         )
+
+        status, graph = self.json_request("GET", "/api/v1/graph?since=7d")
+        self.assertEqual(status, 200)
+        self.assertEqual(graph["summary"]["visible_nodes"], 1)
+        self.assertEqual(graph["nodes"][0]["type"], "agent")
+
+        workspace_id = str(catalog["workspaces"][0]["workspace_id"])
+        status, storyline = self.json_request(
+            "GET",
+            f"/api/v1/storyline?since=7d&workspace_id={workspace_id}",
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(storyline["summary"]["visible_nodes"], 1)
+        self.assertEqual(storyline["nodes"][0]["type"], "run")
+        self.assertEqual(storyline["workspace_id"], workspace_id)
 
         status, result = self.json_request(
             "GET",
@@ -262,6 +296,17 @@ class ObserverConsoleTest(unittest.TestCase):
         self.assertIn("between", result["error"])
         status, _ = self.json_request("GET", "/api/v1/report?limit=101")
         self.assertEqual(status, 400)
+        status, result = self.json_request("GET", "/api/v1/graph?limit=9")
+        self.assertEqual(status, 400)
+        self.assertIn("between", result["error"])
+        status, result = self.json_request("GET", "/api/v1/storyline")
+        self.assertEqual(status, 400)
+        self.assertIn("workspace_id", result["error"])
+        status, result = self.json_request(
+            "GET", "/api/v1/storyline?workspace_id=unknown&limit=7"
+        )
+        self.assertEqual(status, 400)
+        self.assertIn("between", result["error"])
         status, _ = self.json_request("GET", "/../DESIGN.md")
         self.assertEqual(status, 404)
         status, result = self.json_request(
