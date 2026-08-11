@@ -194,6 +194,7 @@ select, input {
 }
 
 select:focus, input:focus, button:focus-visible { border-color: var(--lime); box-shadow: 0 0 0 2px var(--focus); outline: none; }
+select:disabled { cursor: not-allowed; opacity: 0.62; }
 
 .button { min-height: 40px; padding: 0 15px; border: 1px solid transparent; font: 650 12px/1 var(--mono); transition: 120ms ease; }
 .button:hover { transform: translateY(-1px); }
@@ -222,6 +223,9 @@ select:focus, input:focus, button:focus-visible { border-color: var(--lime); box
 .graph-heading { gap: 20px; }
 .graph-controls { display: flex; align-items: center; gap: 10px; }
 .graph-controls select { min-width: 210px; min-height: 34px; font-size: 11px; }
+.scope-control { display: flex; align-items: center; gap: 8px; }
+.scope-control > span { color: var(--dim); font: 600 9px/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; white-space: nowrap; }
+.scope-hint { max-width: 100%; padding: 5px 7px; overflow: hidden; border: 1px solid var(--line); color: var(--muted); font: 550 9px/1.25 var(--mono); text-overflow: ellipsis; white-space: nowrap; }
 .graph-count { color: var(--dim); font: 500 10px/1.3 var(--mono); white-space: nowrap; }
 .project-overview[hidden], .storyline-layout[hidden] { display: none; }
 .project-overview { padding: 12px; }
@@ -561,6 +565,7 @@ pre { max-height: 58vh; margin: 0; padding: 24px; overflow: auto; background: va
   .graph-heading { align-items: flex-start; flex-direction: column; }
   .graph-controls { width: 100%; align-items: flex-start; flex-direction: column; }
   .graph-controls label, .graph-controls select { width: 100%; }
+  .scope-control { align-items: flex-start; flex-direction: column; }
   .storyline-canvas { grid-template-columns: 112px minmax(0, 1fr); }
   .inflight-grid { grid-template-columns: 1fr; }
   .inflight-grid > section + section { border-top: 1px solid var(--line); border-left: 0; }

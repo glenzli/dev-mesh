@@ -57,14 +57,31 @@ def build_report(
     *,
     since: datetime,
     limit: int = 10,
+    workspace_id: str | None = None,
 ) -> dict[str, object]:
     if limit < 1 or limit > 100:
         raise ValueError("report limit must be between 1 and 100")
+    selected_workspace_id = workspace_id
+    parameters: tuple[object, ...] = ()
+    where = ""
+    if selected_workspace_id is not None:
+        if not selected_workspace_id or len(selected_workspace_id) > 256:
+            raise ValueError("workspace_id is invalid")
+        where = "WHERE workspace_id = ?"
+        parameters = (selected_workspace_id,)
     workspace_rows = list(
         connection.execute(
-            "SELECT workspace_id, workspace_root FROM workspaces ORDER BY workspace_root"
+            f"""
+            SELECT workspace_id, workspace_root
+            FROM workspaces
+            {where}
+            ORDER BY workspace_root
+            """,
+            parameters,
         )
     )
+    if selected_workspace_id is not None and not workspace_rows:
+        raise ValueError("unknown workspace_id")
     workspace_names = {
         str(row["workspace_id"]): str(row["workspace_root"])
         for row in workspace_rows
@@ -72,12 +89,14 @@ def build_report(
     rows = [
         dict(row)
         for row in connection.execute(
-            """
+            f"""
             SELECT workspace_id, event_at, event_type, run_id, handoff_id,
                    transaction_id, owner, payload_json
             FROM events
+            {where}
             ORDER BY event_at, source_name
-            """
+            """,
+            parameters,
         )
     ]
     window_rows = [
@@ -91,20 +110,20 @@ def build_report(
     offered: set[tuple[str, str]] = set()
     accepted: set[tuple[str, str]] = set()
     for row in rows:
-        workspace_id = str(row["workspace_id"])
+        row_workspace_id = str(row["workspace_id"])
         event = row["event_type"]
         run_id = row["run_id"]
         handoff_id = row["handoff_id"]
         if isinstance(run_id, str):
             if event == "agent-joined":
-                joined.add((workspace_id, run_id))
+                joined.add((row_workspace_id, run_id))
             elif event == "agent-left":
-                left.add((workspace_id, run_id))
+                left.add((row_workspace_id, run_id))
         if isinstance(handoff_id, str):
             if event == "handoff-offered":
-                offered.add((workspace_id, handoff_id))
+                offered.add((row_workspace_id, handoff_id))
             elif event == "handoff-accepted":
-                accepted.add((workspace_id, handoff_id))
+                accepted.add((row_workspace_id, handoff_id))
 
     event_counts = Counter(str(row["event_type"] or "unknown") for row in window_rows)
     workspace_counts = Counter(str(row["workspace_id"]) for row in window_rows)
@@ -127,16 +146,29 @@ def build_report(
                 )
 
     issue_count = int(
-        connection.execute("SELECT COUNT(*) FROM collection_issues").fetchone()[0]
+        connection.execute(
+            f"SELECT COUNT(*) FROM collection_issues {where}",
+            parameters,
+        ).fetchone()[0]
     )
     generated_at = datetime.now(UTC)
     coordination_state = project_active_contentions(
         connection,
         current=generated_at,
+        workspace_id=selected_workspace_id,
     )
     return {
         "generated_at": _iso(generated_at),
         "since": _iso(since),
+        "scope": (
+            {
+                "kind": "workspace",
+                "workspace_id": selected_workspace_id,
+                "workspace_root": workspace_names[selected_workspace_id],
+            }
+            if selected_workspace_id is not None
+            else {"kind": "all"}
+        ),
         "summary": {
             "registered_workspaces": len(workspace_rows),
             "active_workspaces_in_window": len(workspace_counts),

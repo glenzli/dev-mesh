@@ -178,17 +178,41 @@ def list_issues(
     connection: sqlite3.Connection,
     *,
     limit: int,
+    workspace_id: str | None = None,
 ) -> list[dict[str, object]]:
+    workspace = _bounded(workspace_id, name="workspace_id")
+    where = "WHERE i.workspace_id = ?" if workspace is not None else ""
+    parameters: list[object] = [workspace] if workspace is not None else []
+    parameters.append(bounded_limit(limit))
     rows = connection.execute(
-        """
+        f"""
         SELECT i.issue_id, i.workspace_id, w.workspace_root, i.source_name,
                i.kind, i.detail, i.expected_digest, i.observed_digest,
                i.first_detected_at, i.last_detected_at, i.occurrences
         FROM collection_issues i
         JOIN workspaces w ON w.workspace_id = i.workspace_id
+        {where}
         ORDER BY i.last_detected_at DESC, i.issue_id DESC
         LIMIT ?
         """,
-        (bounded_limit(limit),),
+        parameters,
     )
     return [dict(row) for row in rows]
+
+
+def count_issues(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str | None = None,
+) -> int:
+    workspace = _bounded(workspace_id, name="workspace_id")
+    if workspace is None:
+        return int(
+            connection.execute("SELECT COUNT(*) FROM collection_issues").fetchone()[0]
+        )
+    return int(
+        connection.execute(
+            "SELECT COUNT(*) FROM collection_issues WHERE workspace_id = ?",
+            (workspace,),
+        ).fetchone()[0]
+    )

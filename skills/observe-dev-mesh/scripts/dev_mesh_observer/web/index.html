@@ -69,21 +69,22 @@
       <h1 class="sr-only">Dev Mesh Observer</h1>
 
       <section class="metrics" data-i18n-aria-label="metrics.label">
-        <article class="metric"><span data-i18n="metrics.workspaces">工作区</span><strong id="metric-workspaces">—</strong><small id="metric-available" data-i18n="metrics.waiting">等待数据</small></article>
+        <article class="metric"><span data-i18n="metrics.workspacesGlobal">工作区 · 全局</span><strong id="metric-workspaces">—</strong><small id="metric-available" data-i18n="metrics.waiting">等待数据</small></article>
         <article class="metric"><span data-i18n="metrics.events">窗口内事件</span><strong id="metric-events">—</strong><small id="metric-active" data-i18n="metrics.waiting">等待数据</small></article>
         <article class="metric accent"><span data-i18n="metrics.openRuns">开放 Run</span><strong id="metric-runs">—</strong><small id="metric-run-total" data-i18n="metrics.waiting">等待数据</small></article>
         <article class="metric"><span data-i18n="metrics.pendingHandoffs">Pending Handoff</span><strong id="metric-handoffs">—</strong><small id="metric-handoff-total" data-i18n="metrics.waiting">等待数据</small></article>
-        <article class="metric warning"><span data-i18n="metrics.issues">Integrity Issues</span><strong id="metric-issues">—</strong><small data-i18n="metrics.issueHint">采集与不可变性检查</small></article>
+        <article class="metric warning"><span data-i18n="metrics.issuesGlobal">Integrity Issues · 全局</span><strong id="metric-issues">—</strong><small data-i18n="metrics.issueHint">全局采集与不可变性检查</small></article>
       </section>
 
       <section class="panel graph-panel" aria-labelledby="graph-title">
         <div class="panel-heading graph-heading">
           <div><p class="kicker" data-i18n="graph.kicker">项目边界</p><h2 id="graph-title" data-i18n="graph.title">项目协作</h2></div>
           <div class="graph-controls">
-            <label>
-              <span class="sr-only" data-i18n="graph.workspace">图中工作区</span>
-              <select id="graph-workspace"><option value="" data-i18n="projectOverview.selector">项目总览</option></select>
+            <label class="scope-control">
+              <span data-i18n="scope.label">页面范围</span>
+              <select id="scope-workspace"><option value="" data-i18n="projectOverview.selector">项目总览</option></select>
             </label>
+            <span class="scope-hint" id="scope-hint" data-i18n="scope.allHint">下方诊断与时间线：全部项目</span>
             <span class="graph-count" id="graph-count" data-i18n="projectOverview.waiting">等待项目数据</span>
           </div>
         </div>
@@ -190,7 +191,7 @@
       <section class="split-grid">
         <article class="panel" aria-labelledby="workspaces-title">
           <div class="panel-heading">
-            <div><p class="kicker" data-i18n="catalog.kicker">目录</p><h2 id="workspaces-title" data-i18n="catalog.workspaces">工作区</h2></div>
+            <div><p class="kicker" data-i18n="catalog.kicker">全局目录</p><h2 id="workspaces-title" data-i18n="catalog.workspaces">工作区</h2></div>
             <div class="heading-actions">
               <span class="count" id="workspace-count">0</span>
               <button class="button ghost compact-button" id="add-workspace-button" type="button" data-i18n="workspace.add">添加工作区</button>
@@ -211,7 +212,7 @@
       </section>
 
       <section class="activity-grid" data-i18n-aria-label="activity.kicker">
-        <article class="panel small"><div class="panel-heading"><div><p class="kicker" data-i18n="activity.kicker">活动</p><h2 data-i18n="activity.workspace">工作区</h2></div></div><div id="workspace-activity" class="bar-list"></div></article>
+        <article class="panel small"><div class="panel-heading"><div><p class="kicker" data-i18n="activity.kicker">活动</p><h2 id="activity-primary-title" data-i18n="activity.workspace">工作区</h2></div></div><div id="workspace-activity" class="bar-list"></div></article>
         <article class="panel small"><div class="panel-heading"><div><p class="kicker" data-i18n="activity.ownership">所有者</p><h2 data-i18n="activity.owner">Agent Owner</h2></div></div><div id="owner-activity" class="bar-list"></div></article>
         <article class="panel small"><div class="panel-heading"><div><p class="kicker" data-i18n="activity.pressure">压力</p><h2 data-i18n="activity.resource">语义资源</h2></div></div><div id="resource-activity" class="bar-list"></div></article>
       </section>

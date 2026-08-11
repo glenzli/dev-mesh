@@ -129,6 +129,7 @@ class ObserverConsoleTest(unittest.TestCase):
         self.assertIn(b"storyline.legend.contention", payload)
         self.assertIn(b'class="compact-control window-control"', payload)
         self.assertIn(b'id="since-select"', payload)
+        self.assertIn(b'id="scope-workspace"', payload)
         self.assertIn(b'id="event-pagination"', payload)
         self.assertIn(b'id="event-page-size"', payload)
         self.assertNotIn(b'class="hero"', payload)
@@ -136,6 +137,7 @@ class ObserverConsoleTest(unittest.TestCase):
         self.assertNotIn(b"storyline.mode.entities", payload)
         self.assertNotIn(b"/graph-view.js", payload)
         self.assertNotIn(b'id="graph-layout"', payload)
+        self.assertNotIn(b'id="graph-workspace"', payload)
 
         status, _, script = self.request("GET", "/app.js")
         self.assertEqual(status, 200)
@@ -145,6 +147,8 @@ class ObserverConsoleTest(unittest.TestCase):
         self.assertIn(b"collector.collectingWithDelta", script)
         self.assertIn(b"resetTimelineSnapshot", script)
         self.assertIn(b"payload.pagination", script)
+        self.assertIn(b"workspaceScope", script)
+        self.assertIn(b"syncLocation", script)
         self.assertNotIn(b"DEMO_WORKSPACE_ID", script)
         self.assertNotIn(b"DevMeshStorylineDemo", script)
         self.assertNotIn(b"/api/v1/graph", script)
@@ -246,6 +250,7 @@ class ObserverConsoleTest(unittest.TestCase):
 
         status, report = self.json_request("GET", "/api/v1/report?since=7d")
         self.assertEqual(status, 200)
+        self.assertEqual(report["scope"]["kind"], "all")
         self.assertEqual(report["summary"]["runs_open"], 1)
         self.assertIn("coordination_analytics", report)
         self.assertIn("coordination_state", report)
@@ -267,6 +272,26 @@ class ObserverConsoleTest(unittest.TestCase):
         self.assertEqual(graph["nodes"][0]["type"], "agent")
 
         workspace_id = str(catalog["workspaces"][0]["workspace_id"])
+        status, scoped_report = self.json_request(
+            "GET",
+            f"/api/v1/report?since=7d&workspace_id={workspace_id}",
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(scoped_report["scope"]["kind"], "workspace")
+        self.assertEqual(scoped_report["scope"]["workspace_id"], workspace_id)
+        self.assertEqual(scoped_report["summary"]["registered_workspaces"], 1)
+        self.assertEqual(scoped_report["summary"]["events_in_window"], 1)
+        self.assertEqual(scoped_report["project_overview"]["summary"]["projects"], 1)
+
+        status, scoped_issues = self.json_request(
+            "GET",
+            f"/api/v1/issues?workspace_id={workspace_id}&limit=100",
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(scoped_issues["scope"]["workspace_id"], workspace_id)
+        self.assertEqual(scoped_issues["total"], 0)
+        self.assertEqual(scoped_issues["issues"], [])
+
         status, storyline = self.json_request(
             "GET",
             f"/api/v1/storyline?since=7d&workspace_id={workspace_id}",
@@ -416,6 +441,7 @@ class ObserverConsoleTest(unittest.TestCase):
             + "\n",
             encoding="utf-8",
         )
+        (added_events / "002-malformed.json").write_text("{\n", encoding="utf-8")
         before = hashlib.sha256(added_event.read_bytes()).hexdigest()
         body = json.dumps({"root": str(added_workspace), "max_depth": 0})
         status, result = self.json_request(
@@ -436,6 +462,41 @@ class ObserverConsoleTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(catalog["summary"]["workspaces"], 2)
         self.assertIn(str(added_workspace.resolve()), catalog["scan_roots"])
+        added_record = next(
+            workspace
+            for workspace in catalog["workspaces"]
+            if workspace["workspace_root"] == str(added_workspace.resolve())
+        )
+        original_record = next(
+            workspace
+            for workspace in catalog["workspaces"]
+            if workspace["workspace_root"] == str(self.workspace.resolve())
+        )
+        added_id = str(added_record["workspace_id"])
+        original_id = str(original_record["workspace_id"])
+
+        status, scoped_report = self.json_request(
+            "GET",
+            f"/api/v1/report?since=7d&workspace_id={added_id}",
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(scoped_report["summary"]["events_in_window"], 1)
+        self.assertEqual(scoped_report["owner_activity"][0]["owner"], "agent-added")
+        self.assertEqual(scoped_report["project_overview"]["summary"]["projects"], 1)
+
+        status, added_issues = self.json_request(
+            "GET",
+            f"/api/v1/issues?workspace_id={added_id}&limit=100",
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(added_issues["total"], 1)
+        self.assertEqual(added_issues["issues"][0]["kind"], "malformed-event")
+        status, original_issues = self.json_request(
+            "GET",
+            f"/api/v1/issues?workspace_id={original_id}&limit=100",
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(original_issues["total"], 0)
 
         status, rejected = self.json_request(
             "POST",
@@ -461,6 +522,11 @@ class ObserverConsoleTest(unittest.TestCase):
         self.assertIn("anchor", result["error"])
         status, _ = self.json_request("GET", "/api/v1/report?limit=101")
         self.assertEqual(status, 400)
+        status, result = self.json_request(
+            "GET", "/api/v1/report?workspace_id=unknown"
+        )
+        self.assertEqual(status, 400)
+        self.assertIn("unknown workspace_id", result["error"])
         status, result = self.json_request("GET", "/api/v1/graph?limit=9")
         self.assertEqual(status, 400)
         self.assertIn("between", result["error"])

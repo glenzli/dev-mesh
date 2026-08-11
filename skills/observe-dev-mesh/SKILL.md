@@ -135,6 +135,13 @@ Keep the console operator-first: place the observation window and collection act
 bar, omit marketing-style hero copy, and keep metric, diagnostic, activity, and timeline cards dense
 enough for scanning. Preserve extra vertical separation inside storyline lanes when cross-owner
 relations or inferred attachments would otherwise crowd adjacent progress spines.
+Treat the project selector as one page-wide scope, not a graph-only filter. In project mode, filter
+window metrics, conflict and transaction diagnostics, protocol-use analysis, active work, activity
+rankings, collection-issue details, storyline, and timeline events by the same verified workspace id.
+Reset the timeline snapshot and subordinate event filters when that scope changes, and persist the
+workspace plus observation window in the URL. Keep collector health, registered-workspace inventory,
+global workspace availability, and the global integrity total visibly global so project filtering
+cannot hide an Observer-wide failure.
 Paginate the collaboration timeline over a stable event snapshot, 25 rows by default. Preserve that
 snapshot while the collector appends events so historical pages do not shift; report matching newer
 events separately and rebuild page one only when the operator returns to the latest snapshot or

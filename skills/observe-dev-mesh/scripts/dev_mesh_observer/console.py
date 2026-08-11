@@ -16,6 +16,7 @@ from .console_data import (
     bounded_anchor,
     bounded_limit,
     bounded_page,
+    count_issues,
     event_detail,
     event_page,
     list_issues,
@@ -295,6 +296,7 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                 return
             if request.path == "/api/v1/report":
                 since = self._single(parameters, "since") or "48h"
+                workspace_id = self._single(parameters, "workspace_id")
                 limit = bounded_limit(self._single(parameters, "limit"), default=10)
                 if limit > 100:
                     raise ValueError("report limit must be between 1 and 100")
@@ -304,6 +306,7 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                         store.connection,
                         since=parse_since(since),
                         limit=limit,
+                        workspace_id=workspace_id,
                     ),
                 )
                 return
@@ -347,9 +350,25 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                 return
             if request.path == "/api/v1/issues":
                 limit = bounded_limit(self._single(parameters, "limit"))
+                workspace_id = self._single(parameters, "workspace_id")
                 self._send_json(
                     HTTPStatus.OK,
-                    {"issues": list_issues(store.connection, limit=limit)},
+                    {
+                        "issues": list_issues(
+                            store.connection,
+                            limit=limit,
+                            workspace_id=workspace_id,
+                        ),
+                        "total": count_issues(
+                            store.connection,
+                            workspace_id=workspace_id,
+                        ),
+                        "scope": (
+                            {"kind": "workspace", "workspace_id": workspace_id}
+                            if workspace_id
+                            else {"kind": "all"}
+                        ),
+                    },
                 )
                 return
         self._error(HTTPStatus.NOT_FOUND, "not found")

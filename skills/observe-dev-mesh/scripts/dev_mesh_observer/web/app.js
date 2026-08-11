@@ -1,13 +1,17 @@
 "use strict";
 
 const preferences = window.DevMeshPreferences;
+const initialParameters = new URLSearchParams(window.location.search);
+const supportedWindows = new Set(["1h", "24h", "48h", "7d", "4w"]);
+const initialWindow = initialParameters.get("since");
 const state = {
   status: null,
   report: null,
   storyline: null,
   issues: [],
-  since: "48h",
-  graphWorkspace: "",
+  issueTotal: 0,
+  since: supportedWindows.has(initialWindow) ? initialWindow : "48h",
+  workspaceScope: initialParameters.get("workspace") || "",
   refreshGeneration: 0,
   timer: null,
   observedEventTotal: null,
@@ -57,6 +61,33 @@ function shortPath(value) {
   if (!value) return t("workspace.unknown");
   const parts = String(value).split("/").filter(Boolean);
   return parts.slice(-2).join("/") || String(value);
+}
+
+function selectedWorkspace() {
+  return (state.status?.workspaces || [])
+    .find((workspace) => workspace.workspace_id === state.workspaceScope) || null;
+}
+
+function syncLocation() {
+  const parameters = new URLSearchParams();
+  parameters.set("since", state.since);
+  if (state.workspaceScope) parameters.set("workspace", state.workspaceScope);
+  const query = parameters.toString();
+  window.history.replaceState(null, "", `${window.location.pathname}${query ? `?${query}` : ""}`);
+}
+
+function validateWorkspaceScope(status) {
+  if (
+    state.workspaceScope
+    && !(status.workspaces || []).some(
+      (workspace) => workspace.workspace_id === state.workspaceScope,
+    )
+  ) {
+    state.workspaceScope = "";
+    state.storyline = null;
+    resetTimelineSnapshot();
+    syncLocation();
+  }
 }
 
 async function api(path, options = {}) {
@@ -144,10 +175,15 @@ function toast(message, isError = false) {
 function renderMetrics() {
   const status = state.status?.summary || {};
   const summary = state.report?.summary || {};
+  const workspace = selectedWorkspace();
   $("metric-workspaces").textContent = formatNumber(status.workspaces);
-  $("metric-available").textContent = t("metrics.available", { count: formatNumber(status.available) });
+  $("metric-available").textContent = t("metrics.availableGlobal", {
+    count: formatNumber(status.available),
+  });
   $("metric-events").textContent = formatNumber(summary.events_in_window);
-  $("metric-active").textContent = t("metrics.active", { count: formatNumber(summary.active_workspaces_in_window) });
+  $("metric-active").textContent = workspace
+    ? t("metrics.projectScope", { project: shortPath(workspace.workspace_root) })
+    : t("metrics.active", { count: formatNumber(summary.active_workspaces_in_window) });
   $("metric-runs").textContent = formatNumber(summary.runs_open);
   $("metric-run-total").textContent = t("metrics.runs", {
     closed: formatNumber(summary.runs_closed),
@@ -260,13 +296,6 @@ function populateSelect(selectId, firstLabel, values, currentValue) {
 
 function renderFilterOptions() {
   const workspaces = state.status?.workspaces || [];
-  if (
-    state.graphWorkspace
-    && !workspaces.some((workspace) => workspace.workspace_id === state.graphWorkspace)
-  ) {
-    state.graphWorkspace = "";
-    state.storyline = null;
-  }
   populateSelect(
     "filter-workspace",
     t("filters.allWorkspaces"),
@@ -277,28 +306,41 @@ function renderFilterOptions() {
   const owners = (state.report?.owner_activity || []).map((item) => item.owner).sort();
   populateSelect("filter-owner", t("filters.allOwners"), owners.map((value) => ({ value, label: value })));
   populateSelect(
-    "graph-workspace",
+    "scope-workspace",
     t("projectOverview.selector"),
     workspaces.map((workspace) => ({
       value: workspace.workspace_id,
       label: shortPath(workspace.workspace_root),
     })),
-    state.graphWorkspace,
+    state.workspaceScope,
   );
+  const timelineWorkspace = $("filter-workspace");
+  timelineWorkspace.disabled = Boolean(state.workspaceScope);
+  timelineWorkspace.title = state.workspaceScope ? t("scope.timelineLocked") : "";
+  if (state.workspaceScope) timelineWorkspace.value = state.workspaceScope;
 }
 
-function selectGraphWorkspace(workspaceId) {
-  state.graphWorkspace = workspaceId || "";
+function selectWorkspaceScope(workspaceId) {
+  const nextScope = workspaceId || "";
+  if (nextScope === state.workspaceScope) return;
+  state.workspaceScope = nextScope;
   state.storyline = null;
-  $("graph-workspace").value = state.graphWorkspace;
+  $("scope-workspace").value = state.workspaceScope;
+  $("filter-workspace").value = state.workspaceScope;
+  $("filter-event").value = "";
+  $("filter-owner").value = "";
+  $("filter-run").value = "";
+  resetTimelineSnapshot();
+  syncLocation();
   refreshDashboard();
 }
 
 function renderCollaborationView() {
-  const overviewVisible = !state.graphWorkspace;
+  const overviewVisible = !state.workspaceScope;
   $("project-overview").hidden = !overviewVisible;
   $("storyline-layout").hidden = overviewVisible;
   if (overviewVisible) {
+    $("scope-hint").textContent = t("scope.allHint");
     const overview = state.report?.project_overview || {};
     const summary = overview.summary || {};
     $("graph-count").textContent = t("projectOverview.count", {
@@ -308,12 +350,15 @@ function renderCollaborationView() {
     window.DevMeshProjectOverview.render(
       overview,
       state.status?.workspaces || [],
-      selectGraphWorkspace,
+      selectWorkspaceScope,
     );
     return;
   }
   const project = (state.report?.project_overview?.projects || [])
-    .find((item) => item.workspace_id === state.graphWorkspace);
+    .find((item) => item.workspace_id === state.workspaceScope);
+  $("scope-hint").textContent = t("scope.projectHint", {
+    project: shortPath(project?.workspace_root || selectedWorkspace()?.workspace_root),
+  });
   window.DevMeshStorylineView.render(state.storyline || {}, {
     latestProjectAt: project?.last_activity_at || null,
   });
@@ -321,7 +366,7 @@ function renderCollaborationView() {
 
 function renderIssues() {
   const target = $("issue-list");
-  $("issue-count").textContent = formatNumber(state.issues.length);
+  $("issue-count").textContent = formatNumber(state.issueTotal);
   target.replaceChildren();
   if (!state.issues.length) {
     target.append(empty(t("issues.none")));
@@ -375,7 +420,7 @@ async function loadEvents(expectedGeneration = state.refreshGeneration) {
     parameters.set("anchor", String(state.timeline.anchor));
   }
   const filters = {
-    workspace_id: $("filter-workspace").value,
+    workspace_id: state.workspaceScope || $("filter-workspace").value,
     event: $("filter-event").value,
     owner: $("filter-owner").value,
     run_id: $("filter-run").value.trim(),
@@ -441,7 +486,16 @@ function renderDashboard() {
   renderWorkspaces();
   renderScanRoots();
   renderInflight();
-  renderBars("workspace-activity", state.report?.workspace_activity || [], "workspace_root");
+  const eventTypeActivity = Object.entries(state.report?.event_types || {})
+    .map(([eventType, events]) => ({ event_type: eventType, events }));
+  $("activity-primary-title").textContent = state.workspaceScope
+    ? t("activity.eventTypes")
+    : t("activity.workspace");
+  renderBars(
+    "workspace-activity",
+    state.workspaceScope ? eventTypeActivity : state.report?.workspace_activity || [],
+    state.workspaceScope ? "event_type" : "workspace_root",
+  );
   renderBars("owner-activity", state.report?.owner_activity || [], "owner");
   renderBars("resource-activity", state.report?.resource_activity || [], "resource");
   renderIssues();
@@ -452,20 +506,28 @@ async function refreshDashboard({ quiet = false } = {}) {
   const generation = ++state.refreshGeneration;
   if (!quiet) setConnection("", t("connection.refreshing"));
   try {
+    const status = await api("/api/v1/status");
+    if (generation !== state.refreshGeneration) return;
+    validateWorkspaceScope(status);
+    const reportParameters = new URLSearchParams({ since: state.since, limit: "10" });
+    const issueParameters = new URLSearchParams({ limit: "100" });
+    if (state.workspaceScope) {
+      reportParameters.set("workspace_id", state.workspaceScope);
+      issueParameters.set("workspace_id", state.workspaceScope);
+    }
     let storylineRequest = Promise.resolve(null);
-    if (state.graphWorkspace) {
+    if (state.workspaceScope) {
       const parameters = new URLSearchParams({
         since: state.since,
-        workspace_id: state.graphWorkspace,
+        workspace_id: state.workspaceScope,
       });
       parameters.set("limit", "28");
       storylineRequest = api(`/api/v1/storyline?${parameters}`);
     }
-    const [status, report, storyline, issues] = await Promise.all([
-      api("/api/v1/status"),
-      api(`/api/v1/report?since=${encodeURIComponent(state.since)}&limit=10`),
+    const [report, storyline, issues] = await Promise.all([
+      api(`/api/v1/report?${reportParameters}`),
       storylineRequest,
-      api("/api/v1/issues?limit=100"),
+      api(`/api/v1/issues?${issueParameters}`),
     ]);
     if (generation !== state.refreshGeneration) return;
     const eventTotal = Number(status.summary?.events || 0);
@@ -480,6 +542,7 @@ async function refreshDashboard({ quiet = false } = {}) {
     state.report = report;
     state.storyline = storyline;
     state.issues = issues.issues;
+    state.issueTotal = Number(issues.total ?? issues.issues.length);
     renderDashboard();
     await loadEvents(generation);
     if (generation !== state.refreshGeneration) return;
@@ -555,6 +618,7 @@ async function addWorkspace(event) {
 preferences.translateDocument();
 $("locale-select").value = preferences.locale;
 $("theme-select").value = preferences.theme;
+$("since-select").value = state.since;
 
 $("locale-select").addEventListener("change", (event) => {
   preferences.setLocale(event.target.value);
@@ -563,10 +627,11 @@ $("locale-select").addEventListener("change", (event) => {
 $("theme-select").addEventListener("change", (event) => preferences.setTheme(event.target.value));
 $("since-select").addEventListener("change", (event) => {
   state.since = event.target.value;
+  syncLocation();
   refreshDashboard();
 });
-$("graph-workspace").addEventListener("change", (event) => {
-  selectGraphWorkspace(event.target.value);
+$("scope-workspace").addEventListener("change", (event) => {
+  selectWorkspaceScope(event.target.value);
 });
 $("refresh-button").addEventListener("click", () => {
   resetTimelineSnapshot();
@@ -607,6 +672,7 @@ $("workspace-dialog").addEventListener("click", (event) => {
   if (event.target === $("workspace-dialog")) closeWorkspaceDialog();
 });
 
+syncLocation();
 refreshDashboard();
 state.timer = window.setInterval(() => {
   if (!document.hidden) refreshDashboard({ quiet: true });
