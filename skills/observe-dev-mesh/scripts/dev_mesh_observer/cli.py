@@ -70,6 +70,7 @@ def command_serve(arguments: argparse.Namespace) -> int:
         port=arguments.port,
         max_depth=arguments.max_depth,
         collect_interval=arguments.collect_interval,
+        publish_facility=not arguments.no_infra_discovery,
     )
     return 0
 
@@ -102,6 +103,11 @@ def parser() -> argparse.ArgumentParser:
     serve.add_argument("--port", type=int, default=8765)
     serve.add_argument("--max-depth", type=int, default=5)
     serve.add_argument("--collect-interval", type=float, default=5.0)
+    serve.add_argument(
+        "--no-infra-discovery",
+        action="store_true",
+        help="run the Console without publishing its local facility status offer",
+    )
     serve.set_defaults(handler=command_serve)
     return result
 

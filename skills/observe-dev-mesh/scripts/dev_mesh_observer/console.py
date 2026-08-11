@@ -22,6 +22,8 @@ from .console_data import (
     list_issues,
 )
 from .graph import build_collaboration_graph
+from .facility_status import build_facility_snapshot
+from .infra_discovery import ObserverFacilityService
 from .reports import build_report, parse_since
 from .store import ObserverStore
 from .storyline import build_collaboration_storyline
@@ -66,6 +68,7 @@ class ObserverConsole(ThreadingHTTPServer):
         data_dir: Path,
         max_depth: int,
         collect_interval: float = 0,
+        publish_facility: bool = False,
     ) -> None:
         validate_loopback_host(host)
         if port < 0 or port > 65535:
@@ -80,6 +83,8 @@ class ObserverConsole(ThreadingHTTPServer):
             max_depth=max_depth,
             interval_seconds=collect_interval,
         )
+        self.publish_facility = publish_facility
+        self.facility: ObserverFacilityService | None = None
         super().__init__((host, port), ConsoleHandler)
 
     @property
@@ -90,13 +95,35 @@ class ObserverConsole(ThreadingHTTPServer):
     def serve_forever(self, poll_interval: float = 0.5) -> None:
         self.collector.start()
         try:
+            if self.publish_facility:
+                self.facility = ObserverFacilityService(self._facility_snapshot)
+                self.facility.start()
             super().serve_forever(poll_interval=poll_interval)
         finally:
+            if self.facility is not None:
+                self.facility.stop()
+                self.facility = None
             self.collector.stop()
 
     def server_close(self) -> None:
+        if self.facility is not None:
+            self.facility.stop()
+            self.facility = None
         self.collector.stop()
         super().server_close()
+
+    def _facility_snapshot(
+        self,
+        service: dict[str, str],
+        sequence: int,
+    ) -> dict[str, object]:
+        return build_facility_snapshot(
+            data_dir=self.config.data_dir,
+            collector=self.collector.status(),
+            console_url=self.url,
+            service=service,
+            sequence=sequence,
+        )
 
 
 def validate_loopback_host(host: str) -> None:
@@ -410,6 +437,7 @@ def serve_console(
     port: int,
     max_depth: int,
     collect_interval: float,
+    publish_facility: bool = True,
 ) -> None:
     server = ObserverConsole(
         host,
@@ -417,6 +445,7 @@ def serve_console(
         data_dir=data_dir,
         max_depth=max_depth,
         collect_interval=collect_interval,
+        publish_facility=publish_facility,
     )
     print(f"Observer console: {server.url}", flush=True)
     try:

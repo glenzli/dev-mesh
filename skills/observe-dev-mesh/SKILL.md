@@ -1,6 +1,6 @@
 ---
 name: observe-dev-mesh
-description: Collect and analyze immutable dev-mesh coordination events and bounded active-contention diagnostics across explicitly allowed local workspaces using read-only discovery, an external SQLite catalog, and a localhost web console. Use only when the user explicitly requests cross-workspace coordination observation, a friendly local dashboard, centralized activity or stalled-contention reports, collaboration graphs, multi-repository agent lifecycle or handoff analysis, collection status, or coordination log aggregation. Do not use for ordinary editing, claims, handoffs, transaction arbitration, or single-workspace recovery.
+description: Collect and analyze immutable dev-mesh coordination events and bounded active-contention diagnostics across explicitly allowed local workspaces using read-only discovery, an external SQLite catalog, a localhost web console, and an Infra Discovery facility status offer. Use only when the user explicitly requests cross-workspace coordination observation, a friendly local dashboard, centralized activity or stalled-contention reports, collaboration graphs, multi-repository agent lifecycle or handoff analysis, collection status, Infra Sentinel facility discovery, or coordination log aggregation. Do not use for ordinary editing, claims, handoffs, transaction arbitration, or single-workspace recovery.
 ---
 
 # Observe Dev Mesh Workspaces
@@ -73,6 +73,18 @@ Start the bundled dashboard after registering at least one allowlisted root:
 python3 <skill>/scripts/observe.py --data-dir <observer-data-dir> \
   serve --host 127.0.0.1 --port 8765 --collect-interval 5
 ```
+
+The running Console publishes `dev-mesh.observer.status@20260812.1` through the canonical Infra
+Discovery `infra.discovery.registration@20260812.1` runtime root so exact consumers such as Infra
+Sentinel can discover a bounded facility snapshot and the loopback Console deep-link. The stable
+manifest is published once per process generation without a lease or periodic refresh; connection
+success determines liveness. Keep Discovery publication enabled for the normal facility path. Use
+`--no-infra-discovery` only when the user explicitly wants an isolated Console or the shared runtime
+root is unavailable. Do not publish an ad-hoc HTTP route or registration shape;
+the application contract is [versioned with dev-mesh](../../contracts/dev-mesh-observer-status-20260812.1.md).
+Treat its aggregate health, metrics, issues, redaction declaration, and Console link as diagnostics
+only. Never add workspace paths, owner ids, scopes, branches, revisions, event payloads, or raw
+errors to the facility snapshot.
 
 Open the printed local URL. Keep the server on `127.0.0.1` or `localhost`; the command rejects
 remote interfaces. Use the dashboard to inspect summaries, workspaces, open runs, pending handoffs,

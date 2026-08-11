@@ -1569,6 +1569,30 @@ run-window 挂接，不猜测分支因果，waiting/diverted、message、handoff
 均可独立检查。窗口 owner label、joined run 与峰值并发分别统计，避免把顺序任务误画成大量同时
 在线 Agent。
 
+### 19.3 Infra Discovery 设施状态
+
+Observer Console 作为可选运行中的本机设施，通过
+`infra.discovery.registration@20260812.1` 发布
+`dev-mesh.observer.status@20260812.1`。Discovery 只拥有 service identity、generation、精确协议
+版本、binding 和 endpoint；稳定 manifest 只是候选入口，不携带 lease 或存活性判断。Dev Mesh
+自己拥有请求、响应、错误、framing、健康语义、脱敏与 Console deep-link。注册 schema 不因
+Observer 的业务字段而扩张。
+
+状态协议使用 owner-only Unix socket、同 UID peer 检查、一连接一次 LF JSON request/response、
+有界帧和 generation 内严格递增 sequence。发布者先 bind socket，再原子替换稳定 manifest；同一
+`dev-mesh-observer/local` identity 由独占 publication authority 串行化。停止时释放 authority，
+保留稳定 manifest 供消费者作为候选入口，并只删除本次 generation 唯一拥有的 socket；后继进程
+以新的 generation 和 endpoint 原子替换 manifest，不进行周期续写。
+
+设施 snapshot 只暴露 workspace availability、collection freshness/backlog、历史 integrity 总量和
+stalled contention 等聚合事实。正常 claim、handoff、transaction、conflict、temporary branch 和
+非停滞 contention 都是活动而非故障。历史 collection issue 不永久降低健康；只有当前采集失败、
+超时、当前 cycle issue、source unavailable 或显式 stalled contention 形成 degraded/unavailable。
+
+Infra Sentinel 通过自己的 exact adapter 消费该协议并生成私有设施投影，不得直接读取 Observer
+SQLite 或扫描 source workspace。owner、路径、scope、branch、revision、event payload 和 raw error
+保持在 native Console 内；status snapshot 不获得任何 coordination 或 Git authority。
+
 至此 direct claim、distributed semantic arbitration、temporary checkout、publish、cleanup、
 recovery、queue、fairness、external shared mutation 和 audit 已形成第一版核心闭环。下一阶段应以真实多 Agent 工作流验证
 和协议 hardening 为主：schema migration、带 checkpoint 的事件压缩、长队列性能、跨平台 Git
