@@ -1,0 +1,5 @@
+"""Read-only Observer for ``dev-mesh.coordination@20260812.1``."""
+
+from .catalog import Catalog, discover_workspaces
+
+__all__ = ["Catalog", "discover_workspaces"]

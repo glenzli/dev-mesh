@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dev-mesh-coordination"
+version = "20260812.1"
+description = "Workspace-local coordination protocol and read-only observer"
+requires-python = ">=3.11"
+
+[project.scripts]
+dev-mesh-coord = "dev_mesh_coord.cli:main"
+dev-mesh-observer = "dev_mesh_observer.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["dev_mesh_coord*", "dev_mesh_observer*"]

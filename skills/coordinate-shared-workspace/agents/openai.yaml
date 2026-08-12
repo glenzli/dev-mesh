@@ -1,4 +1,4 @@
 interface:
-  display_name: "Shared Workspace Coordination"
-  short_description: "Coordinate shared edits, Git transactions, and release locks"
-  default_prompt: "Use $coordinate-shared-workspace to coordinate shared edits, authorization-gated outputs, and the safest direct, waiting, handoff, or microtransaction workflow."
+  display_name: "Dev Mesh Coordination"
+  short_description: "Coordinate shared Git work safely"
+  default_prompt: "Use $coordinate-shared-workspace to claim, edit, and publish this shared-workspace task safely."

@@ -1,557 +1,129 @@
 ---
 name: coordinate-shared-workspace
-description: Coordinate multiple agents or threads that concurrently edit one local Git workspace using direct claims, messages, handoffs, contention-local coordination leases, semantic arbitration, short-lived Git microtransactions, and auditable workflow logs. Use when work may overlap by path or contract, the workspace contains shared dirty files, agents need write ownership or cross-thread handoff, a same-file edit may be safely parallelized, Git index/HEAD or canonical build publication must be serialized, an external shared mutation is authorization-gated, or coordination delays and contention history need analysis.
+description: Coordinate concurrent Agents or tasks editing one local Git workspace with exact Runs and Claims, bounded status, managed direct commits, handoffs, contention decisions, and short-lived Git microtransactions. Use when work may overlap by path or semantic contract, shared dirty files must be preserved, Git index or canonical branch updates must be serialized, another Agent must acknowledge or receive work, or a crashed workflow needs auditable recovery.
 ---
 
 # Coordinate a Shared Workspace
 
-Prefer direct claims in one canonical workspace; use microtransactions only for clean concurrent overlap.
+Use the light direct path for ordinary work. Load the linked references only when their trigger
+occurs; do not read the full protocol or immutable event directory during routine work.
 
-## Preserve hard boundaries
+## Preserve authority boundaries
 
-- Never clean, revert, reformat, stage, commit, or discard another owner's work.
-- Never take over a possibly active claim or transaction without owner or user authorization.
-- Serialize shared Git index/HEAD and canonical build mutations through one release steward.
-- Resolve rebase or merge conflicts only in a transaction shadow checkout, never canonical.
-- Publish only a candidate that can fast-forward the current canonical `HEAD`.
-- Treat an expired timestamp as diagnostic evidence, not transfer authority.
-- Treat permission, sandbox, policy, and approval failures as environment blockers, not contention.
+- Never clean, revert, stage, commit, move, or discard another owner's work.
+- A `pending-arbitration` Claim records intent but grants no write authority.
+- Treat timestamps as diagnostics, never permission to take over authority.
+- Treat sandbox, policy, approval, network, and tool failures as environment blockers, not Agent
+  contention.
+- Cooperating Agents must not run raw canonical `git add`, `git commit`, `git merge`, or ref
+  updates. Use `direct-commit` or transaction publication. Read-only Git inspection is allowed.
+- Events are immutable diagnostics. Materialized state under `.dev-mesh/coord/20260812.1/` is
+  authoritative; Observer data never grants or reconstructs authority.
+- Keep `.dev-mesh/` local unless the user explicitly authorizes committing it.
 
-Keep `.agent-coordination/` local unless the user explicitly wants its history committed.
+## Run the routine path
 
-## Start or hot-join
+Use the repository-owned `python3 <skill>/scripts/coord.py` launcher. Replace uppercase placeholders
+with stable, bounded identifiers; reuse one Run id only for the current Agent task in this workspace.
 
-1. Find the Git worktree root and read repository instructions.
-2. Inspect Git status, active work, action-required messages, and handoffs.
-3. Choose one semantic scope, likely write paths, and a concrete first release.
-4. Use an owner id that identifies the task/thread and agent.
-5. Declare intent before writing.
-6. Treat unexplained dirty or staged files as another owner's work.
-
-Initialize direct coordination when needed:
-
-```bash
-python3 <skill>/scripts/coord.py init --root <workspace>
-```
-
-For writable shared-workspace work, open one lightweight observational run before claiming or
-editing. Reuse its run id only for this agent's current task in this workspace:
+1. Find the exact Git root, read repository instructions, and inspect dirty state without changing
+   it.
+2. Join before claiming:
 
 ```bash
-python3 <skill>/scripts/coord.py agent-join --root <workspace> \
-  --run <run-id> --owner <owner-id> --task "<bounded task summary>" \
-  --parent-owner <parent-agent-id>
+python3 <skill>/scripts/coord.py --root ROOT join \
+  --owner OWNER --run-id RUN --task "bounded task"
 ```
 
-Omit `--parent-owner` when the agent was not delegated. Run events are diagnostic only: they grant
-no paths, claims, transactions, coordination leases, or publication authority. Identical joins are
-idempotent.
-
-Initialize the transaction steward only when microtransactions may be used:
+3. Read only this Run's compact state:
 
 ```bash
-python3 <skill>/scripts/tx.py init --root <workspace> --steward <owner-id>
+python3 <skill>/scripts/coord.py --root ROOT status --owner OWNER --run-id RUN
 ```
 
-The transaction initializer adds the local coordination directory to Git's local exclude file.
-
-## Declare semantic intent
-
-Create a normal direct claim:
+Use unfiltered `status` only for a bounded workspace overview. Add root option `--verbose` before
+the command only when an action reports `needs-attention`, recovery is required, or exact evidence
+must be reviewed:
 
 ```bash
-python3 <skill>/scripts/coord.py claim --root <workspace> \
-  --scope route-health --owner agent-a --run <run-id> \
-  --task "Add the health route" \
-  --paths src/router.ts tests/router.test.ts \
-  --intent additive \
-  --semantic-writes route:/health \
-  --sensitive-to contract:http-routing \
-  --validation "focused router tests" \
-  --first-release "Health route and focused test pass"
+python3 <skill>/scripts/coord.py --root ROOT --verbose status --owner OWNER --run-id RUN
 ```
 
-Use these intents:
-
-- `read` for a read-only snapshot;
-- `additive` for an independent new entry or case;
-- `local-edit` for a bounded existing semantic unit;
-- `contract`, `refactor`, `move`, `delete`, or `generated` for ordered or exclusive changes.
-
-Declare `semantic-writes` when same-path work may be independent. Use `sensitive-to` only when a
-resource change would invalidate implementation or validation; omit incidental reads.
-
-Pass the current joined `--run` to claim, update, pause, resume, and release operations. A new
-claim may infer its run only when exactly one active run belongs to its owner; multiple active runs
-require an explicit id. The correlation is diagnostic and immutable for that claim episode: it
-grants no authority, and another run must not silently rebind it.
-
-## Record overlap without granting write authority
-
-If a second request overlaps, record it as pending and stop new writes on the overlap:
+4. Claim exact likely write paths before editing:
 
 ```bash
-python3 <skill>/scripts/coord.py claim --root <workspace> \
-  --scope route-metrics --owner agent-b --run <run-id> \
-  --task "Add the metrics route" \
-  --paths src/router.ts tests/router.test.ts \
-  --intent additive \
-  --semantic-writes route:/metrics \
-  --sensitive-to contract:http-routing \
-  --validation "focused router tests" \
-  --first-release "Metrics route and focused test pass" \
-  --allow-overlap --pending-on-conflict \
-  --reason "Pending semantic arbitration; do not write the overlap"
+python3 <skill>/scripts/coord.py --root ROOT claim \
+  --scope SCOPE --owner OWNER --run-id RUN \
+  --task "bounded change" \
+  --path src/example.py --path tests/test_example.py \
+  --intent local-edit \
+  --semantic-write api:example \
+  --sensitive-to contract:example \
+  --validation "focused tests" \
+  --first-release "implementation and focused tests"
 ```
 
-`pending-arbitration` records intent but grants no direct write authority.
+Use one bounded intent:
 
-The conflict detector becomes the initial proposer for that contention slice. The claim command
-prints the durable contention id, coordinator owner, and fencing epoch. This coordination role does
-not transfer any participant's claim or uncommitted work.
+- `read` for read-only work;
+- `local-edit` for a bounded existing unit;
+- `semantic-edit` when same-file edits may be semantically independent;
+- `exclusive-refactor` for moves, deletion, generation, or broad restructuring.
 
-## Coordinate a contention without a permanent leader
+Declare semantic resources only when they affect overlap routing. Do not list incidental reads.
 
-Inspect the contention and its deterministic recommendation:
+5. Follow the returned `next_action`:
+
+- `edit_and_validate_declared_scope`: edit only declared paths and run focused checks.
+- `stop_overlap_writes_and_coordinate`: do not write the overlap; load
+  [contention-and-transactions.md](references/contention-and-transactions.md).
+- `wait_for_resume_condition`: preserve the Claim and follow its recorded condition.
+- `preserve_state_and_inspect_verbose_recovery_facts`: stop mutation and load
+  [recovery-and-cutover.md](references/recovery-and-cutover.md).
+
+6. If the user authorized committing, publish validated direct work through the managed boundary:
 
 ```bash
-python3 <skill>/scripts/tx.py contention-status --root <workspace> \
-  --contention <contention-id>
+python3 <skill>/scripts/coord.py --root ROOT direct-commit \
+  --scope SCOPE --owner OWNER --run-id RUN \
+  --summary "what changed" \
+  --validation-evidence "checks and results"
 ```
 
-Let the current coordinator propose the recommended deterministic decision by omitting
-`--decision`, or record an explicit semantic decision when the recommendation is ambiguous:
+This stages only declared changed paths, binds the exact intended tree before advancing the
+canonical branch, and serializes the shared index/branch with transaction publication. If commit
+was not authorized and the Claim remains dirty, do not release it merely to make status look clean;
+retain or pause it with an honest checkpoint.
+
+7. After the work is clean and complete, release and leave:
 
 ```bash
-python3 <skill>/scripts/tx.py contention-propose --root <workspace> \
-  --contention <contention-id> --owner agent-b --epoch 1 \
-  --reason "Disjoint route resources make a short parallel slice cheaper"
+python3 <skill>/scripts/coord.py --root ROOT claim-release \
+  --scope SCOPE --owner OWNER --run-id RUN --summary "completed result"
 
-python3 <skill>/scripts/tx.py contention-respond --root <workspace> \
-  --contention <contention-id> --owner agent-a --revision 1 --accept \
-  --reason "The declared semantic units are independent"
-
-python3 <skill>/scripts/tx.py contention-enact --root <workspace> \
-  --contention <contention-id> --owner agent-b --epoch 1
+python3 <skill>/scripts/coord.py --root ROOT leave \
+  --owner OWNER --run-id RUN --outcome completed --summary "completed result"
 ```
 
-Bind every response to the exact decision revision. A rejection requires a new proposal. Enact only
-after every participant accepts and every claim still matches the decision digest. A new
-participant or changed claim invalidates the decision before any checkout is created.
-
-Renew a live coordination lease at a natural milestone. Hand it to another participant explicitly
-when that participant is better placed to arbitrate:
-
-```bash
-python3 <skill>/scripts/tx.py contention-renew --root <workspace> \
-  --contention <contention-id> --owner agent-b --epoch 1
-
-python3 <skill>/scripts/tx.py contention-handoff --root <workspace> \
-  --contention <contention-id> --owner agent-b --epoch 1 \
-  --next-owner agent-a --reason "Agent A owns the affected contract context"
-```
-
-If the lease expires, any recorded participant may acquire the next epoch. This takes over only the
-coordination workflow; it never transfers, publishes, discards, or deletes participant work:
-
-```bash
-python3 <skill>/scripts/tx.py contention-acquire --root <workspace> \
-  --contention <contention-id> --owner agent-a --expected-epoch 1
-```
-
-Old epochs are fenced. Never use coordination lease expiry as claim-owner takeover authority.
-
-## Choose the cheapest safe shape
-
-Inspect claims before materializing anything:
-
-```bash
-python3 <skill>/scripts/tx.py inspect --root <workspace> \
-  --scopes route-health route-metrics
-```
-
-Choose among:
-
-- `direct` when no relevant physical or semantic overlap exists;
-- `wait` when the current owner is near its first release;
-- `handoff` when both tasks belong to one semantic change;
-- `parallel-tx` when mergeable intents have disjoint semantic writes;
-- `ordered-tx` when development can overlap but publication must follow a dependency;
-- `exclusive` for related contract, refactor, move, delete, or generated changes.
-
-Create a transaction only when expected waiting cost exceeds checkout, refresh, validation, and
-likely rework cost. If semantic independence or the cost tradeoff is unclear, let the coordinating
-agent decide and record its reason.
-
-Do not promote claims after overlapping dirty writes exist. Let the current owner finish a short
-slice, checkpoint, or hand off instead.
-
-## Activate a microtransaction group
-
-After every affected owner has stopped writing and acknowledged the arbitration decision, activate
-the clean scopes:
-
-```bash
-python3 <skill>/scripts/tx.py begin --root <workspace> \
-  --scopes route-health route-metrics \
-  --mode parallel-tx \
-  --steward coordinator-a \
-  --reason "Independent route entries; parallel work is cheaper than waiting"
-```
-
-For `ordered-tx`, scope order becomes publication order. The command returns each transaction id,
-owner, group id, branch, base revision, and checkout path. The coordinator persists the entire
-group plan before creating any branch. Edit declared transaction paths only after the command
-returns successfully; a partial group grants no write authority. Continue unrelated direct work
-in the canonical workspace.
-
-A queued or merely requested task must not own a checkout. A transaction belongs to one contention
-slice, not to an agent's whole task.
-
-When work must wait, may contend with later requests, or needs exclusive fairness, persist the
-decision before granting anything:
-
-```bash
-python3 <skill>/scripts/tx.py enqueue --root <workspace> \
-  --scopes route-health route-metrics --mode parallel-tx \
-  --steward coordinator-a \
-  --reason "Independent entries should activate when the current owner releases"
-
-python3 <skill>/scripts/tx.py schedule --root <workspace> \
-  --steward coordinator-a
-```
-
-Use `exclusive` with exactly one pending claim whose intent is `contract`, `refactor`, `move`,
-`delete`, or `generated`. Requests are FIFO only where their paths overlap; a blocked hotspot must
-not stop disjoint work. Once an exclusive request is queued, do not grant a newer overlapping
-claim, claim expansion, or transaction ahead of it. `begin` rejects any attempt to bypass an
-overlapping queue.
-
-A unanimously accepted contention decision creates a correlated `wait`, `parallel-tx`,
-`ordered-tx`, or `exclusive` request. When a direct blocker releases, the helper may cooperatively
-advance only these contention-authorized requests. Legacy or manually enqueued requests retain
-explicit `schedule` semantics.
-
-Record what an affected owner actually does after the decision. This is diagnostic only: it does
-not pause, release, transfer, or grant a claim. Use `waiting` only when the owner is genuinely idle
-on the blocked scope; use `diverted` when the owner continues an explicit alternate task:
-
-```bash
-python3 <skill>/scripts/coord.py work-suspend --root <workspace> \
-  --scope route-health --owner agent-a --disposition waiting \
-  --run <run-id> \
-  --reason "Agent B owns the overlapping routing contract" \
-  --contention <contention-id> --request <request-id> \
-  --blocked-by-owner agent-b --blocked-by-scope route-refactor
-
-python3 <skill>/scripts/coord.py work-suspend --root <workspace> \
-  --scope route-health --owner agent-a --disposition diverted \
-  --run <run-id> \
-  --reason "Continue independent documentation while routing is blocked" \
-  --alternate-scope routing-docs
-```
-
-When the dependency changes, close the same work disposition with bounded evidence:
-
-```bash
-python3 <skill>/scripts/coord.py work-resume --root <workspace> \
-  --scope route-health --owner agent-a \
-  --evidence "Agent B released the routing contract"
-```
-
-If a claim has already been promoted, pass its active `--transaction`. A diverted event requires
-an alternate scope or joined alternate run; a waiting event rejects alternate work metadata. The
-active work-disposition snapshot exists only to correlate `work-suspended` and `work-resumed` and
-is archived after resume. Pass the current joined run whenever the suspended claim or transaction
-belongs to it so the Observer can overlay the waiting or diverted interval on that run's execution
-spine; omitting it leaves the disposition owner-scoped but unbound.
-
-Cancel an ungranted request only with the exact owner set recorded by it:
-
-```bash
-python3 <skill>/scripts/tx.py cancel-request --root <workspace> \
-  --request <request-id> --steward <steward-id> \
-  --owners <owner-a> <owner-b> \
-  --reason "Both owners chose a different decomposition"
-```
-
-## Prepare, validate, and publish
-
-Let the helper create the one semantic candidate commit; do not manually accumulate feature-branch
-history:
-
-```bash
-python3 <skill>/scripts/tx.py prepare --root <workspace> \
-  --transaction <tx-id> --owner <owner-id> \
-  --summary "Add the health route"
-
-python3 <skill>/scripts/tx.py validate --root <workspace> \
-  --transaction <tx-id> --owner <owner-id> \
-  --evidence "Focused router tests passed"
-
-python3 <skill>/scripts/tx.py publish --root <workspace> \
-  --transaction <tx-id> --steward <steward-id>
-```
-
-`prepare` rejects out-of-scope tracked, untracked, renamed, or deleted paths. `validate` binds
-evidence to the exact candidate and canonical base.
-
-`publish` may return exit code 2 with JSON state:
-
-- `prepared` means canonical `HEAD` advanced and the candidate was refreshed successfully; rerun
-  relevant validation, then publish again.
-- `conflicted` means the rebase stopped in the shadow checkout; resolve or hand off there, finish
-  the Git rebase, then prepare and validate again.
-
-Publication requires an empty canonical index. Unrelated unstaged dirty files may remain, but any
-dirty or direct-claimed path overlapping the actual transaction diff blocks publication.
-
-After a successful fast-forward, the helper writes a durable cleanup intent before archiving the
-transaction, then removes its clean merged checkout and branch step by step. Recovery can resume
-between any of those boundaries without repeating publication.
-
-## Serialize external shared outputs
-
-Treat a canonical build, deployment link, generated catalog, or other mutable output outside the
-workspace as a named logical resource even when its physical path cannot be claimed directly.
-
-- Define one pseudo-path and one semantic resource key in repository instructions; every task must
-  reuse those exact identities. Do not invent synonyms for the same output.
-- Let the product-side lock distinguish an existing lock (`EEXIST`) from permission, sandbox,
-  missing-parent, read-only-filesystem, and other environment failures. Preserve the real error;
-  only proven lock existence means another steward may be active.
-- If policy or the environment blocks the mutation, keep the logical claim and pause it. Do not
-  create a contention and do not release a claim that the same task intends to resume:
-
-```bash
-python3 <skill>/scripts/coord.py pause --root <workspace> \
-  --scope <scope> --owner <owner-id> --checkpoint '<checkpoint-json>' \
-  --resume-condition "User authorizes the exact mutation and resource state is rechecked" \
-  --retain-paths-reason "Protect the external publication boundary while approval is pending" \
-  --blocker-kind authorization --operation "publish canonical output" \
-  --resources <canonical-resource-key> --error-kind sandbox-write-denied
-```
-
-After authorization, verify the physical lock, canonical target, candidate identity, and any
-recorded base again. Resume with concise evidence before mutating:
-
-```bash
-python3 <skill>/scripts/coord.py resume --root <workspace> \
-  --scope <scope> --owner <owner-id> \
-  --evidence "Exact operation authorized; lock absent and canonical target unchanged"
-```
-
-Authorization and environment pauses require evidence. If the earlier claim was released instead
-of paused, reacquire the canonical resource and perform the same state checks before retrying.
-
-## Hand off or abort safely
-
-For a non-transaction agent handoff, send an acknowledged handoff message from the source run. A
-handoff message without acknowledgement is rejected:
-
-```bash
-python3 <skill>/scripts/coord.py message --root <workspace> \
-  --to agent-b --from-owner agent-a \
-  --subject "Continue the router slice" --body "<bounded checkpoint>" \
-  --type handoff --requires-ack --run run-a --handoff router-handoff
-
-python3 <skill>/scripts/coord.py agent-join --root <workspace> \
-  --run run-b --owner agent-b --task "Continue the router slice" \
-  --parent-owner agent-a
-
-python3 <skill>/scripts/coord.py ack --root <workspace> \
-  --owner agent-b --message-id <message-id> --run run-b \
-  --note "Checkpoint and ownership boundary reviewed"
-```
-
-`--handoff` is optional; the message id becomes the stable handoff id when it is omitted. The ack
-must come from the named target owner and a joined target run. This records `handoff-offered` and
-`handoff-accepted`, but the message itself does not transfer a claim or transaction capability.
-Use the owner-authorized claim or transaction workflow for the actual transfer.
-
-Transfer a transaction with a concrete checkpoint:
-
-```bash
-python3 <skill>/scripts/tx.py handoff --root <workspace> \
-  --transaction <tx-id> --owner agent-a --next-owner agent-c \
-  --checkpoint "Candidate is prepared; rerun focused validation"
-
-python3 <skill>/scripts/tx.py resume --root <workspace> \
-  --transaction <tx-id> --owner agent-c
-```
-
-Abort only with explicit authorization to discard the coordinator-owned transaction:
-
-```bash
-python3 <skill>/scripts/tx.py abort --root <workspace> \
-  --transaction <tx-id> --owner <owner-id> \
-  --reason "Superseded by the canonical implementation" --discard
-```
-
-Never use abort as stale-claim takeover.
-
-If group activation was interrupted before every source claim was promoted, abort the incomplete
-group only after every listed owner explicitly agrees:
-
-```bash
-python3 <skill>/scripts/tx.py abort-group --root <workspace> \
-  --group <group-id> --steward <steward-id> \
-  --owners <owner-a> <owner-b> \
-  --reason "All owners approved rollback of the incomplete group" --discard
-```
-
-The owner list must exactly match the group. This command persists an exact discard snapshot for
-every member before deleting anything, completes cleanup, restores any claim archived before the
-activation barrier, and then archives the group. Do not use it for a fully active group; each
-transaction owner must use normal `abort` there.
-
-## Recover and observe
-
-Inspect current work:
-
-```bash
-python3 <skill>/scripts/coord.py status --root <workspace>
-python3 <skill>/scripts/tx.py status --root <workspace>
-python3 <skill>/scripts/tx.py doctor --root <workspace>
-```
-
-Reconcile interrupted group materialization, claim promotion, or publication:
-
-```bash
-python3 <skill>/scripts/tx.py reconcile --root <workspace> --steward <steward-id>
-python3 <skill>/scripts/tx.py contention-reconcile --root <workspace>
-```
-
-Treat reconcile output as follows:
-
-- `activated` means every planned member was verified, the group barrier completed, and source
-  claims were promoted;
-- `unchanged` means the active group was already consistent; repeated reconcile is safe;
-- `completed` means canonical `HEAD` already reached a publishing candidate and bookkeeping was
-  repaired;
-- `closed` means every group member was already terminal and an interrupted group archive was
-  completed without rematerializing resources;
-- `retryable` or `stale` applies to an interrupted publication whose expected `HEAD` did or did not
-  remain current;
-- `needs-attention` means Git facts are ambiguous or a checkout contains unexpected work. Preserve
-  it and obtain owner or user direction; never reset, clean, remove, or rematerialize over it.
-- request `blocked` reports its exact work, dependency, or earlier-request blockers; it grants no
-  write authority;
-- request `ready` is eligible but still grants no authority until `schedule` persists Activating;
-- request `activated` means a matching group plan or exclusive claim grant exists and the queue
-  record was archived;
-- `activation-retryable` means an Activating record had no grant facts after recovery and safely
-  returned to the queue.
-- contention `request-linked` means a request survived a crash before the contention recorded its
-  id; correlation recovery attached the existing request instead of creating another one.
-
-`doctor` is read-only. It reports orphan transaction branches, registered worktrees, unmanaged
-checkout paths, missing expected resources, and cleanup journals requiring attention. It never
-deletes or repairs them.
-
-If a discard target changed after authorization, inspect the preserved checkout and obtain fresh
-approval from its owner. Refresh only that cleanup authorization:
-
-```bash
-python3 <skill>/scripts/tx.py cleanup-authorize --root <workspace> \
-  --transaction <tx-id> --owner <owner-id> \
-  --reason "Owner reviewed the current checkout and approved discard" --discard
-```
-
-Then run `reconcile` again. Automatic recovery may consume a persisted cleanup snapshot, but it
-must never create missing discard authority or broaden an earlier snapshot to include later work.
-
-If `begin` exits before returning transaction records, do not edit any created checkout. Run
-`reconcile`; write authority exists only when the group is Active and all source claims are marked
-promoted.
-
-Inspect event activity:
-
-```bash
-python3 <skill>/scripts/tx.py hotspots --root <workspace>
-python3 <skill>/scripts/tx.py workflow-report --root <workspace>
-python3 <skill>/scripts/coord.py coverage --root <workspace>
-python3 <skill>/scripts/tx.py log --root <workspace> \
-  --run <run-id> --handoff <handoff-id> --limit 100
-```
-
-Repeated same-path transactions, ordered refreshes, conflicts, or scope expansion are architecture
-and task-decomposition signals. Prefer improving semantic ownership over making automatic merge
-more aggressive.
-
-`hotspots` reports queue counts and average wait plus ranked path and semantic-resource metrics.
-Repeated exclusive requests, refresh conflicts, or attention events should trigger a boundary or
-task-slicing review; metrics never authorize an automatic refactor or takeover.
-
-`log` returns the immutable event chain filtered by contention, request, transaction, scope, owner,
-agent run, handoff, or event type. `coverage` reports open runs, offered-but-unaccepted handoffs,
-and malformed lifecycle counts. `workflow-report` derives decision revisions, rejections,
-coordinator changes, time-to-decision, time-to-enact, total coordination time, and stalled
-contentions. Treat reports as diagnostics, not authority; recover from Git facts and durable active
-snapshots.
-
-Trace-aware queue events carry the affected `owners` and `scopes` plus structured `blocker_refs`.
-Trace-aware claim lifecycle events carry the verified `run_id` when the claim episode is correlated
-with a joined Agent run. Producers never backfill an old claim from owner or timestamp similarity.
-An Observer may separately show a presentation-only `inferred` attachment when the complete legacy
-claim episode fits exactly one observed run interval for that owner. It must keep authoritative
-`run_id` empty, label the attachment as inferred, and omit it whenever intervals overlap or either
-episode boundary is unknown.
-Trace-aware transaction events carry `owner`, `work_owner`, `actor_owner`, `scope`, temporary
-`branch`, `base_revision`, `canonical_branch`, `group_id`, and `request_id` when available.
-`work-suspended` distinguishes `waiting` from `diverted`; `work-resumed` closes the same
-`work_state_id`. These are bounded correlation facts for a collaboration timeline, never a new
-authority source.
-
-Do not delete or rewrite older events that predate this trace contract. A consumer may label an old
-fact `derived` only when the missing identity is recoverable from an exact same-workspace durable
-record and stable id. Otherwise retain it as legacy/unknown and omit unverifiable edges. Event
-retention or compaction requires a separately designed verifiable checkpoint; it is not part of
-normal cleanup.
-
-`claim-paused` records blocker kind, operation, resource, error kind, resume condition, and whether
-paths were retained. `claim-resumed` records the recheck evidence. Keep raw secrets and unbounded
-command output out of these fields; preserve a stable error category and a bounded diagnostic.
-
-If an immutable event contains wrong evidence, append an owner-scoped correction; never rewrite or
-delete the original event:
-
-```bash
-python3 <skill>/scripts/coord.py audit-note --root <workspace> \
-  --scope <scope> --owner <owner-id> --kind correction \
-  --supersedes-event <event-file> --message "Fresh observed fact supersedes stale evidence"
-```
-
-## Use direct coordination for non-transaction work
-
-Continue using `scripts/coord.py` for heartbeat, pause/resume, messages, acknowledgements, takeover
-requests, and release. An active claim freezes only its declared boundary. Waiting records never
-grant write authority.
-
-Before a direct release:
-
-1. Validate the claimed scope.
-2. Acquire short Git index/HEAD authority.
-3. Stage exact owned paths or explicit hunks.
-4. Inspect the cached diff.
-5. Create one coherent commit and publish old/new `HEAD` plus evidence.
-6. Release or checkpoint without touching unrelated dirty state.
-
-After the run has no remaining owned or delegated work, close its observational lifecycle:
-
-```bash
-python3 <skill>/scripts/coord.py agent-leave --root <workspace> \
-  --run <run-id> --owner <owner-id> --outcome completed \
-  --summary "<bounded outcome summary>"
-```
-
-Use `failed` when the run ended with a known failure and `abandoned` when it stopped without a
-normal completion. Closing a run never releases claims or transaction capability; perform those
-authority-bearing operations first. Retrying an identical leave is idempotent.
-
-## Load detailed design only when needed
-
-Read [DESIGN.md](../../DESIGN.md) when changing the transaction protocol, evaluating a non-obvious
-arbitration, implementing another checkout backend, auditing publish predicates, or recovering an
-ambiguous crash. Ordinary direct claims and routine clean microtransactions should not require
-loading the full design.
+Do not leave `completed` while this Run still owns active authority. A failed or abandoned Run
+retains its authority until an explicit same-owner recovery.
+
+## Communicate without transferring authority
+
+Use `send --kind notice` for information and `send --kind request --requires-ack` for a decision.
+Use a caller-supplied stable `--handoff-id` for `--kind handoff`; retry with the same id after an
+uncertain result. Acknowledging a handoff records acceptance but does not silently transfer a
+Claim. Load the contention reference for the full handoff sequence.
+
+## Keep routine context bounded
+
+- Prefer filtered compact status and the command's `next_action` over reading state files.
+- Do not ingest event JSON, Observer catalogs, full diffs, or unrelated Claims into the prompt
+  unless diagnosing a concrete correlation.
+- Heartbeats update snapshots without creating events. Send one only for genuinely long work, not
+  per file edit or tool call.
+- Use Observer reports to understand system behavior; never use them to decide write permission.
+
+For exact protocol guarantees, consult
+`contracts/dev-mesh-coordination-20260812.1.md` in the Dev Mesh repository only when changing
+the protocol itself.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the repository-owned Dev Mesh coordination producer."""
+"""Run the repository-owned Dev Mesh Observer."""
 
 from __future__ import annotations
 
@@ -10,12 +10,12 @@ from pathlib import Path
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 RUNTIME_ROOT = REPOSITORY_ROOT / "runtime"
 
-if not (RUNTIME_ROOT / "dev_mesh_coord" / "__init__.py").is_file():
-    raise SystemExit(f"Dev Mesh runtime is unavailable: {RUNTIME_ROOT}")
+if not (RUNTIME_ROOT / "dev_mesh_observer" / "__init__.py").is_file():
+    raise SystemExit(f"Dev Mesh Observer runtime is unavailable: {RUNTIME_ROOT}")
 
 sys.path.insert(0, str(RUNTIME_ROOT))
 
-from dev_mesh_coord.cli import main  # noqa: E402
+from dev_mesh_observer.cli import main  # noqa: E402
 
 
 if __name__ == "__main__":

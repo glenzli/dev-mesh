@@ -1,4 +1,6 @@
 .agent-coordination/
+.dev-mesh/
+.dev-mesh.bootstrap.lock
 __pycache__/
 *.py[cod]
 .pytest_cache/
