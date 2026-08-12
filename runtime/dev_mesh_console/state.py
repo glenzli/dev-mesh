@@ -34,9 +34,11 @@ class ConsoleState:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._collecting = False
+        self._cycles = 0
         self._last_result: dict[str, object] | None = None
         self._last_error: str | None = None
         self._last_attempt_at: str | None = None
+        self._last_success_at: str | None = None
 
     def collect(self) -> dict[str, object]:
         if not self._collect_lock.acquire(blocking=False):
@@ -59,6 +61,8 @@ class ConsoleState:
             with self._status_lock:
                 self._last_result = result
                 self._last_error = None
+                self._last_success_at = now()
+                self._cycles += 1
             return result
         except Exception as error:
             with self._status_lock:
@@ -72,8 +76,11 @@ class ConsoleState:
     def status(self) -> dict[str, object]:
         with self._status_lock:
             return {
+                "enabled": True,
                 "collecting": self._collecting,
+                "cycles": self._cycles,
                 "last_attempt_at": self._last_attempt_at,
+                "last_success_at": self._last_success_at,
                 "last_error": self._last_error,
                 "last_result": self._last_result,
                 "roots": [str(item) for item in self.registry.roots()],

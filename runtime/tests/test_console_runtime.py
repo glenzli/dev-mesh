@@ -46,6 +46,8 @@ class ConsoleRuntimeTest(GitWorkspaceTest):
 
         self.assertEqual(result["workspace_count"], 1)
         self.assertFalse(status["collecting"])
+        self.assertEqual(status["cycles"], 1)
+        self.assertIsNotNone(status["last_success_at"])
         self.assertIsNone(status["last_error"])
         self.assertEqual(status["roots"], [str(self.root.resolve())])
         self.assertEqual(len(dashboard["projects"]), 1)
