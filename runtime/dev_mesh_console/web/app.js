@@ -1,5 +1,10 @@
 import { applyTranslations, diagnosticLabel, eventLabel, language, t, toggleLanguage } from "/i18n.js";
 import { renderFlow } from "/graph.js";
+import {
+  projectHasSignal,
+  renderProjectOverview,
+  selectableProjects,
+} from "/project_overview.js";
 
 const state = {
   dashboard: null,
@@ -11,6 +16,7 @@ const state = {
 const nodes = Object.fromEntries([
   "connection-status", "refresh", "workspace", "window", "generated-at", "protocol-version",
   "metrics", "insights", "projects", "project-count", "active-details", "active-count", "flow-summary",
+  "project-collaboration", "project-collaboration-count",
   "flow", "flow-scroll", "flow-tooltip", "flow-empty", "diagnostics", "diagnostic-count",
   "events", "event-count", "language", "theme", "add-root", "root-dialog", "root-form",
   "root-path", "root-list", "dialog-error", "close-dialog", "cancel-root",
@@ -65,14 +71,6 @@ function empty(titleKey, bodyKey) {
 
 function activeTotal(active) {
   return Object.values(active ?? {}).reduce((total, value) => total + Number(value), 0);
-}
-
-function projectHasSignal(project) {
-  return project.event_count > 0
-    || activeTotal(project.active) > 0
-    || project.diagnostic_count > 0
-    || Boolean(project.collection_error)
-    || Boolean(project.not_observed_since);
 }
 
 function visibleProjects() {
@@ -157,17 +155,17 @@ function renderInsights() {
   const contention = operational.contention;
   const transactions = operational.transaction_outcomes;
   const direct = operational.direct_commit;
-  const interactions = operational.interaction_counts;
   const pending = operational.pending_acknowledgements ?? {
     count: 0,
     requested: 0,
     acknowledged: 0,
+    lifecycle_resolved: 0,
+    historical: 0,
     oldest_at: null,
   };
   const hot = (contention.hot_paths ?? []).slice(0, 3)
     .map((item) => `${short(item.path, 22)} ×${formatNumber(item.count)}`)
     .join(" · ");
-  const handoffs = Number(interactions["handoff-offered"] ?? 0);
   nodes.insights.replaceChildren(
     insightCard(
       t("insights.contention"),
@@ -191,9 +189,9 @@ function renderInsights() {
       t("insights.pending"),
       formatNumber(pending.count),
       [
-        [pending.requested, t("insights.requests")],
         [pending.acknowledged, t("insights.acknowledged")],
-        [handoffs, t("insights.handoffs")],
+        [pending.lifecycle_resolved, t("insights.lifecycleResolved")],
+        [pending.historical, t("insights.historical")],
       ],
       pending.oldest_at ? `${t("insights.oldest")} ${formatCompactAge(pending.oldest_at)}` : "",
     ),
@@ -215,18 +213,38 @@ function renderWorkspaceOptions() {
   all.value = "";
   all.textContent = t("filters.allWorkspaces");
   nodes.workspace.append(all);
-  state.dashboard.projects.forEach((project) => {
-    const option = document.createElement("option");
-    option.value = project.workspace_id;
-    option.textContent = project.name;
-    nodes.workspace.append(option);
-  });
+  selectableProjects(state.dashboard.projects, current).forEach((project) => {
+      const option = document.createElement("option");
+      option.value = project.workspace_id;
+      option.textContent = project.name;
+      nodes.workspace.append(option);
+    });
   if (state.dashboard.projects.some((item) => item.workspace_id === current)) {
     nodes.workspace.value = current;
   } else {
     state.workspace = "";
     nodes.workspace.value = "";
   }
+}
+
+function selectWorkspace(workspaceId) {
+  state.workspace = state.workspace === workspaceId ? "" : workspaceId;
+  nodes.workspace.value = state.workspace;
+  loadDashboard();
+}
+
+function renderProjectCollaboration() {
+  const result = renderProjectOverview(
+    nodes["project-collaboration"],
+    state.dashboard.project_collaboration,
+    {
+      current: state.workspace,
+      translate: t,
+      formatNumber,
+      onSelect: selectWorkspace,
+    },
+  );
+  nodes["project-collaboration-count"].textContent = formatNumber(result.relationCount);
 }
 
 function renderProjects() {
@@ -275,11 +293,7 @@ function renderProjects() {
       facts.append(fact);
     });
     button.append(identity, facts);
-    button.addEventListener("click", () => {
-      state.workspace = state.workspace === project.workspace_id ? "" : project.workspace_id;
-      nodes.workspace.value = state.workspace;
-      loadDashboard();
-    });
+    button.addEventListener("click", () => selectWorkspace(project.workspace_id));
     return button;
   }));
 }
@@ -386,6 +400,7 @@ function render() {
   renderWorkspaceOptions();
   renderMetrics();
   renderInsights();
+  renderProjectCollaboration();
   renderProjects();
   renderActive();
   renderGraph();

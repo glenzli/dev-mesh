@@ -47,11 +47,31 @@ ACTIVE_STATUSES = {
 MAX_PENDING_ACKNOWLEDGEMENTS = 64
 
 
-def _pending_acknowledgements(
+def _acknowledgement_projection(
     events: list[dict[str, object]],
-) -> tuple[list[dict[str, object]], int, int]:
+    snapshots: list[dict[str, object]],
+) -> dict[str, object]:
     required: dict[tuple[str, str], dict[str, object]] = {}
     acknowledged: set[tuple[str, str]] = set()
+    closed_runs: set[tuple[str, str, str]] = set()
+    terminal_handoff_messages: set[tuple[str, str]] = set()
+    for item in snapshots:
+        record = item["record"]
+        workspace_id = str(item["workspace_id"])
+        if item["kind"] == "run" and record.get("status") == "closed":
+            owner = record.get("owner")
+            run_id = record.get("run_id")
+            if isinstance(owner, str) and isinstance(run_id, str):
+                closed_runs.add((workspace_id, owner, run_id))
+        elif item["kind"] == "handoff" and record.get("status") in {
+            "accepted",
+            "rejected",
+            "withdrawn",
+        }:
+            message_id = record.get("message_id")
+            if isinstance(message_id, str):
+                terminal_handoff_messages.add((workspace_id, message_id))
+
     for item in events:
         record = item["record"]
         message_id = record.get("message_id")
@@ -67,15 +87,51 @@ def _pending_acknowledgements(
                 "source_run_id": record.get("run_id"),
                 "target_owner": record.get("target_owner"),
                 "topic": record.get("topic"),
+                "handoff_id": record.get("handoff_id"),
             }
         elif item["event"] == "message-acknowledged":
             acknowledged.add(identity)
-    pending = sorted(
-        (value for identity, value in required.items() if identity not in acknowledged),
-        key=lambda item: (str(item["at"]), str(item["message_id"])),
-    )
+
+    pending: list[dict[str, object]] = []
+    lifecycle_resolved: list[dict[str, object]] = []
+    historical: list[dict[str, object]] = []
+    for identity, value in required.items():
+        if identity in acknowledged:
+            continue
+        if identity in terminal_handoff_messages:
+            lifecycle_resolved.append({**value, "classification": "lifecycle-resolved"})
+            continue
+        source_owner = value.get("source_owner")
+        source_run_id = value.get("source_run_id")
+        if (
+            isinstance(source_owner, str)
+            and isinstance(source_run_id, str)
+            and (identity[0], source_owner, source_run_id) in closed_runs
+        ):
+            historical.append({**value, "classification": "historical-unacknowledged"})
+            continue
+        pending.append({**value, "classification": "pending"})
+
+    def order(item: dict[str, object]) -> tuple[str, str]:
+        return str(item["at"]), str(item["message_id"])
+
+    pending.sort(key=order)
+    lifecycle_resolved.sort(key=order)
+    historical.sort(key=order)
     acknowledged_required = sum(identity in acknowledged for identity in required)
-    return pending, len(required), acknowledged_required
+    return {
+        "count": len(pending),
+        "requested": len(required),
+        "acknowledged": acknowledged_required,
+        "lifecycle_resolved": len(lifecycle_resolved),
+        "historical": len(historical),
+        "oldest_at": pending[0]["at"] if pending else None,
+        "shown": min(len(pending), MAX_PENDING_ACKNOWLEDGEMENTS),
+        "truncated": len(pending) > MAX_PENDING_ACKNOWLEDGEMENTS,
+        "items": pending[:MAX_PENDING_ACKNOWLEDGEMENTS],
+        "lifecycle_resolved_items": lifecycle_resolved[:MAX_PENDING_ACKNOWLEDGEMENTS],
+        "historical_items": historical[:MAX_PENDING_ACKNOWLEDGEMENTS],
+    }
 
 
 def build_report(
@@ -219,9 +275,8 @@ def build_report(
     ]
     collection_errors = [item for item in workspaces if item.get("last_error")]
     not_observed_workspaces = [item for item in workspaces if item.get("not_observed_since")]
-    pending_acknowledgements, acknowledgement_requests, acknowledged_requests = (
-        _pending_acknowledgements(events)
-    )
+    acknowledgement_projection = _acknowledgement_projection(events, snapshots)
+    pending_acknowledgements = list(acknowledgement_projection["items"])
     diagnostics, diagnostic_summary, cutover_readiness = project_diagnostics(
         events,
         snapshots,
@@ -273,17 +328,7 @@ def build_report(
                 "handoff-withdrawn",
             )
         },
-        "pending_acknowledgements": {
-            "count": len(pending_acknowledgements),
-            "requested": acknowledgement_requests,
-            "acknowledged": acknowledged_requests,
-            "oldest_at": (
-                pending_acknowledgements[0]["at"] if pending_acknowledgements else None
-            ),
-            "shown": min(len(pending_acknowledgements), MAX_PENDING_ACKNOWLEDGEMENTS),
-            "truncated": len(pending_acknowledgements) > MAX_PENDING_ACKNOWLEDGEMENTS,
-            "items": pending_acknowledgements[:MAX_PENDING_ACKNOWLEDGEMENTS],
-        },
+        "pending_acknowledgements": acknowledgement_projection,
         "contention": {
             "opened": event_counts["contention-opened"],
             "completed": event_counts["contention-completed"],

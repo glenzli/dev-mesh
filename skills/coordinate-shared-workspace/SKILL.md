@@ -115,6 +115,12 @@ Use a caller-supplied stable `--handoff-id` for `--kind handoff`; retry with the
 uncertain result. Acknowledging a handoff records acceptance but does not silently transfer a
 Claim. Load the contention reference for the full handoff sequence.
 
+When a Codex task in another Git workspace is created, messaged, awaited, or handed development
+work, load [cross-project-collaboration.md](references/cross-project-collaboration.md). Record one
+stable relation after the target task id is known, let the receiver bind its exact workspace and
+Run, and close the relation once. This optional extension is diagnostic only and is not needed for
+ordinary single-workspace work.
+
 ## Keep routine context bounded
 
 - Prefer filtered compact status and the command's `next_action` over reading state files.
@@ -126,4 +132,5 @@ Claim. Load the contention reference for the full handoff sequence.
 
 For exact protocol guarantees, consult
 `contracts/dev-mesh-coordination-20260812.1.md` in the Dev Mesh repository only when changing
-the protocol itself.
+the core protocol itself. Cross-project correlation is the separate compatible extension
+`contracts/dev-mesh-cross-project-collaboration-20260813.1.md`.

@@ -257,6 +257,7 @@ select, input {
   border-bottom: 1px solid var(--border);
 }
 .panel-heading h2 { margin: 2px 0 0; font-size: 17px; letter-spacing: -.02em; }
+.compact-heading { min-height: 52px; }
 .eyebrow { color: var(--accent); font-size: 10px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
 .panel-count { min-width: 28px; padding: 4px 7px; border-radius: 999px; background: var(--surface-muted); color: var(--muted); text-align: center; font: 700 12px ui-monospace, monospace; }
 
@@ -286,6 +287,33 @@ select, input {
 .fact span { color: var(--muted); font-size: 10px; }
 .fact.is-danger b { color: var(--danger); }
 .fact.is-attention b { color: var(--warning); }
+
+.project-collaboration-panel { margin-bottom: 10px; }
+.project-collaboration { min-height: 142px; background: var(--surface); }
+.project-graph-legend { display: flex; gap: 18px; padding: 8px 14px; border-bottom: 1px solid var(--border); color: var(--muted); font-size: 10px; }
+.project-graph-legend span { display: inline-flex; align-items: center; gap: 7px; }
+.project-graph-legend span::before { width: 22px; height: 0; border-top: 2px solid var(--accent); content: ""; }
+.project-graph-legend .protocol::after, .project-graph-legend .addressed::after { content: ">"; font: 700 11px ui-monospace, monospace; transform: translateX(-13px); }
+.project-graph-legend .protocol::after { color: var(--accent); }
+.project-graph-legend .addressed::before { border-top-color: var(--muted); }
+.project-graph-legend .addressed::after { color: var(--muted); }
+.project-graph-legend .shared::before { border-top-style: dashed; border-top-color: var(--handoff); }
+.project-graph-scroll { width: 100%; overflow: auto; }
+.project-graph { display: block; min-width: 100%; }
+.project-relation path { fill: none; stroke: var(--handoff); stroke-width: 1.8; }
+.project-relation.shared-run path { stroke-dasharray: 5 5; }
+.project-relation.protocol path { stroke: var(--accent); stroke-width: 2.2; }
+.project-relation.addressed path { stroke: var(--muted); }
+.project-graph marker path { fill: none; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
+.project-graph marker.protocol path { stroke: var(--accent); }
+.project-graph marker.addressed path { stroke: var(--muted); }
+.project-relation text { fill: var(--muted); font: 700 9px ui-monospace, SFMono-Regular, monospace; paint-order: stroke; stroke: var(--surface); stroke-width: 5px; }
+.project-graph-node { cursor: pointer; }
+.project-graph-node rect { fill: var(--surface-raised); stroke: color-mix(in srgb, var(--accent) 34%, var(--border-strong)); stroke-width: 1.4; }
+.project-graph-node:hover rect, .project-graph-node:focus rect, .project-graph-node.is-selected rect { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 2; }
+.project-graph-node:focus { outline: none; }
+.project-node-name { fill: var(--text); font-size: 12px; font-weight: 750; }
+.project-node-detail { fill: var(--muted); font: 9px ui-monospace, SFMono-Regular, monospace; }
 
 .active-row, .diagnostic-row, .event-row { gap: 10px; min-height: 52px; padding: 9px 13px; border-bottom: 1px solid var(--border); }
 .active-row:last-child, .diagnostic-row:last-child, .event-row:last-child { border-bottom: 0; }
@@ -328,9 +356,10 @@ select, input {
 .flow-group-band { fill: transparent; }
 .flow-group-band.related { fill: color-mix(in srgb, var(--accent-soft) 28%, transparent); stroke: color-mix(in srgb, var(--accent) 22%, var(--border)); stroke-width: 1; }
 .flow-group-rail { fill: var(--accent); opacity: .28; }
-.flow-band { fill: color-mix(in srgb, var(--surface-raised) 16%, transparent); stroke: color-mix(in srgb, var(--border) 72%, transparent); stroke-width: .8; }
+.flow-band { fill: color-mix(in srgb, var(--surface-raised) 30%, transparent); stroke: color-mix(in srgb, var(--accent) 24%, var(--border-strong)); stroke-width: 1.15; }
+.owner-row-rail { fill: color-mix(in srgb, var(--accent) 52%, var(--border-strong)); opacity: .72; }
 .flow-group-divider { stroke: var(--border-strong); stroke-width: 1; stroke-dasharray: 2 6; opacity: .62; }
-.owner-identity-card { fill: color-mix(in srgb, var(--surface-raised) 94%, transparent); stroke: color-mix(in srgb, var(--accent) 28%, var(--border-strong)); stroke-width: 1.15; }
+.owner-identity-card { fill: color-mix(in srgb, var(--surface-raised) 96%, transparent); stroke: color-mix(in srgb, var(--accent) 46%, var(--border-strong)); stroke-width: 1.35; }
 .owner-identity-card.owner-only { stroke-dasharray: 3 3; }
 .owner-badge { fill: var(--accent-soft); stroke: color-mix(in srgb, var(--accent) 60%, var(--border)); stroke-width: 1; }
 .owner-badge-text { fill: var(--accent); font: 800 7px ui-monospace, SFMono-Regular, monospace; letter-spacing: .25px; }
@@ -343,6 +372,7 @@ select, input {
 .flow-edge.waiting { stroke: var(--waiting); stroke-dasharray: 7 5; }
 .flow-edge.handoff { stroke: var(--handoff); stroke-width: 2; stroke-dasharray: 3 4; }
 .flow-edge.handoff.owner-level { stroke-width: 1.6; stroke-dasharray: 2 5; opacity: .68; }
+.owner-link-anchor { fill: var(--surface-raised); stroke: var(--handoff); stroke-width: 1.8; }
 .flow-edge.conflict { stroke: var(--danger); stroke-width: 1.8; stroke-dasharray: 4 4; }
 .flow-edge.decision { stroke: var(--accent); stroke-width: 1.8; }
 .flow-edge.accepted { stroke: var(--good); stroke-width: 1.8; }
@@ -454,6 +484,7 @@ dialog input { width: 100%; padding-right: 10px; }
   .project-row { align-items: flex-start; flex-direction: column; }
   .project-facts { align-self: stretch; justify-content: space-between; }
   .project-identity span { max-width: 82vw; }
+  .project-graph-legend { align-items: flex-start; flex-direction: column; gap: 7px; }
   .legend { gap: 12px; }
   .event-row time { display: none; }
 }

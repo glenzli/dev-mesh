@@ -4,10 +4,15 @@ Dev Mesh coordinates short-lived Agent work inside one shared Git workspace. The
 coordination contract is `dev-mesh.coordination@20260812.1`; protocol versions use `YYYYMMDD.x` and
 are immutable after activation.
 
+Cross-project task correlation is the separate optional
+`dev-mesh.cross-project-collaboration@20260813.1` extension. It reuses the base event carrier and
+does not change workspace authority or require a control-plane migration.
+
 ## Runtime boundaries
 
 - `runtime/dev_mesh_coord/` owns workspace authority, immutable events, contention, direct commits,
-  Git microtransactions, recovery, and legacy cutover.
+  Git microtransactions, recovery, legacy cutover, and metadata-only cross-project relation
+  production. `cross_project.py` owns that independent observational lifecycle.
 - `runtime/dev_mesh_observer/` owns read-only discovery, bounded source validation, cataloging,
   diagnostics, and reports. It never reconstructs or mutates authority.
 - `runtime/dev_mesh_console/` owns the loopback HTTP lifecycle, external scan-root configuration,
@@ -65,6 +70,7 @@ its own exact materialization and cleanup facts.
 ## Navigation
 
 - Normative behavior: `contracts/dev-mesh-coordination-20260812.1.md`
+- Cross-project correlation: `contracts/dev-mesh-cross-project-collaboration-20260813.1.md`
 - Current/event schemas: `schemas/`
 - Retirement procedure: `docs/CUTOVER.md`
 - Runtime and fault-injection checks: `runtime/tests/`

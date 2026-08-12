@@ -6,7 +6,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from . import canonical_git, contention, interactions, lifecycle, transactions, work
+from . import canonical_git, contention, cross_project, interactions, lifecycle, transactions, work
 from .cli_output import project
 from .control_plane import initialize
 from .cutover import apply as apply_cutover
@@ -122,6 +122,48 @@ def parser() -> argparse.ArgumentParser:
     send.add_argument("--requires-ack", action="store_true")
     send.add_argument("--source-run-id", required=True)
     send.add_argument("--handoff-id")
+
+    cross_open = commands.add_parser("cross-project-open")
+    cross_open.add_argument("--collaboration-id", required=True)
+    cross_open.add_argument("--source-owner", required=True)
+    cross_open.add_argument("--source-run-id", required=True)
+    cross_open.add_argument("--target-task-id", required=True)
+    cross_open.add_argument("--target-workspace-id")
+    cross_open.add_argument("--target-owner")
+    cross_open.add_argument(
+        "--kind", required=True, choices=sorted(cross_project.COLLABORATION_KINDS)
+    )
+
+    cross_bind = commands.add_parser("cross-project-bind")
+    cross_bind.add_argument("--collaboration-id", required=True)
+    cross_bind.add_argument("--source-workspace-id", required=True)
+    cross_bind.add_argument("--source-owner", required=True)
+    cross_bind.add_argument("--source-run-id", required=True)
+    cross_bind.add_argument("--target-owner", required=True)
+    cross_bind.add_argument("--target-run-id", required=True)
+    cross_bind.add_argument("--target-task-id", required=True)
+    cross_bind.add_argument(
+        "--kind", required=True, choices=sorted(cross_project.COLLABORATION_KINDS)
+    )
+
+    cross_close = commands.add_parser("cross-project-close")
+    cross_close.add_argument("--collaboration-id", required=True)
+    cross_close.add_argument("--actor-role", required=True, choices=("source", "target"))
+    cross_close.add_argument("--owner", required=True)
+    cross_close.add_argument("--run-id", required=True)
+    cross_close.add_argument("--source-workspace-id", required=True)
+    cross_close.add_argument("--source-owner", required=True)
+    cross_close.add_argument("--source-run-id", required=True)
+    cross_close.add_argument("--target-workspace-id", required=True)
+    cross_close.add_argument("--target-owner", required=True)
+    cross_close.add_argument("--target-run-id", required=True)
+    cross_close.add_argument("--target-task-id", required=True)
+    cross_close.add_argument(
+        "--kind", required=True, choices=sorted(cross_project.COLLABORATION_KINDS)
+    )
+    cross_close.add_argument(
+        "--outcome", required=True, choices=sorted(cross_project.COLLABORATION_OUTCOMES)
+    )
 
     ack = commands.add_parser("ack")
     ack.add_argument("--message-id", required=True)
@@ -312,6 +354,12 @@ def dispatch(arguments: argparse.Namespace) -> object:
         return lifecycle.recover_run_authority(root, closed_run_id=arguments.closed_run_id, owner=arguments.owner, recovery_run_id=arguments.recovery_run_id, evidence=arguments.evidence)
     if command == "send":
         return interactions.send(root, source_owner=arguments.source_owner, target_owner=arguments.target_owner, subject=arguments.subject, body=arguments.body, interaction_kind=arguments.kind, topic=arguments.topic, requires_ack=arguments.requires_ack, source_run_id=arguments.source_run_id, handoff_id=arguments.handoff_id)
+    if command == "cross-project-open":
+        return cross_project.open_collaboration(root, collaboration_id=arguments.collaboration_id, source_owner=arguments.source_owner, source_run_id=arguments.source_run_id, target_task_id=arguments.target_task_id, kind=arguments.kind, target_workspace_id=arguments.target_workspace_id, target_owner=arguments.target_owner)
+    if command == "cross-project-bind":
+        return cross_project.bind_collaboration(root, collaboration_id=arguments.collaboration_id, source_workspace_id=arguments.source_workspace_id, source_owner=arguments.source_owner, source_run_id=arguments.source_run_id, target_owner=arguments.target_owner, target_run_id=arguments.target_run_id, target_task_id=arguments.target_task_id, kind=arguments.kind)
+    if command == "cross-project-close":
+        return cross_project.close_collaboration(root, collaboration_id=arguments.collaboration_id, actor_role=arguments.actor_role, owner=arguments.owner, run_id=arguments.run_id, source_workspace_id=arguments.source_workspace_id, source_owner=arguments.source_owner, source_run_id=arguments.source_run_id, target_workspace_id=arguments.target_workspace_id, target_owner=arguments.target_owner, target_run_id=arguments.target_run_id, target_task_id=arguments.target_task_id, kind=arguments.kind, outcome=arguments.outcome)
     if command == "ack":
         return interactions.acknowledge(root, message_id=arguments.message_id, target_owner=arguments.target_owner, target_run_id=arguments.target_run_id, note=arguments.note)
     if command == "handoff-reject":

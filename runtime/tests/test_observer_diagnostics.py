@@ -684,6 +684,55 @@ class ObserverDiagnosticProjectionTest(GitWorkspaceTest):
 
     def test_pending_acknowledgements_are_projected_and_stale_requests_are_diagnosed(self) -> None:
         initialize(self.root)
+        self._snapshot(
+            "runs/run-live.json",
+            {"run_id": "run-live", "owner": "agent-live", "status": "active", "joined_at": OLD},
+        )
+        self._snapshot(
+            "runs/run-closed.json",
+            {
+                "run_id": "run-closed",
+                "owner": "agent-closed",
+                "status": "closed",
+                "outcome": "completed",
+                "joined_at": OLD,
+            },
+        )
+        self._snapshot(
+            "handoffs/handoff-withdrawn.json",
+            {
+                "handoff_id": "handoff-withdrawn",
+                "message_id": "message-handoff",
+                "source_owner": "agent-live",
+                "source_run_id": "run-live",
+                "target_owner": "agent-target",
+                "status": "withdrawn",
+            },
+        )
+        self._event(
+            "joined-closed",
+            "agent-joined",
+            owner="agent-closed",
+            run_id="run-closed",
+        )
+        self._event(
+            "left-closed",
+            "agent-left",
+            owner="agent-closed",
+            run_id="run-closed",
+        )
+        self._event(
+            "handoff-offered",
+            "handoff-offered",
+            handoff_id="handoff-withdrawn",
+            message_id="message-handoff",
+        )
+        self._event(
+            "handoff-withdrawn",
+            "handoff-withdrawn",
+            handoff_id="handoff-withdrawn",
+            status="withdrawn",
+        )
         self._event(
             "message-pending",
             "message-sent",
@@ -710,16 +759,60 @@ class ObserverDiagnosticProjectionTest(GitWorkspaceTest):
             message_id="message-acked",
             interaction_kind="request",
         )
+        self._event(
+            "message-historical",
+            "message-sent",
+            owner="agent-closed",
+            run_id="run-closed",
+            message_id="message-historical",
+            source_owner="agent-closed",
+            target_owner="agent-target",
+            requires_ack=True,
+            topic="coordination",
+        )
+        self._event(
+            "message-handoff",
+            "message-sent",
+            message_id="message-handoff",
+            source_owner="agent-live",
+            target_owner="agent-target",
+            requires_ack=True,
+            topic="takeover",
+            handoff_id="handoff-withdrawn",
+        )
         database = Path(self.temporary.name) / "observer.sqlite3"
         with Catalog(database) as catalog:
             catalog.collect_workspace(self.root)
             report = catalog.report(workspace=workspace_id(self.root), stale_after_seconds=1)
         pending = report["pending_acknowledgements"]
         self.assertEqual(
-            {key: pending[key] for key in ("count", "requested", "acknowledged")},
-            {"count": 1, "requested": 2, "acknowledged": 1},
+            {
+                key: pending[key]
+                for key in (
+                    "count",
+                    "requested",
+                    "acknowledged",
+                    "lifecycle_resolved",
+                    "historical",
+                )
+            },
+            {
+                "count": 1,
+                "requested": 4,
+                "acknowledged": 1,
+                "lifecycle_resolved": 1,
+                "historical": 1,
+            },
         )
         self.assertEqual(pending["items"][0]["message_id"], "message-pending")
+        self.assertEqual(
+            pending["lifecycle_resolved_items"][0]["message_id"],
+            "message-handoff",
+        )
+        self.assertEqual(
+            pending["historical_items"][0]["message_id"],
+            "message-historical",
+        )
         self.assertIn("message.ack-stale", report["diagnostic_summary"]["counts"])
         stale = next(
             item

@@ -2,14 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from dev_mesh_coord import contention, transactions
+from dev_mesh_coord import contention, cross_project, transactions
 from dev_mesh_coord.control_plane import initialize
-from dev_mesh_coord.interactions import acknowledge, send
-from dev_mesh_coord.lifecycle import create_claim, join_run
+from dev_mesh_coord.interactions import acknowledge, send, withdraw
+from dev_mesh_coord.lifecycle import create_claim, join_run, leave_run
 from dev_mesh_observer.catalog import Catalog, workspace_id
 from dev_mesh_observer.dashboard import build_dashboard
 
-from helpers import GitWorkspaceTest
+from helpers import GitWorkspaceTest, git
 
 
 class ConsoleDashboardTest(GitWorkspaceTest):
@@ -74,6 +74,188 @@ class ConsoleDashboardTest(GitWorkspaceTest):
         self.assertEqual(len(scoped["events"]), 1)
         self.assertEqual({item["workspace_id"] for item in scoped["events"]}, {identifier})
 
+    def test_scoped_timeline_keeps_window_counts_for_other_projects(self) -> None:
+        other = Path(self.temporary.name) / "other-workspace"
+        other.mkdir()
+        git(other, "init", "-b", "main")
+        git(other, "config", "user.name", "Dev Mesh Test")
+        git(other, "config", "user.email", "dev-mesh@example.invalid")
+        (other / "app.txt").write_text("base\n", encoding="utf-8")
+        git(other, "add", "app.txt")
+        git(other, "commit", "-m", "base")
+        initialize(other)
+        join_run(other, run_id="run-other", owner="agent-other", task="other dashboard")
+        with Catalog(self.database) as catalog:
+            catalog.collect_workspace(other)
+            scoped = build_dashboard(
+                catalog.connection,
+                workspace=workspace_id(self.root),
+                window_hours=48,
+            )
+
+        self.assertEqual(
+            {event["workspace_id"] for event in scoped["events"]},
+            {workspace_id(self.root)},
+        )
+        counts = {
+            project["workspace_id"]: project["event_count"]
+            for project in scoped["projects"]
+        }
+        self.assertEqual(counts[workspace_id(self.root)], 2)
+        self.assertEqual(counts[workspace_id(other)], 1)
+
+    def test_project_collaboration_links_the_same_exact_run_across_projects(self) -> None:
+        other = Path(self.temporary.name) / "other-shared-run"
+        other.mkdir()
+        git(other, "init", "-b", "main")
+        git(other, "config", "user.name", "Dev Mesh Test")
+        git(other, "config", "user.email", "dev-mesh@example.invalid")
+        (other / "app.txt").write_text("base\n", encoding="utf-8")
+        git(other, "add", "app.txt")
+        git(other, "commit", "-m", "base")
+        initialize(other)
+        join_run(other, run_id="run-a", owner="agent-a", task="cross-project dashboard")
+
+        with Catalog(self.database) as catalog:
+            catalog.collect_workspace(other)
+            dashboard = build_dashboard(
+                catalog.connection,
+                workspace=workspace_id(self.root),
+                window_hours=48,
+            )
+
+        projection = dashboard["project_collaboration"]
+        self.assertEqual(projection["project_count"], 2)
+        self.assertEqual(projection["relation_count"], 1)
+        edge = projection["edges"][0]
+        self.assertEqual(
+            {edge["source_workspace_id"], edge["target_workspace_id"]},
+            {workspace_id(self.root), workspace_id(other)},
+        )
+        self.assertEqual(edge["shared_run_count"], 1)
+        self.assertEqual(edge["interaction_count"], 0)
+        self.assertEqual(edge["samples"][0]["owner"], "agent-a")
+        self.assertEqual(edge["samples"][0]["run_id"], "run-a")
+
+    def test_project_collaboration_projects_an_acknowledged_cross_project_recipient(self) -> None:
+        join_run(self.root, run_id="run-b", owner="agent-b", task="receive project request")
+        message = send(
+            self.root,
+            source_owner="agent-a",
+            source_run_id="run-a",
+            target_owner="agent-b",
+            subject="cross-project review",
+            body="review the related project work",
+            interaction_kind="request",
+            requires_ack=True,
+        )
+        acknowledge(
+            self.root,
+            message_id=str(message["message_id"]),
+            target_owner="agent-b",
+            target_run_id="run-b",
+        )
+        other = Path(self.temporary.name) / "other-recipient"
+        other.mkdir()
+        git(other, "init", "-b", "main")
+        git(other, "config", "user.name", "Dev Mesh Test")
+        git(other, "config", "user.email", "dev-mesh@example.invalid")
+        (other / "app.txt").write_text("base\n", encoding="utf-8")
+        git(other, "add", "app.txt")
+        git(other, "commit", "-m", "base")
+        initialize(other)
+        join_run(other, run_id="run-b", owner="agent-b", task="related project work")
+
+        with Catalog(self.database) as catalog:
+            catalog.collect_workspace(self.root)
+            catalog.collect_workspace(other)
+            dashboard = build_dashboard(catalog.connection, window_hours=48)
+
+        edge = dashboard["project_collaboration"]["edges"][0]
+        self.assertEqual(edge["shared_run_count"], 1)
+        self.assertEqual(edge["interaction_count"], 1)
+        self.assertEqual(
+            edge["directions"],
+            [
+                {
+                    "source_workspace_id": workspace_id(self.root),
+                    "target_workspace_id": workspace_id(other),
+                    "count": 1,
+                }
+            ],
+        )
+
+    def test_project_collaboration_joins_explicit_extension_across_distinct_runs(self) -> None:
+        other = Path(self.temporary.name) / "other-explicit-collaboration"
+        other.mkdir()
+        git(other, "init", "-b", "main")
+        git(other, "config", "user.name", "Dev Mesh Test")
+        git(other, "config", "user.email", "dev-mesh@example.invalid")
+        (other / "app.txt").write_text("base\n", encoding="utf-8")
+        git(other, "add", "app.txt")
+        git(other, "commit", "-m", "base")
+        initialize(other)
+        join_run(other, run_id="target-run", owner="target-agent", task="cross-project target")
+        relation_id = "dashboard-cross-project"
+        cross_project.open_collaboration(
+            self.root,
+            collaboration_id=relation_id,
+            source_owner="agent-a",
+            source_run_id="run-a",
+            target_task_id="target-task",
+            kind="dependency",
+        )
+        cross_project.bind_collaboration(
+            other,
+            collaboration_id=relation_id,
+            source_workspace_id=workspace_id(self.root),
+            source_owner="agent-a",
+            source_run_id="run-a",
+            target_owner="target-agent",
+            target_run_id="target-run",
+            target_task_id="target-task",
+            kind="dependency",
+        )
+        cross_project.close_collaboration(
+            other,
+            collaboration_id=relation_id,
+            actor_role="target",
+            owner="target-agent",
+            run_id="target-run",
+            source_workspace_id=workspace_id(self.root),
+            source_owner="agent-a",
+            source_run_id="run-a",
+            target_workspace_id=workspace_id(other),
+            target_owner="target-agent",
+            target_run_id="target-run",
+            target_task_id="target-task",
+            kind="dependency",
+            outcome="completed",
+        )
+
+        with Catalog(self.database) as catalog:
+            catalog.collect_workspace(self.root)
+            catalog.collect_workspace(other)
+            dashboard = build_dashboard(catalog.connection, window_hours=48)
+
+        edge = dashboard["project_collaboration"]["edges"][0]
+        self.assertEqual(edge["shared_run_count"], 0)
+        self.assertEqual(edge["interaction_count"], 0)
+        self.assertEqual(edge["collaboration_count"], 1)
+        self.assertEqual(edge["open_collaboration_count"], 0)
+        self.assertEqual(edge["completed_collaboration_count"], 1)
+        self.assertEqual(
+            edge["directions"],
+            [
+                {
+                    "source_workspace_id": workspace_id(self.root),
+                    "target_workspace_id": workspace_id(other),
+                    "count": 1,
+                }
+            ],
+        )
+        self.assertEqual(edge["samples"][0]["collaboration_id"], relation_id)
+
     def test_pending_acknowledgement_updates_after_ack(self) -> None:
         join_run(self.root, run_id="run-b", owner="agent-b", task="ack dashboard request")
         message = send(
@@ -124,6 +306,67 @@ class ConsoleDashboardTest(GitWorkspaceTest):
             self.assertEqual(event["details"]["source_run_id"], "run-a")
             self.assertEqual(event["details"]["target_owner"], "agent-b")
             self.assertEqual(event["details"]["target_run_id"], "run-b")
+
+    def test_terminal_handoff_and_closed_source_run_are_not_current_confirmations(self) -> None:
+        join_run(self.root, run_id="run-b", owner="agent-b", task="terminal messages")
+        handoff = send(
+            self.root,
+            source_owner="agent-b",
+            source_run_id="run-b",
+            target_owner="agent-a",
+            subject="handoff",
+            body="temporary handoff",
+            interaction_kind="handoff",
+            topic="takeover",
+            requires_ack=True,
+            handoff_id="dashboard-withdrawn-handoff",
+        )
+        withdraw(
+            self.root,
+            handoff_id="dashboard-withdrawn-handoff",
+            source_owner="agent-b",
+            source_run_id="run-b",
+            reason_code="no-longer-needed",
+            reason="request completed locally",
+        )
+        request = send(
+            self.root,
+            source_owner="agent-b",
+            source_run_id="run-b",
+            target_owner="agent-a",
+            subject="review",
+            body="historical review request",
+            interaction_kind="request",
+            requires_ack=True,
+        )
+        leave_run(
+            self.root,
+            run_id="run-b",
+            owner="agent-b",
+            outcome="completed",
+            summary="terminal message projection complete",
+        )
+
+        with Catalog(self.database) as catalog:
+            catalog.collect_workspace(self.root)
+            dashboard = build_dashboard(catalog.connection, window_hours=48)
+
+        confirmations = dashboard["operational"]["pending_acknowledgements"]
+        self.assertEqual(confirmations["count"], 0)
+        self.assertEqual(confirmations["lifecycle_resolved"], 1)
+        self.assertEqual(confirmations["historical"], 1)
+        self.assertEqual(
+            confirmations["lifecycle_resolved_items"][0]["message_id"],
+            handoff["message_id"],
+        )
+        self.assertEqual(
+            confirmations["historical_items"][0]["message_id"],
+            request["message_id"],
+        )
+        self.assertNotIn(
+            "message.ack-stale",
+            dashboard["operational"]["diagnostic_summary"]["counts"],
+        )
 
     def test_contention_events_include_exact_participant_lanes(self) -> None:
         join_run(

@@ -10,6 +10,20 @@ export function eventLaneKey(event) {
   return `${source ?? "unattributed"}\u0000unattributed`;
 }
 
+export function tooltipPosition(
+  point,
+  { scrollLeft = 0, clientWidth = 0, tooltipWidth = 0 },
+  { gap = 16, edgeInset = 8 } = {},
+) {
+  const visibleLeft = scrollLeft + edgeInset;
+  const visibleRight = scrollLeft + clientWidth - edgeInset;
+  const maxLeft = Math.max(visibleLeft, visibleRight - tooltipWidth);
+  return {
+    left: Math.max(visibleLeft, Math.min(point.x + gap, maxLeft)),
+    top: point.y + 12,
+  };
+}
+
 function relatedOwners(event) {
   const owners = new Set([
     event.owner,

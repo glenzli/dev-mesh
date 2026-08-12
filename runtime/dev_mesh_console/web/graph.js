@@ -1,5 +1,10 @@
 import { eventLabel, language, t } from "/i18n.js";
-import { buildFlowLayout, eventLaneKey as laneKey, identityKey } from "/flow_layout.js";
+import {
+  buildFlowLayout,
+  eventLaneKey as laneKey,
+  identityKey,
+  tooltipPosition,
+} from "/flow_layout.js";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 const semantics = {
@@ -346,8 +351,13 @@ function setTooltip(
     tooltip.append(conflict);
   }
   tooltip.hidden = false;
-  tooltip.style.left = `${Math.min(point.x + 16, tooltip.parentElement.clientWidth - 250)}px`;
-  tooltip.style.top = `${point.y + 12}px`;
+  const position = tooltipPosition(point, {
+    scrollLeft: tooltip.parentElement.scrollLeft,
+    clientWidth: tooltip.parentElement.clientWidth,
+    tooltipWidth: tooltip.offsetWidth,
+  });
+  tooltip.style.left = `${position.left}px`;
+  tooltip.style.top = `${position.top}px`;
 }
 
 function marker(defs, name, colorClass) {
@@ -385,9 +395,11 @@ export function renderFlow(svg, tooltip, dashboard, projectNames) {
     if (key && !workNumbers.has(key)) workNumbers.set(key, workNumbers.size + 1);
   });
   const positions = buildEventPositions(events, left, workNumbers);
-  const width = Math.max(980, positions.get(events.at(-1).event_id) + 70);
+  const farthestX = Math.max(...positions.values());
+  const width = Math.max(980, farthestX + 70);
   const height = layout.height;
   svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  svg.setAttribute("preserveAspectRatio", "xMinYMin meet");
   svg.setAttribute("width", width);
   svg.setAttribute("height", height);
 
@@ -483,6 +495,15 @@ export function renderFlow(svg, tooltip, dashboard, projectNames) {
     });
     band.classList.add("flow-band");
     svg.append(band);
+    const rowRail = element("rect", {
+      x: 10,
+      y: row.top + 8,
+      width: 4,
+      height: Math.max(8, row.height - 16),
+      rx: 2,
+    });
+    rowRail.classList.add("owner-row-rail");
+    svg.append(rowRail);
     const extent = ownerGuideExtents.get(row.owner);
     if (Number.isFinite(extent?.start) && Number.isFinite(extent?.end)) {
       const guide = element("line", {
@@ -657,6 +678,15 @@ export function renderFlow(svg, tooltip, dashboard, projectNames) {
         cross.classList.add("flow-edge", "handoff", "cross-lane");
         if (!exactTarget) cross.classList.add("owner-level");
         svg.insertBefore(cross, node);
+        if (!exactTarget) {
+          const ownerAnchor = element("circle", {
+            cx: targetX,
+            cy: targetY,
+            r: 3.5,
+          });
+          ownerAnchor.classList.add("owner-link-anchor");
+          svg.insertBefore(ownerAnchor, node);
+        }
       }
     }
 

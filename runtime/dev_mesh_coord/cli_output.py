@@ -49,6 +49,12 @@ _FIELDS = (
     "interaction_kind",
     "topic",
     "requires_ack",
+    "collaboration_id",
+    "phase",
+    "actor_role",
+    "source_workspace_id",
+    "target_workspace_id",
+    "target_task_id",
     "reason_code",
     "plan_digest",
     "cutover_id",
@@ -154,6 +160,12 @@ def _next_action(command: str, value: Mapping[str, object]) -> str | None:
         return "coordinator_proposes_bounded_decision"
     if command == "send":
         return "wait_for_acknowledgement" if value.get("requires_ack") else "done"
+    if command == "cross-project-open":
+        return "include_correlation_in_target_task_message"
+    if command == "cross-project-bind":
+        return "perform_requested_work_then_close_relation"
+    if command == "cross-project-close":
+        return "done"
     if command == "ack":
         return "complete_explicit_authority_transfer_if_needed"
     if command == "work-suspend":

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
 import threading
 from http.client import HTTPConnection
 from pathlib import Path
@@ -14,6 +16,96 @@ from helpers import GitWorkspaceTest
 
 
 class ConsoleRuntimeTest(GitWorkspaceTest):
+    def test_tooltip_position_tracks_the_scrolled_viewport(self) -> None:
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("Node.js is unavailable")
+        module = (
+            Path(__file__).parents[1]
+            / "dev_mesh_console"
+            / "web"
+            / "flow_layout.js"
+        ).as_uri()
+        script = f"""
+          import {{ tooltipPosition }} from {json.dumps(module)};
+          const scrolled = tooltipPosition(
+            {{ x: 1780, y: 42 }},
+            {{ scrollLeft: 1200, clientWidth: 800, tooltipWidth: 250 }},
+          );
+          if (scrolled.left !== 1742 || scrolled.top !== 54) {{
+            throw new Error(`unexpected scrolled position ${{JSON.stringify(scrolled)}}`);
+          }}
+          const unscrolled = tooltipPosition(
+            {{ x: 100, y: 20 }},
+            {{ scrollLeft: 0, clientWidth: 800, tooltipWidth: 250 }},
+          );
+          if (unscrolled.left !== 116 || unscrolled.top !== 32) {{
+            throw new Error(`unexpected initial position ${{JSON.stringify(unscrolled)}}`);
+          }}
+        """
+        subprocess.run(
+            [node, "--input-type=module", "--eval", script],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    def test_project_collaboration_graph_and_project_filtering(self) -> None:
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("Node.js is unavailable")
+        module = (
+            Path(__file__).parents[1]
+            / "dev_mesh_console"
+            / "web"
+            / "project_overview.js"
+        ).as_uri()
+        script = f"""
+          import {{ projectGraphLayout, selectableProjects }} from {json.dumps(module)};
+          const projects = [
+            {{workspace_id: "quiet", name: "quiet", event_count: 0, event_counts: {{}}, active: {{}}, diagnostic_count: 0}},
+            {{workspace_id: "base", name: "base", event_count: 2, event_counts: {{"agent-joined": 1, "claim-created": 1}}, active: {{}}, diagnostic_count: 0}},
+            {{workspace_id: "collab", name: "collab", event_count: 7, event_counts: {{"contention-opened": 2, "message-sent": 3, "transaction-created": 1, "work-suspended": 1}}, active: {{}}, diagnostic_count: 0}},
+          ];
+          const selectable = selectableProjects(projects).map((project) => project.workspace_id);
+          if (JSON.stringify(selectable) !== JSON.stringify(["base", "collab"])) {{
+            throw new Error(`unexpected options ${{JSON.stringify(selectable)}}`);
+          }}
+          const retained = selectableProjects(projects, "quiet").map((project) => project.workspace_id);
+          if (!retained.includes("quiet")) throw new Error("selected quiet project was dropped");
+          const layout = projectGraphLayout({{
+            nodes: [
+              {{workspace_id: "left", name: "left"}},
+              {{workspace_id: "right", name: "right"}},
+              {{workspace_id: "unrelated", name: "unrelated"}},
+            ],
+            edges: [{{
+              source_workspace_id: "left",
+              target_workspace_id: "right",
+              shared_run_count: 1,
+              interaction_count: 0,
+              collaboration_count: 1,
+              open_collaboration_count: 1,
+              directions: [],
+            }}],
+          }});
+          if (layout.nodes.length !== 2 || layout.edges.length !== 1) {{
+            throw new Error(`unexpected project graph ${{JSON.stringify(layout)}}`);
+          }}
+          if (layout.nodes[0].x >= layout.nodes[1].x || !layout.edges[0].path.startsWith("M ")) {{
+            throw new Error(`project graph was not laid out left-to-right ${{JSON.stringify(layout)}}`);
+          }}
+          if (!layout.edges[0].protocol || !layout.edges[0].direct) {{
+            throw new Error(`explicit collaboration was not projected as direct ${{JSON.stringify(layout)}}`);
+          }}
+        """
+        subprocess.run(
+            [node, "--input-type=module", "--eval", script],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
     def test_root_registry_is_durable_bounded_external_state(self) -> None:
         registry_path = Path(self.temporary.name) / "console-roots.json"
         registry = RootRegistry(registry_path, [self.root])

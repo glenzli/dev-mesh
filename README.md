@@ -1,11 +1,13 @@
 # Dev Mesh
 
 Dev Mesh provides auditable coordination for multiple Agents working in one shared Git workspace.
-The current protocol is `dev-mesh.coordination@20260812.1`.
+The current authority protocol is `dev-mesh.coordination@20260812.1`; the optional compatible
+cross-project correlation extension is `dev-mesh.cross-project-collaboration@20260813.1`.
 
 ## Repository map
 
-- `runtime/dev_mesh_coord/` — authority-bearing coordination and recoverable Git operations.
+- `runtime/dev_mesh_coord/` — authority-bearing coordination, recoverable Git operations, and the
+  metadata-only cross-project correlation producer.
 - `runtime/dev_mesh_observer/` — read-only catalog, diagnostics, and reports.
 - `runtime/dev_mesh_console/` — loopback-only API, collection lifecycle, and browser dashboard.
 - `runtime/tests/` — protocol, crash-window, concurrency, Observer, and cutover tests.
