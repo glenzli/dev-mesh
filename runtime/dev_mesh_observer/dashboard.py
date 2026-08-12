@@ -20,9 +20,12 @@ DETAIL_FIELDS = (
     "status",
     "outcome",
     "decision",
+    "revision",
+    "accepted",
     "reason_code",
     "canonical_branch",
     "branch",
+    "actual_path_count",
     "source_owner",
     "target_owner",
     "work_state_id",
@@ -132,6 +135,18 @@ def build_dashboard(
 
     active_counts_by_workspace: dict[str, Counter[str]] = defaultdict(Counter)
     active_details: list[dict[str, object]] = []
+    displayed_contentions = {
+        (str(event["workspace_id"]), str(event["contention_id"]))
+        for event in events
+        if event.get("contention_id")
+    }
+    displayed_transactions = {
+        (str(event["workspace_id"]), str(event["transaction_id"]))
+        for event in events
+        if event.get("transaction_id")
+    }
+    contention_participants: dict[tuple[str, str], list[dict[str, str]]] = {}
+    transaction_details: dict[tuple[str, str], dict[str, object]] = {}
     snapshot_arguments: list[object] = [PROTOCOL_VERSION]
     snapshot_where = "protocol_version = ?"
     if workspace is not None:
@@ -149,9 +164,34 @@ def build_dashboard(
         record = json.loads(row["record_json"])
         kind = str(row["kind"])
         lifecycle = str(row["lifecycle"])
+        identifier = str(row["workspace_id"])
+        if kind == "contention":
+            contention_id = record.get("contention_id")
+            key = (identifier, str(contention_id))
+            if isinstance(contention_id, str) and key in displayed_contentions:
+                contention_participants[key] = [
+                    {
+                        "owner": str(participant["owner"]),
+                        "run_id": str(participant["run_id"]),
+                        "scope": str(participant["scope"]),
+                    }
+                    for participant in record.get("participants", [])
+                    if isinstance(participant, dict)
+                    and isinstance(participant.get("owner"), str)
+                    and isinstance(participant.get("run_id"), str)
+                    and isinstance(participant.get("scope"), str)
+                ]
+        if kind == "transaction":
+            transaction_id = record.get("transaction_id")
+            key = (identifier, str(transaction_id))
+            if isinstance(transaction_id, str) and key in displayed_transactions:
+                transaction_details[key] = {
+                    field: record[field]
+                    for field in ("branch", "canonical_branch", "actual_path_count")
+                    if record.get(field) is not None
+                }
         if not _active_snapshot(record, kind, lifecycle):
             continue
-        identifier = str(row["workspace_id"])
         active_counts_by_workspace[identifier][kind] += 1
         active_details.append(
             {
@@ -164,6 +204,23 @@ def build_dashboard(
                 "scope": record.get("scope"),
             }
         )
+
+    for event in events:
+        contention_id = event.get("contention_id")
+        if contention_id:
+            participants = contention_participants.get(
+                (str(event["workspace_id"]), str(contention_id))
+            )
+            if participants:
+                event["details"]["contention_participants"] = participants
+        transaction_id = event.get("transaction_id")
+        if transaction_id:
+            details = transaction_details.get(
+                (str(event["workspace_id"]), str(transaction_id)),
+                {},
+            )
+            for field, value in details.items():
+                event["details"].setdefault(field, value)
 
     operational = build_report(
         connection,

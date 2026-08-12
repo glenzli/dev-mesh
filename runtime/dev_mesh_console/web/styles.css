@@ -285,6 +285,7 @@ select, input {
 .fact b { font: 750 14px ui-monospace, monospace; }
 .fact span { color: var(--muted); font-size: 10px; }
 .fact.is-danger b { color: var(--danger); }
+.fact.is-attention b { color: var(--warning); }
 
 .active-row, .diagnostic-row, .event-row { gap: 10px; min-height: 52px; padding: 9px 13px; border-bottom: 1px solid var(--border); }
 .active-row:last-child, .diagnostic-row:last-child, .event-row:last-child { border-bottom: 0; }
@@ -299,6 +300,7 @@ select, input {
 .severity-info .severity-badge { color: var(--accent); background: var(--accent-soft); }
 .severity-warning .severity-badge { color: var(--warning); background: var(--warning-soft); }
 .severity-critical .severity-badge { color: var(--danger); background: var(--danger-soft); }
+.diagnostic-row.is-pending .severity-badge { color: var(--warning); background: var(--warning-soft); }
 .event-dot { flex: 0 0 auto; width: 9px; height: 9px; border: 2px solid var(--mainline); border-radius: 50%; }
 .event-dot.effect-grant { border-color: var(--accent); background: var(--accent); }
 .event-dot.effect-terminal, .event-dot.effect-release { border-color: var(--good); background: var(--good); }
@@ -315,6 +317,10 @@ select, input {
 .legend-line.handoff { border-color: var(--handoff); border-top-style: dotted; }
 .legend-line.waiting { border-color: var(--waiting); border-top-style: dashed; }
 .legend-node { width: 9px; height: 9px; transform: rotate(45deg); background: var(--danger); }
+.legend-node.proposal { width: 0; height: 0; transform: none; border-top: 6px solid transparent; border-bottom: 6px solid transparent; border-left: 10px solid var(--accent); background: transparent; }
+.legend-node.response { border-radius: 50%; transform: none; background: var(--good); }
+.legend-node.stopped { transform: none; background: linear-gradient(45deg, transparent 42%, var(--danger) 42% 58%, transparent 58%), linear-gradient(-45deg, transparent 42%, var(--danger) 42% 58%, transparent 58%); }
+.legend-work-number { display: inline-grid; width: 16px; height: 16px; place-items: center; border: 1px solid var(--text); border-radius: 50%; background: var(--surface-raised); color: var(--text); font: 700 8px ui-monospace, monospace; }
 .flow-scroll { position: relative; width: 100%; min-height: 205px; overflow: auto; background: var(--surface); }
 .flow-scroll.is-empty { display: none; }
 #flow { display: block; min-width: 100%; }
@@ -326,11 +332,18 @@ select, input {
 .flow-edge.branch { stroke: var(--branch); stroke-width: 3; }
 .flow-edge.waiting { stroke: var(--waiting); stroke-dasharray: 7 5; }
 .flow-edge.handoff { stroke: var(--handoff); stroke-width: 2; stroke-dasharray: 3 4; }
+.flow-edge.conflict { stroke: var(--danger); stroke-width: 1.8; stroke-dasharray: 4 4; }
+.flow-edge.decision { stroke: var(--accent); stroke-width: 1.8; }
+.flow-edge.accepted { stroke: var(--good); stroke-width: 1.8; }
+.flow-edge.rejected { stroke: var(--danger); stroke-width: 1.8; }
 .flow-edge.cross-lane { opacity: .86; }
 .marker-normal { fill: var(--mainline); }
 .marker-branch { fill: var(--branch); }
 .marker-handoff { fill: var(--handoff); }
 .marker-waiting { fill: var(--waiting); }
+.marker-decision { fill: var(--accent); }
+.marker-accepted { fill: var(--good); }
+.marker-rejected { fill: var(--danger); }
 .flow-node { fill: var(--surface-raised); stroke: var(--mainline); stroke-width: 2.5; cursor: default; }
 .flow-node.normal.terminal { fill: var(--mainline); }
 .flow-node.start { fill: var(--surface-raised); stroke-width: 3; }
@@ -338,6 +351,35 @@ select, input {
 .flow-node.handoff { fill: var(--handoff); stroke: var(--surface-raised); }
 .flow-node.waiting { fill: var(--waiting); stroke: var(--surface-raised); }
 .flow-node.conflict { fill: var(--danger); stroke: var(--surface-raised); }
+.flow-node.decision-proposal { fill: var(--accent); stroke: var(--surface-raised); }
+.flow-node.decision-accepted { fill: var(--good); stroke: var(--surface-raised); }
+.flow-node.decision-rejected { fill: var(--danger); stroke: var(--surface-raised); }
+.flow-node.decision-self-response { fill: var(--surface-raised); stroke: var(--good); stroke-width: 2; }
+.flow-node.event-message-sent { fill: var(--surface-raised); stroke: var(--handoff); }
+.flow-node.event-message-acknowledged { fill: var(--handoff); stroke: var(--surface-raised); }
+.flow-node.event-handoff-offered { fill: var(--handoff); stroke: var(--surface-raised); }
+.flow-node.event-handoff-accepted { fill: var(--good); stroke: var(--surface-raised); }
+.flow-node.event-handoff-rejected,
+.flow-node.event-handoff-withdrawn,
+.flow-node.event-transaction-aborted { fill: none; stroke: var(--danger); stroke-width: 2.5; }
+.flow-node.event-work-suspended,
+.flow-node.event-claim-paused { fill: var(--waiting); stroke: var(--surface-raised); }
+.flow-node.event-work-resumed,
+.flow-node.event-claim-resumed,
+.flow-node.event-contention-completed,
+.flow-node.event-transaction-published,
+.flow-node.event-direct-commit-completed { fill: var(--good); stroke: var(--surface-raised); }
+.flow-node.event-contention-cancelled { fill: var(--surface-raised); stroke: var(--subtle); }
+.flow-node.event-transaction-created { fill: var(--surface-raised); stroke: var(--branch); stroke-width: 3; }
+.flow-node.event-transaction-prepared { fill: var(--surface-raised); stroke: var(--branch); }
+.flow-node.event-transaction-validated { fill: var(--branch); stroke: var(--surface-raised); }
+.flow-node.event-transaction-refreshed { fill: var(--surface-raised); stroke: var(--branch); stroke-dasharray: 2 2; }
+.flow-node.event-transaction-conflicted { fill: var(--surface-raised); stroke: var(--danger); stroke-width: 2.5; }
+.flow-node.event-direct-commit-started { fill: var(--surface-raised); stroke: var(--accent); }
+.work-number-badge { pointer-events: none; }
+.work-number-badge circle { fill: var(--surface-raised); stroke: var(--text); stroke-width: 1.1; }
+.work-number-badge text { fill: var(--text); font: 700 7px ui-monospace, SFMono-Regular, monospace; }
+.conflict-link-node { fill: var(--surface-raised); stroke: var(--danger); stroke-width: 2; }
 .flow-node:focus { outline: none; filter: drop-shadow(0 0 3px var(--accent)); }
 .flow-tooltip {
   position: absolute;
