@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <title>Dev Mesh Console</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">DM</span>
+        <div>
+          <h1>Dev Mesh</h1>
+          <p data-i18n="brand.subtitle">协作控制台</p>
+        </div>
+      </div>
+      <div class="topbar-actions">
+        <span id="connection-status" class="status-pill is-loading" data-i18n="status.loading">载入中</span>
+        <button id="add-root" class="button secondary" type="button" data-i18n="actions.addRoot">添加工作区</button>
+        <button id="refresh" class="button primary" type="button" data-i18n="actions.refresh">刷新</button>
+        <button id="language" class="icon-button" type="button" aria-label="Language">中 / EN</button>
+        <button id="theme" class="icon-button" type="button" data-i18n-aria="actions.theme" aria-label="切换主题">◐</button>
+      </div>
+    </header>
+
+    <main>
+      <section class="toolbar" aria-label="Dashboard filters">
+        <div class="filter-group">
+          <label for="workspace" data-i18n="filters.workspace">项目范围</label>
+          <select id="workspace">
+            <option value="" data-i18n="filters.allWorkspaces">全部项目</option>
+          </select>
+        </div>
+        <div class="filter-group compact">
+          <label for="window" data-i18n="filters.window">观察窗口</label>
+          <select id="window">
+            <option value="6">6h</option>
+            <option value="12">12h</option>
+            <option value="24">24h</option>
+            <option value="48" selected>48h</option>
+            <option value="168">7d</option>
+            <option value="720">30d</option>
+          </select>
+        </div>
+        <div class="toolbar-meta">
+          <span id="generated-at">—</span>
+          <span id="protocol-version">20260812.1</span>
+        </div>
+      </section>
+
+      <section id="metrics" class="metric-grid" aria-label="Overview metrics"></section>
+
+      <section id="insights" class="insight-grid" aria-label="Coordination insights"></section>
+
+      <section class="dashboard-grid">
+        <article class="panel projects-panel">
+          <div class="panel-heading">
+            <div>
+              <span class="eyebrow" data-i18n="sections.projectsEyebrow">项目边界</span>
+              <h2 data-i18n="sections.projects">项目状态</h2>
+            </div>
+            <span id="project-count" class="panel-count">0</span>
+          </div>
+          <div id="projects" class="project-list"></div>
+        </article>
+
+        <article class="panel activity-panel">
+          <div class="panel-heading">
+            <div>
+              <span class="eyebrow" data-i18n="sections.activityEyebrow">当前权限</span>
+              <h2 data-i18n="sections.activity">正在发生</h2>
+            </div>
+            <span id="active-count" class="panel-count">0</span>
+          </div>
+          <div id="active-details" class="active-list"></div>
+        </article>
+      </section>
+
+      <section class="panel flow-panel">
+        <div class="panel-heading flow-heading">
+          <div>
+            <span class="eyebrow" data-i18n="sections.flowEyebrow">时间与因果</span>
+            <h2 data-i18n="sections.flow">协作流</h2>
+          </div>
+          <div id="flow-summary" class="flow-summary"></div>
+        </div>
+        <div class="legend" aria-label="Flow legend">
+          <span><i class="legend-line normal"></i><b data-i18n="legend.main">执行主线</b></span>
+          <span><i class="legend-line branch"></i><b data-i18n="legend.branch">临时分支</b></span>
+          <span><i class="legend-line handoff"></i><b data-i18n="legend.handoff">交接 / 通知</b></span>
+          <span><i class="legend-line waiting"></i><b data-i18n="legend.waiting">等待 / 依赖</b></span>
+          <span><i class="legend-node conflict"></i><b data-i18n="legend.conflict">冲突 / 争用</b></span>
+        </div>
+        <div id="flow-empty" class="empty-state" hidden>
+          <strong data-i18n="empty.flowTitle">窗口内没有协作事件</strong>
+          <span data-i18n="empty.flowBody">运行 Agent 后，生命周期节点会出现在这里。</span>
+        </div>
+        <div id="flow-scroll" class="flow-scroll">
+          <svg id="flow" role="img" aria-label="Dev Mesh collaboration flow"></svg>
+          <div id="flow-tooltip" class="flow-tooltip" hidden></div>
+        </div>
+      </section>
+
+      <section class="dashboard-grid lower-grid">
+        <article class="panel diagnostics-panel">
+          <div class="panel-heading">
+            <div>
+              <span class="eyebrow" data-i18n="sections.diagnosticsEyebrow">恢复与完整性</span>
+              <h2 data-i18n="sections.diagnostics">诊断</h2>
+            </div>
+            <span id="diagnostic-count" class="panel-count">0</span>
+          </div>
+          <div id="diagnostics" class="diagnostic-list"></div>
+        </article>
+
+        <article class="panel events-panel">
+          <div class="panel-heading">
+            <div>
+              <span class="eyebrow" data-i18n="sections.eventsEyebrow">不可变事件</span>
+              <h2 data-i18n="sections.events">最近活动</h2>
+            </div>
+            <span id="event-count" class="panel-count">0</span>
+          </div>
+          <div id="events" class="event-list"></div>
+        </article>
+      </section>
+    </main>
+
+    <dialog id="root-dialog">
+      <form id="root-form" method="dialog">
+        <div class="dialog-heading">
+          <div>
+            <span class="eyebrow" data-i18n="dialog.eyebrow">扫描范围</span>
+            <h2 data-i18n="dialog.title">添加工作区根目录</h2>
+          </div>
+          <button id="close-dialog" class="icon-button" aria-label="Close" type="button">×</button>
+        </div>
+        <p data-i18n="dialog.help">输入项目本身或包含多个项目的父目录。Console 只读扫描 .dev-mesh。</p>
+        <label for="root-path" data-i18n="dialog.path">绝对路径</label>
+        <input id="root-path" name="path" type="text" autocomplete="off" placeholder="/Users/name/lab" required>
+        <div id="root-list" class="root-list"></div>
+        <div id="dialog-error" class="inline-error" hidden></div>
+        <div class="dialog-actions">
+          <button id="cancel-root" class="button secondary" type="button" data-i18n="actions.cancel">取消</button>
+          <button id="save-root" class="button primary" type="submit" data-i18n="actions.addAndCollect">添加并采集</button>
+        </div>
+      </form>
+    </dialog>
+
+    <template id="empty-template">
+      <div class="empty-state compact-empty">
+        <strong></strong>
+        <span></span>
+      </div>
+    </template>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

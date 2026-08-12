@@ -1,12 +1,29 @@
 ---
 name: observe-dev-mesh
-description: Collect and diagnose Dev Mesh coordination protocol 20260812.1 across local Git workspaces without writing source workspaces. Use when checking active authority, collaboration volume, contention, transactions, managed direct commits, audit gaps, source integrity, or cutover readiness.
+description: Collect, diagnose, and display Dev Mesh coordination protocol 20260812.1 across local Git workspaces without writing source workspaces. Use when opening the local Web Console, checking active authority, viewing project-linked collaboration flows, measuring contention or transactions, investigating audit gaps and source integrity, or assessing cutover readiness.
 ---
 
 # Observe Dev Mesh
 
 Use the repository-owned read-only Observer. It discovers only the current
 `.dev-mesh/coord/20260812.1` control plane and writes solely to the caller-selected SQLite catalog.
+
+## Open the Web Console
+
+Start the local Console with an external catalog and one or more project roots:
+
+```bash
+python3 <skill>/scripts/console.py \
+  --db /absolute/path/observer.sqlite3 \
+  --root /absolute/project-parent \
+  --host 127.0.0.1 --port 8765
+```
+
+The Console prints its URL after the first collection. It provides compact overview cards,
+project-linked metrics, a semantic collaboration flow, current authority, recent events, and
+diagnostics. It follows the browser's light/dark preference, supports Chinese and English, and lets
+the user add durable scan roots from the UI. Root configuration is stored next to the external
+catalog unless `--registry` selects another external path.
 
 ## Collect
 
@@ -45,5 +62,4 @@ workspace.
 
 - This skill is read-only with respect to source workspaces.
 - It does not read retired `.agent-coordination` archives.
-- The v1 Web Console is retired and is not a current data source. A future Console must consume this
-  report contract rather than revive the v1 catalog.
+- The Web Console consumes current Observer projections; it never grants or reconstructs authority.

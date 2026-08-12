@@ -10,11 +10,13 @@ are immutable after activation.
   Git microtransactions, recovery, and legacy cutover.
 - `runtime/dev_mesh_observer/` owns read-only discovery, bounded source validation, cataloging,
   diagnostics, and reports. It never reconstructs or mutates authority.
+- `runtime/dev_mesh_console/` owns the loopback HTTP lifecycle, external scan-root configuration,
+  bounded Dashboard API, and static presentation assets. It consumes Observer projections and does
+  not query workspace authority directly.
 - `skills/coordinate-shared-workspace/` owns Agent instructions and one thin launcher into the
   repository runtime. It does not duplicate protocol implementation.
-- `skills/observe-dev-mesh/` owns a thin read-only launcher into the Observer runtime. It remains
-  independent from the globally loaded coordination skill; a future Console consumes reports rather
-  than owning another catalog or protocol model.
+- `skills/observe-dev-mesh/` owns thin launchers into the Observer and Console runtimes. It remains
+  independent from the globally loaded coordination skill.
 - `contracts/` and `schemas/` are the public protocol surface. Runtime code must agree with them.
 
 ## Workspace state
