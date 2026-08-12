@@ -88,8 +88,18 @@ class ConsoleDashboardTest(GitWorkspaceTest):
         )
         with Catalog(self.database) as catalog:
             catalog.collect_workspace(self.root)
-            pending = build_dashboard(catalog.connection, window_hours=48)["operational"]
-        self.assertEqual(pending["pending_acknowledgements"]["count"], 1)
+            pending_dashboard = build_dashboard(catalog.connection, window_hours=48)
+        self.assertEqual(
+            pending_dashboard["operational"]["pending_acknowledgements"]["count"],
+            1,
+        )
+        pending_message = next(
+            event
+            for event in pending_dashboard["events"]
+            if event["event"] == "message-sent"
+        )
+        self.assertEqual(pending_message["details"]["source_run_id"], "run-a")
+        self.assertNotIn("target_run_id", pending_message["details"])
 
         acknowledge(
             self.root,
@@ -99,9 +109,21 @@ class ConsoleDashboardTest(GitWorkspaceTest):
         )
         with Catalog(self.database) as catalog:
             catalog.collect_workspace(self.root)
-            acknowledged = build_dashboard(catalog.connection, window_hours=48)["operational"]
+            acknowledged_dashboard = build_dashboard(catalog.connection, window_hours=48)
+        acknowledged = acknowledged_dashboard["operational"]
         self.assertEqual(acknowledged["pending_acknowledgements"]["count"], 0)
         self.assertEqual(acknowledged["pending_acknowledgements"]["acknowledged"], 1)
+        message_events = [
+            event
+            for event in acknowledged_dashboard["events"]
+            if event["event"] in {"message-sent", "message-acknowledged"}
+        ]
+        self.assertEqual(len(message_events), 2)
+        for event in message_events:
+            self.assertEqual(event["details"]["source_owner"], "agent-a")
+            self.assertEqual(event["details"]["source_run_id"], "run-a")
+            self.assertEqual(event["details"]["target_owner"], "agent-b")
+            self.assertEqual(event["details"]["target_run_id"], "run-b")
 
     def test_contention_events_include_exact_participant_lanes(self) -> None:
         join_run(
@@ -179,6 +201,50 @@ class ConsoleDashboardTest(GitWorkspaceTest):
         self.assertEqual(proposed["details"]["revision"], 1)
         self.assertIs(responded["details"]["accepted"], True)
         self.assertEqual(responded["details"]["revision"], 1)
+
+    def test_accepted_handoff_projects_exact_run_pair_onto_offer(self) -> None:
+        join_run(self.root, run_id="run-b", owner="agent-b", task="accept handoff")
+        offered = send(
+            self.root,
+            source_owner="agent-a",
+            source_run_id="run-a",
+            target_owner="agent-b",
+            subject="take over",
+            body="continue the bounded task",
+            interaction_kind="handoff",
+            requires_ack=True,
+            handoff_id="dashboard-handoff",
+        )
+        acknowledge(
+            self.root,
+            message_id=str(offered["message_id"]),
+            target_owner="agent-b",
+            target_run_id="run-b",
+        )
+        with Catalog(self.database) as catalog:
+            catalog.collect_workspace(self.root)
+            dashboard = build_dashboard(catalog.connection, window_hours=48)
+
+        offer_event = next(
+            event for event in dashboard["events"] if event["event"] == "handoff-offered"
+        )
+        self.assertEqual(
+            {
+                field: offer_event["details"][field]
+                for field in (
+                    "source_owner",
+                    "source_run_id",
+                    "target_owner",
+                    "target_run_id",
+                )
+            },
+            {
+                "source_owner": "agent-a",
+                "source_run_id": "run-a",
+                "target_owner": "agent-b",
+                "target_run_id": "run-b",
+            },
+        )
 
     def test_transaction_events_are_enriched_with_branch_identity(self) -> None:
         create_claim(

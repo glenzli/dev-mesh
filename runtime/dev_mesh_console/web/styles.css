@@ -321,29 +321,42 @@ select, input {
 .legend-node.response { border-radius: 50%; transform: none; background: var(--good); }
 .legend-node.stopped { transform: none; background: linear-gradient(45deg, transparent 42%, var(--danger) 42% 58%, transparent 58%), linear-gradient(-45deg, transparent 42%, var(--danger) 42% 58%, transparent 58%); }
 .legend-work-number { display: inline-grid; width: 16px; height: 16px; place-items: center; border: 1px solid var(--text); border-radius: 50%; background: var(--surface-raised); color: var(--text); font: 700 8px ui-monospace, monospace; }
+.legend-group { display: inline-block; width: 22px; height: 13px; border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border)); border-radius: 4px; background: color-mix(in srgb, var(--accent-soft) 36%, transparent); }
 .flow-scroll { position: relative; width: 100%; min-height: 205px; overflow: auto; background: var(--surface); }
 .flow-scroll.is-empty { display: none; }
 #flow { display: block; min-width: 100%; }
-.flow-band { fill: transparent; }
-.flow-band:nth-of-type(even) { fill: color-mix(in srgb, var(--surface-muted) 42%, transparent); }
+.flow-group-band { fill: transparent; }
+.flow-group-band.related { fill: color-mix(in srgb, var(--accent-soft) 28%, transparent); stroke: color-mix(in srgb, var(--accent) 22%, var(--border)); stroke-width: 1; }
+.flow-group-rail { fill: var(--accent); opacity: .28; }
+.flow-band { fill: color-mix(in srgb, var(--surface-raised) 16%, transparent); stroke: color-mix(in srgb, var(--border) 72%, transparent); stroke-width: .8; }
+.flow-group-divider { stroke: var(--border-strong); stroke-width: 1; stroke-dasharray: 2 6; opacity: .62; }
+.owner-identity-card { fill: color-mix(in srgb, var(--surface-raised) 94%, transparent); stroke: color-mix(in srgb, var(--accent) 28%, var(--border-strong)); stroke-width: 1.15; }
+.owner-identity-card.owner-only { stroke-dasharray: 3 3; }
+.owner-badge { fill: var(--accent-soft); stroke: color-mix(in srgb, var(--accent) 60%, var(--border)); stroke-width: 1; }
+.owner-badge-text { fill: var(--accent); font: 800 7px ui-monospace, SFMono-Regular, monospace; letter-spacing: .25px; }
+.owner-guide { stroke: var(--subtle); stroke-width: 1.2; stroke-dasharray: 2 5; opacity: .48; }
 .lane-owner { fill: var(--text); font-size: 12px; font-weight: 750; }
 .lane-run, .time-label { fill: var(--muted); font: 10px ui-monospace, SFMono-Regular, monospace; }
+.run-segment-label { fill: var(--subtle); font: 700 8px ui-monospace, SFMono-Regular, monospace; }
 .flow-edge { fill: none; stroke: var(--mainline); stroke-width: 1.8; }
 .flow-edge.branch { stroke: var(--branch); stroke-width: 3; }
 .flow-edge.waiting { stroke: var(--waiting); stroke-dasharray: 7 5; }
 .flow-edge.handoff { stroke: var(--handoff); stroke-width: 2; stroke-dasharray: 3 4; }
+.flow-edge.handoff.owner-level { stroke-width: 1.6; stroke-dasharray: 2 5; opacity: .68; }
 .flow-edge.conflict { stroke: var(--danger); stroke-width: 1.8; stroke-dasharray: 4 4; }
 .flow-edge.decision { stroke: var(--accent); stroke-width: 1.8; }
 .flow-edge.accepted { stroke: var(--good); stroke-width: 1.8; }
 .flow-edge.rejected { stroke: var(--danger); stroke-width: 1.8; }
 .flow-edge.cross-lane { opacity: .86; }
-.marker-normal { fill: var(--mainline); }
-.marker-branch { fill: var(--branch); }
-.marker-handoff { fill: var(--handoff); }
-.marker-waiting { fill: var(--waiting); }
-.marker-decision { fill: var(--accent); }
-.marker-accepted { fill: var(--good); }
-.marker-rejected { fill: var(--danger); }
+.marker-normal, .marker-branch, .marker-handoff, .marker-waiting,
+.marker-decision, .marker-accepted, .marker-rejected { fill: none; stroke-width: 1.45; stroke-linecap: round; stroke-linejoin: round; }
+.marker-normal { stroke: var(--mainline); }
+.marker-branch { stroke: var(--branch); }
+.marker-handoff { stroke: var(--handoff); }
+.marker-waiting { stroke: var(--waiting); }
+.marker-decision { stroke: var(--accent); }
+.marker-accepted { stroke: var(--good); }
+.marker-rejected { stroke: var(--danger); }
 .flow-node { fill: var(--surface-raised); stroke: var(--mainline); stroke-width: 2.5; cursor: default; }
 .flow-node.normal.terminal { fill: var(--mainline); }
 .flow-node.start { fill: var(--surface-raised); stroke-width: 3; }

@@ -1,4 +1,5 @@
 import { eventLabel, language, t } from "/i18n.js";
+import { buildFlowLayout, eventLaneKey as laneKey, identityKey } from "/flow_layout.js";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 const semantics = {
@@ -83,10 +84,24 @@ function semantic(eventName) {
   return "normal";
 }
 
-function laneKey(event) {
-  if (event.owner || event.run_id) return `${event.owner ?? "unknown"}\u0000${event.run_id ?? "unknown"}`;
-  const source = event.details?.source_owner;
-  return `${source ?? "unattributed"}\u0000unattributed`;
+function interactionPeer(event) {
+  const source = identityKey(event.details?.source_owner, event.details?.source_run_id);
+  const target = identityKey(event.details?.target_owner, event.details?.target_run_id);
+  const sourceOwner = event.details?.source_owner;
+  const targetOwner = event.details?.target_owner;
+  if (event.event === "handoff-offered" || event.event === "handoff-withdrawn") {
+    return { runKey: target, owner: targetOwner };
+  }
+  if (event.event === "handoff-accepted" || event.event === "handoff-rejected") {
+    return { runKey: source, owner: sourceOwner };
+  }
+  if (event.event === "message-sent" && !event.handoff_id) {
+    return { runKey: target, owner: targetOwner };
+  }
+  if (event.event === "message-acknowledged" && event.details?.interaction_kind !== "handoff") {
+    return { runKey: source, owner: sourceOwner };
+  }
+  return null;
 }
 
 function workKey(event) {
@@ -144,6 +159,66 @@ function connectorPath(startX, startY, endX, endY) {
   return `M ${startX} ${startY} C ${startX + bend} ${startY}, ${endX - bend} ${endY}, ${endX} ${endY}`;
 }
 
+function nodeClearance(event) {
+  if (event.event === "contention-decision-proposed" || offeredEvents.has(event.event)) return 7;
+  if (stoppedEvents.has(event.event) || event.event === "contention-decision-responded") return 6;
+  if (event.event === "work-suspended" || event.event === "claim-paused") return 5;
+  if (semantic(event.event) === "conflict") return 9;
+  if (event.event === "agent-joined") return 7;
+  return compactEvents.has(event.event) ? 4.5 : 6;
+}
+
+function nodeRightExtent(event, workNumber) {
+  if (workNumber) return String(workNumber).length > 2 ? 15 : 14;
+  return nodeClearance(event);
+}
+
+function buildEventPositions(events, left, workNumbers) {
+  const positions = new Map();
+  const previousByLane = new Map();
+  let previousGlobalX = left - 8;
+  events.forEach((event) => {
+    const key = laneKey(event);
+    const previous = previousByLane.get(key);
+    let x = previousGlobalX + 8;
+    if (previous) {
+      const minimumLaneGap = nodeRightExtent(
+        previous.event,
+        workNumbers.get(workKey(previous.event)),
+      ) + nodeClearance(event) + 14;
+      x = Math.max(x, previous.x + minimumLaneGap);
+    }
+    positions.set(event.event_id, x);
+    previousByLane.set(key, { event, x });
+    previousGlobalX = x;
+  });
+  return positions;
+}
+
+function eventConnectorPath(previous, event, startX, startY, endX, endY) {
+  const available = Math.max(0, endX - startX);
+  const targetInset = Math.min(nodeClearance(event) + 2.5, Math.max(3, available - 5));
+  const sourceInset = Math.min(
+    nodeClearance(previous) + 1,
+    Math.max(0, available - targetInset - 5),
+  );
+  return connectorPath(startX + sourceInset, startY, endX - targetInset, endY);
+}
+
+function clearLandingX(desiredX, occupied, minimumX, maximumX) {
+  const clearance = 12;
+  const candidates = [0, 12, -12, 20, -20, 28, -28]
+    .map((offset) => desiredX + offset)
+    .filter((value) => value >= minimumX && value <= maximumX);
+  return candidates.find((value) => occupied.every((nodeX) => Math.abs(nodeX - value) >= clearance))
+    ?? desiredX;
+}
+
+function crossLanePath(sourceX, sourceY, targetX, targetY) {
+  if (sourceX === targetX) return `M ${sourceX} ${sourceY} V ${targetY}`;
+  return `M ${sourceX} ${sourceY} H ${targetX} V ${targetY}`;
+}
+
 function eventNode(event, x, y, type, selfResponse) {
   if (event.event === "contention-decision-proposed" || offeredEvents.has(event.event)) {
     return element("path", { d: `M ${x - 6} ${y - 7} L ${x + 7} ${y} L ${x - 6} ${y + 7} Z` });
@@ -195,6 +270,22 @@ function setTooltip(
     identity.textContent = [event.owner, workNumber ? null : event.scope, event.details?.status].filter(Boolean).join(" · ") || event.event;
   }
   tooltip.append(title, meta, identity);
+  if (event.run_id) {
+    const run = document.createElement("span");
+    run.textContent = `${t("flow.run")} ${short(event.run_id, 34)}`;
+    tooltip.append(run);
+  }
+  if (semantics.handoff.has(event.event)) {
+    const peer = interactionPeer(event);
+    if (peer?.owner) {
+      const target = document.createElement("span");
+      target.textContent = [
+        `${t("flow.target")} ${short(peer.owner, 24)}`,
+        peer.runKey ? short(peer.runKey.split("\u0000")[1], 28) : t("flow.ownerLevel"),
+      ].join(" · ");
+      tooltip.append(target);
+    }
+  }
   if (workNumber && event.scope) {
     const work = document.createElement("span");
     work.textContent = `${t("flow.work")} ${workNumber} · ${event.scope}`;
@@ -265,12 +356,12 @@ function marker(defs, name, colorClass) {
     viewBox: "0 0 10 10",
     refX: 9,
     refY: 5,
-    markerWidth: 6,
-    markerHeight: 6,
+    markerWidth: 4.5,
+    markerHeight: 4.5,
     orient: "auto-start-reverse",
   });
   value.classList.add(`marker-${colorClass}`);
-  value.append(element("path", { d: "M 0 0 L 10 5 L 0 10 z" }));
+  value.append(element("path", { d: "M 2 2 L 8 5 L 2 8" }));
   defs.append(value);
 }
 
@@ -278,25 +369,24 @@ export function renderFlow(svg, tooltip, dashboard, projectNames) {
   svg.replaceChildren();
   tooltip.hidden = true;
   const events = dashboard.events;
-  if (!events.length) return { laneCount: 0, eventCount: 0, workCount: 0 };
+  if (!events.length) {
+    return { laneCount: 0, runCount: 0, eventCount: 0, workCount: 0 };
+  }
 
-  const grouped = new Map();
+  const left = 216;
+  const layout = buildFlowLayout(events);
+  const lanes = layout.runLanes;
+  const laneKeys = new Set(lanes.map((lane) => lane.key));
+  const lanePositions = layout.runPositions;
+  const ownerRowsByOwner = new Map(layout.ownerRows.map((row) => [row.owner, row]));
+  const workNumbers = new Map();
   events.forEach((event) => {
-    const key = laneKey(event);
-    if (!grouped.has(key)) grouped.set(key, []);
-    grouped.get(key).push(event);
+    const key = workKey(event);
+    if (key && !workNumbers.has(key)) workNumbers.set(key, workNumbers.size + 1);
   });
-  const lanes = [...grouped.entries()]
-    .map(([key, values]) => ({ key, values, first: values[0].at }))
-    .sort((a, b) => b.first.localeCompare(a.first));
-  const laneIndex = new Map(lanes.map((lane, index) => [lane.key, index]));
-
-  const left = 178;
-  const top = 48;
-  const laneHeight = 72;
-  const step = events.length > 120 ? 25 : events.length > 60 ? 31 : 42;
-  const width = Math.max(980, left + 100 + events.length * step);
-  const height = top + lanes.length * laneHeight + 34;
+  const positions = buildEventPositions(events, left, workNumbers);
+  const width = Math.max(980, positions.get(events.at(-1).event_id) + 70);
+  const height = layout.height;
   svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
   svg.setAttribute("width", width);
   svg.setAttribute("height", height);
@@ -311,12 +401,63 @@ export function renderFlow(svg, tooltip, dashboard, projectNames) {
   marker(defs, "rejected", "rejected");
   svg.append(defs);
 
-  const positions = new Map();
-  events.forEach((event, index) => positions.set(event.event_id, left + index * step));
-  const workNumbers = new Map();
+  layout.groups.forEach((group) => {
+    const background = element("rect", {
+      x: 5,
+      y: group.top,
+      width: width - 10,
+      height: group.height,
+      rx: 8,
+    });
+    background.classList.add("flow-group-band");
+    if (group.related) background.classList.add("related");
+    svg.append(background);
+    if (group.related) {
+      const rail = element("rect", {
+        x: 4,
+        y: group.top + 5,
+        width: 3,
+        height: Math.max(8, group.height - 10),
+        rx: 1.5,
+      });
+      rail.classList.add("flow-group-rail");
+      svg.append(rail);
+    }
+    if (group.separatorY !== null) {
+      const divider = element("line", {
+        x1: 0,
+        y1: group.separatorY,
+        x2: width,
+        y2: group.separatorY,
+      });
+      divider.classList.add("flow-group-divider");
+      svg.append(divider);
+    }
+  });
+
+  const nodeXsByLane = new Map();
   events.forEach((event) => {
-    const key = workKey(event);
-    if (key && !workNumbers.has(key)) workNumbers.set(key, workNumbers.size + 1);
+    const x = positions.get(event.event_id);
+    const key = laneKey(event);
+    if (!nodeXsByLane.has(key)) nodeXsByLane.set(key, []);
+    nodeXsByLane.get(key).push(x);
+  });
+  const ownerGuideExtents = new Map(
+    layout.ownerRows.map((row) => [row.owner, { start: Infinity, end: -Infinity }]),
+  );
+  lanes.forEach((lane) => {
+    const extent = ownerGuideExtents.get(lane.owner);
+    extent.start = Math.min(extent.start, positions.get(lane.values[0].event_id));
+    extent.end = Math.max(extent.end, positions.get(lane.values[lane.values.length - 1].event_id));
+  });
+  events.forEach((event) => {
+    const peer = interactionPeer(event);
+    if (!peer?.owner || (peer.runKey && laneKeys.has(peer.runKey))) return;
+    const extent = ownerGuideExtents.get(peer.owner);
+    if (!extent) return;
+    const x = positions.get(event.event_id);
+    extent.start = Math.min(extent.start, x);
+    extent.end = Math.max(extent.end, x);
   });
   const proposals = new Map(
     events
@@ -332,20 +473,66 @@ export function renderFlow(svg, tooltip, dashboard, projectNames) {
       responses.get(key).push(event);
     });
 
-  lanes.forEach((lane, index) => {
-    const y = top + index * laneHeight;
-    const [owner, runId] = lane.key.split("\u0000");
-    const band = element("rect", { x: 0, y: y - 27, width, height: laneHeight });
+  layout.ownerRows.forEach((row) => {
+    const band = element("rect", {
+      x: 10,
+      y: row.top + 3,
+      width: width - 20,
+      height: Math.max(16, row.height - 6),
+      rx: 7,
+    });
     band.classList.add("flow-band");
     svg.append(band);
-    const ownerText = element("text", { x: 16, y: y - 2 });
+    const extent = ownerGuideExtents.get(row.owner);
+    if (Number.isFinite(extent?.start) && Number.isFinite(extent?.end)) {
+      const guide = element("line", {
+        x1: extent.start,
+        y1: row.y,
+        x2: Math.max(extent.start + 12, extent.end),
+        y2: row.y,
+      });
+      guide.classList.add("owner-guide");
+      svg.append(guide);
+    }
+    const identity = element("rect", {
+      x: 14,
+      y: row.y - 20,
+      width: 194,
+      height: 40,
+      rx: 7,
+    });
+    identity.classList.add("owner-identity-card");
+    if (row.ownerOnly) identity.classList.add("owner-only");
+    const ownerBadge = element("rect", {
+      x: 21,
+      y: row.y - 12,
+      width: 34,
+      height: 17,
+      rx: 8.5,
+    });
+    ownerBadge.classList.add("owner-badge");
+    const ownerBadgeText = element("text", {
+      x: 38,
+      y: row.y - 1,
+      "text-anchor": "middle",
+    });
+    ownerBadgeText.classList.add("owner-badge-text");
+    ownerBadgeText.textContent = "OWNER";
+    const ownerText = element("text", { x: 61, y: row.y - 1 });
     ownerText.classList.add("lane-owner");
-    ownerText.textContent = short(owner, 22);
-    const runText = element("text", { x: 16, y: y + 18 });
+    ownerText.textContent = short(row.owner, 20);
+    const runText = element("text", { x: 22, y: row.y + 14 });
     runText.classList.add("lane-run");
-    runText.textContent = short(runId, 25);
-    svg.append(ownerText, runText);
+    runText.textContent = row.ownerOnly
+      ? t("flow.noRuns")
+      : row.runs.length === 1
+      ? short(row.runs[0].runId, 25)
+      : `${row.runs.length} ${t("flow.runSegments")}`;
+    svg.append(identity, ownerBadge, ownerBadgeText, ownerText, runText);
+  });
 
+  lanes.forEach((lane) => {
+    const y = lanePositions.get(lane.key);
     lane.values.forEach((event, eventIndex) => {
       if (eventIndex === 0) return;
       const previous = lane.values[eventIndex - 1];
@@ -359,17 +546,27 @@ export function renderFlow(svg, tooltip, dashboard, projectNames) {
       const startY = y + branchOffset(previous);
       const endY = y + branchOffset(event);
       const path = element("path", {
-        d: connectorPath(startX, startY, endX, endY),
+        d: eventConnectorPath(previous, event, startX, startY, endX, endY),
         "marker-end": `url(#arrow-${type})`,
       });
       path.classList.add("flow-edge", type);
       svg.append(path);
     });
+    const ownerRow = ownerRowsByOwner.get(lane.owner);
+    if (ownerRow?.runs.length > 1) {
+      const runLabel = element("text", {
+        x: positions.get(lane.values[0].event_id) + 10,
+        y: y - 11,
+      });
+      runLabel.classList.add("run-segment-label");
+      runLabel.textContent = `R${lane.ordinal}`;
+      svg.append(runLabel);
+    }
   });
 
   events.forEach((event) => {
     const x = positions.get(event.event_id);
-    const laneY = top + laneIndex.get(laneKey(event)) * laneHeight;
+    const laneY = lanePositions.get(laneKey(event));
     const y = laneY + branchOffset(event);
     const type = semantic(event.event);
     const proposal = event.event === "contention-decision-responded"
@@ -385,6 +582,7 @@ export function renderFlow(svg, tooltip, dashboard, projectNames) {
       [
         eventLabel(event.event),
         event.owner,
+        event.run_id,
         event.scope,
         event.transaction_id,
         workNumber ? `${t("flow.work")} ${workNumber}` : null,
@@ -435,18 +633,29 @@ export function renderFlow(svg, tooltip, dashboard, projectNames) {
     }
 
     if (semantics.handoff.has(event.event)) {
-      const target = event.details?.target_owner;
-      const targetLane = target
-        ? lanes.find((lane) => lane.key.startsWith(`${target}\u0000`))
-        : null;
-      if (targetLane) {
-        const targetY = top + laneIndex.get(targetLane.key) * laneHeight;
-        const direction = targetY > y ? 1 : -1;
+      const peer = interactionPeer(event);
+      const exactTarget = Boolean(peer?.runKey && laneKeys.has(peer.runKey));
+      const targetRow = peer?.owner ? ownerRowsByOwner.get(peer.owner) : null;
+      const targetCenterY = exactTarget ? lanePositions.get(peer.runKey) : targetRow?.y;
+      const sameSource = exactTarget
+        ? peer.runKey === laneKey(event)
+        : peer?.owner === event.owner;
+      if (Number.isFinite(targetCenterY) && !sameSource && targetCenterY !== laneY) {
+        const direction = targetCenterY > y ? 1 : -1;
+        const targetX = exactTarget
+          ? clearLandingX(x, nodeXsByLane.get(peer.runKey) ?? [], left, width - 12)
+          : x;
+        const targetY = exactTarget
+          ? targetCenterY - direction * 8
+          : direction > 0
+            ? targetRow.top + 3
+            : targetRow.top + targetRow.height - 3;
         const cross = element("path", {
-          d: `M ${x} ${y + direction * 7} V ${targetY - direction * 7}`,
+          d: crossLanePath(x, y + direction * 7, targetX, targetY),
           "marker-end": "url(#arrow-handoff)",
         });
         cross.classList.add("flow-edge", "handoff", "cross-lane");
+        if (!exactTarget) cross.classList.add("owner-level");
         svg.insertBefore(cross, node);
       }
     }
@@ -455,14 +664,21 @@ export function renderFlow(svg, tooltip, dashboard, projectNames) {
       const linkedLanes = new Set();
       (event.details?.contention_participants ?? []).forEach((participant) => {
         const targetKey = `${participant.owner}\u0000${participant.run_id}`;
-        if (targetKey === laneKey(event) || linkedLanes.has(targetKey) || !laneIndex.has(targetKey)) {
+        if (targetKey === laneKey(event) || linkedLanes.has(targetKey) || !laneKeys.has(targetKey)) {
           return;
         }
         linkedLanes.add(targetKey);
-        const targetY = top + laneIndex.get(targetKey) * laneHeight;
+        const targetY = lanePositions.get(targetKey);
+        if (targetY === laneY) return;
         const direction = targetY > y ? 1 : -1;
+        const targetX = clearLandingX(
+          x,
+          nodeXsByLane.get(targetKey) ?? [],
+          left,
+          width - 12,
+        );
         const cross = element("path", {
-          d: `M ${x} ${y + direction * 8} V ${targetY - direction * 8}`,
+          d: crossLanePath(x, y + direction * 8, targetX, targetY - direction * 8),
           "marker-end": "url(#arrow-decision)",
         });
         cross.classList.add("flow-edge", "decision", "cross-lane");
@@ -472,12 +688,19 @@ export function renderFlow(svg, tooltip, dashboard, projectNames) {
 
     if (event.event === "contention-decision-responded" && proposal) {
       const targetKey = laneKey(proposal);
-      if (targetKey !== laneKey(event) && laneIndex.has(targetKey)) {
-        const targetY = top + laneIndex.get(targetKey) * laneHeight;
+      if (targetKey !== laneKey(event) && laneKeys.has(targetKey)) {
+        const targetY = lanePositions.get(targetKey);
+        if (targetY === laneY) return;
         const direction = targetY > y ? 1 : -1;
         const response = event.details?.accepted ? "accepted" : "rejected";
+        const targetX = clearLandingX(
+          x,
+          nodeXsByLane.get(targetKey) ?? [],
+          left,
+          width - 12,
+        );
         const cross = element("path", {
-          d: `M ${x} ${y + direction * 8} V ${targetY - direction * 8}`,
+          d: crossLanePath(x, y + direction * 8, targetX, targetY - direction * 8),
           "marker-end": `url(#arrow-${response})`,
         });
         cross.classList.add("flow-edge", response, "cross-lane");
@@ -489,11 +712,12 @@ export function renderFlow(svg, tooltip, dashboard, projectNames) {
     const linkedLanes = new Set();
     (event.details?.contention_participants ?? []).forEach((participant) => {
       const targetKey = `${participant.owner}\u0000${participant.run_id}`;
-      if (targetKey === laneKey(event) || linkedLanes.has(targetKey) || !laneIndex.has(targetKey)) {
+      if (targetKey === laneKey(event) || linkedLanes.has(targetKey) || !laneKeys.has(targetKey)) {
         return;
       }
       linkedLanes.add(targetKey);
-      const targetY = top + laneIndex.get(targetKey) * laneHeight;
+      const targetY = lanePositions.get(targetKey);
+      if (targetY === laneY) return;
       const direction = targetY > y ? 1 : -1;
       const cross = element("path", {
         d: `M ${x} ${y + direction * 8} V ${targetY - direction * 8}`,
@@ -522,5 +746,11 @@ export function renderFlow(svg, tooltip, dashboard, projectNames) {
   lastText.textContent = timestamp(last.at);
   svg.append(firstText, lastText);
 
-  return { laneCount: lanes.length, eventCount: events.length, workCount: workNumbers.size };
+  return {
+    laneCount: layout.ownerRows.length,
+    runCount: lanes.length,
+    eventCount: events.length,
+    workCount: workNumbers.size,
+    relationshipGroupCount: layout.groupCount,
+  };
 }

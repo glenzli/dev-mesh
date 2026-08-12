@@ -27,7 +27,11 @@ DETAIL_FIELDS = (
     "branch",
     "actual_path_count",
     "source_owner",
+    "source_run_id",
     "target_owner",
+    "target_run_id",
+    "message_id",
+    "interaction_kind",
     "work_state_id",
     "direct_commit_id",
 )
@@ -145,8 +149,14 @@ def build_dashboard(
         for event in events
         if event.get("transaction_id")
     }
+    displayed_handoffs = {
+        (str(event["workspace_id"]), str(event["handoff_id"]))
+        for event in events
+        if event.get("handoff_id")
+    }
     contention_participants: dict[tuple[str, str], list[dict[str, str]]] = {}
     transaction_details: dict[tuple[str, str], dict[str, object]] = {}
+    handoff_participants: dict[tuple[str, str], dict[str, str]] = {}
     snapshot_arguments: list[object] = [PROTOCOL_VERSION]
     snapshot_where = "protocol_version = ?"
     if workspace is not None:
@@ -190,6 +200,20 @@ def build_dashboard(
                     for field in ("branch", "canonical_branch", "actual_path_count")
                     if record.get(field) is not None
                 }
+        if kind == "handoff":
+            handoff_id = record.get("handoff_id")
+            key = (identifier, str(handoff_id))
+            if isinstance(handoff_id, str) and key in displayed_handoffs:
+                handoff_participants[key] = {
+                    field: str(record[field])
+                    for field in (
+                        "source_owner",
+                        "source_run_id",
+                        "target_owner",
+                        "target_run_id",
+                    )
+                    if isinstance(record.get(field), str)
+                }
         if not _active_snapshot(record, kind, lifecycle):
             continue
         active_counts_by_workspace[identifier][kind] += 1
@@ -221,6 +245,46 @@ def build_dashboard(
             )
             for field, value in details.items():
                 event["details"].setdefault(field, value)
+        handoff_id = event.get("handoff_id")
+        if handoff_id:
+            participants = handoff_participants.get(
+                (str(event["workspace_id"]), str(handoff_id)),
+                {},
+            )
+            for field, value in participants.items():
+                event["details"].setdefault(field, value)
+
+    # Messages are addressed to an owner, not an arbitrary Run. Once an acknowledgement
+    # supplies the exact receiving Run, project that identity onto both ends of the visible
+    # exchange so the Console can draw a factual Run-to-Run relationship.
+    message_participants: dict[tuple[str, str], dict[str, str]] = {}
+    for event in events:
+        message_id = event["details"].get("message_id")
+        if not isinstance(message_id, str):
+            continue
+        key = (str(event["workspace_id"]), message_id)
+        participants = message_participants.setdefault(key, {})
+        if event["event"] == "message-sent":
+            if isinstance(event.get("owner"), str) and isinstance(event.get("run_id"), str):
+                participants.setdefault("source_owner", str(event["owner"]))
+                participants.setdefault("source_run_id", str(event["run_id"]))
+            target_owner = event["details"].get("target_owner")
+            if isinstance(target_owner, str):
+                participants.setdefault("target_owner", target_owner)
+        elif event["event"] == "message-acknowledged":
+            if isinstance(event.get("owner"), str) and isinstance(event.get("run_id"), str):
+                participants.setdefault("target_owner", str(event["owner"]))
+                participants.setdefault("target_run_id", str(event["run_id"]))
+
+    for event in events:
+        message_id = event["details"].get("message_id")
+        if not isinstance(message_id, str):
+            continue
+        for field, value in message_participants.get(
+            (str(event["workspace_id"]), message_id),
+            {},
+        ).items():
+            event["details"].setdefault(field, value)
 
     operational = build_report(
         connection,

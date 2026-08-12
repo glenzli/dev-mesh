@@ -371,7 +371,11 @@ function renderGraph() {
   const result = renderFlow(nodes.flow, nodes["flow-tooltip"], state.dashboard, projectNames());
   nodes["flow-empty"].hidden = result.eventCount !== 0;
   nodes["flow-scroll"].classList.toggle("is-empty", result.eventCount === 0);
-  const pieces = [`${formatNumber(result.laneCount)} ${t("flow.runs")}`, `${formatNumber(result.eventCount)} ${t("flow.events")}`];
+  const pieces = [
+    `${formatNumber(result.laneCount)} ${t("flow.owners")}`,
+    `${formatNumber(result.runCount)} ${t("flow.runSegments")}`,
+    `${formatNumber(result.eventCount)} ${t("flow.events")}`,
+  ];
   if (result.workCount) pieces.push(`${formatNumber(result.workCount)} ${t("flow.works")}`);
   if (state.dashboard.selection.events_truncated) pieces.push(t("flow.truncated"));
   nodes["flow-summary"].textContent = pieces.join(" · ");
