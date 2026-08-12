@@ -44,6 +44,39 @@ ACTIVE_STATUSES = {
     "direct-commit": set(SNAPSHOT_STATUSES[("direct-commit", "active")]),
 }
 
+MAX_PENDING_ACKNOWLEDGEMENTS = 64
+
+
+def _pending_acknowledgements(
+    events: list[dict[str, object]],
+) -> tuple[list[dict[str, object]], int, int]:
+    required: dict[tuple[str, str], dict[str, object]] = {}
+    acknowledged: set[tuple[str, str]] = set()
+    for item in events:
+        record = item["record"]
+        message_id = record.get("message_id")
+        if not isinstance(message_id, str):
+            continue
+        identity = (str(item["workspace_id"]), message_id)
+        if item["event"] == "message-sent" and record.get("requires_ack") is True:
+            required[identity] = {
+                "workspace_id": identity[0],
+                "message_id": message_id,
+                "at": str(item["at"]),
+                "source_owner": record.get("source_owner"),
+                "source_run_id": record.get("run_id"),
+                "target_owner": record.get("target_owner"),
+                "topic": record.get("topic"),
+            }
+        elif item["event"] == "message-acknowledged":
+            acknowledged.add(identity)
+    pending = sorted(
+        (value for identity, value in required.items() if identity not in acknowledged),
+        key=lambda item: (str(item["at"]), str(item["message_id"])),
+    )
+    acknowledged_required = sum(identity in acknowledged for identity in required)
+    return pending, len(required), acknowledged_required
+
 
 def build_report(
     connection: sqlite3.Connection,
@@ -186,6 +219,9 @@ def build_report(
     ]
     collection_errors = [item for item in workspaces if item.get("last_error")]
     not_observed_workspaces = [item for item in workspaces if item.get("not_observed_since")]
+    pending_acknowledgements, acknowledgement_requests, acknowledged_requests = (
+        _pending_acknowledgements(events)
+    )
     diagnostics, diagnostic_summary, cutover_readiness = project_diagnostics(
         events,
         snapshots,
@@ -195,6 +231,7 @@ def build_report(
         stale_after_seconds=stale_after_seconds,
         collection_errors=collection_errors,
         not_observed_workspaces=not_observed_workspaces,
+        pending_acknowledgements=pending_acknowledgements,
     )
     return {
         "schema": 1,
@@ -235,6 +272,17 @@ def build_report(
                 "handoff-rejected",
                 "handoff-withdrawn",
             )
+        },
+        "pending_acknowledgements": {
+            "count": len(pending_acknowledgements),
+            "requested": acknowledgement_requests,
+            "acknowledged": acknowledged_requests,
+            "oldest_at": (
+                pending_acknowledgements[0]["at"] if pending_acknowledgements else None
+            ),
+            "shown": min(len(pending_acknowledgements), MAX_PENDING_ACKNOWLEDGEMENTS),
+            "truncated": len(pending_acknowledgements) > MAX_PENDING_ACKNOWLEDGEMENTS,
+            "items": pending_acknowledgements[:MAX_PENDING_ACKNOWLEDGEMENTS],
         },
         "contention": {
             "opened": event_counts["contention-opened"],

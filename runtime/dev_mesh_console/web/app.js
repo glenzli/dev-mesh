@@ -32,6 +32,15 @@ function formatTime(value) {
   }).format(new Date(value));
 }
 
+function formatCompactAge(value) {
+  if (!value) return "";
+  const seconds = Math.max(0, Math.floor((Date.now() - new Date(value).getTime()) / 1000));
+  if (seconds < 60) return language() === "zh" ? "刚刚" : "now";
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}${language() === "zh" ? "分" : "m"}`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}${language() === "zh" ? "时" : "h"}`;
+  return `${Math.floor(seconds / 86400)}${language() === "zh" ? "天" : "d"}`;
+}
+
 function short(value, length = 36) {
   if (!value) return "—";
   return value.length > length ? `${value.slice(0, length - 1)}…` : value;
@@ -58,6 +67,21 @@ function activeTotal(active) {
   return Object.values(active ?? {}).reduce((total, value) => total + Number(value), 0);
 }
 
+function projectHasSignal(project) {
+  return project.event_count > 0
+    || activeTotal(project.active) > 0
+    || project.diagnostic_count > 0
+    || Boolean(project.collection_error)
+    || Boolean(project.not_observed_since);
+}
+
+function visibleProjects() {
+  const scoped = state.dashboard.projects.filter(
+    (project) => !state.workspace || project.workspace_id === state.workspace,
+  );
+  return state.workspace ? scoped : scoped.filter(projectHasSignal);
+}
+
 function projectNames() {
   return new Map((state.dashboard?.projects ?? []).map((project) => [project.workspace_id, project.name]));
 }
@@ -71,12 +95,27 @@ function renderMetrics() {
   const dashboard = state.dashboard;
   const operational = dashboard.operational;
   const eventCount = dashboard.projects.reduce((sum, item) => sum + item.event_count, 0);
+  const diagnostics = operational.diagnostics ?? [];
+  const pendingOnly = diagnostics.length > 0
+    && diagnostics.every((item) => item.code === "message.ack-stale");
+  const hasCritical = diagnostics.some((item) => item.severity === "critical") || dashboard.collector.last_error;
+  const needsAttention = diagnostics.some((item) => item.code !== "message.ack-stale") || dashboard.collector.last_error;
+  const diagnosticTone = hasCritical ? "danger" : diagnostics.length ? "attention" : "neutral";
+  const controlState = hasCritical
+    ? [t("metrics.controlAttention"), "danger"]
+    : pendingOnly
+      ? [t("metrics.controlPending"), "attention"]
+      : needsAttention
+        ? [t("metrics.controlAttention"), "attention"]
+    : operational.cutover_readiness.ready
+      ? [t("metrics.controlEmpty"), "good"]
+      : [t("metrics.controlActive"), "neutral"];
   const values = [
-    ["workspaces", t("metrics.workspaces"), state.workspace ? 1 : dashboard.projects.length, "neutral"],
+    ["workspaces", t("metrics.workspaces"), visibleProjects().length, "neutral"],
     ["active", t("metrics.active"), activeTotal(operational.active), activeTotal(operational.active) ? "attention" : "neutral"],
     ["events", t("metrics.events"), eventCount, "neutral"],
-    ["diagnostics", t("metrics.diagnostics"), operational.diagnostic_summary.total, operational.diagnostic_summary.total ? "danger" : "neutral"],
-    ["ready", t("metrics.ready"), operational.cutover_readiness.ready ? t("metrics.readyYes") : t("metrics.readyNo"), operational.cutover_readiness.ready ? "good" : "attention"],
+    ["diagnostics", t("metrics.diagnostics"), operational.diagnostic_summary.total, diagnosticTone],
+    ["control", t("metrics.control"), controlState[0], controlState[1]],
   ];
   nodes.metrics.replaceChildren(...values.map(([key, label, value, tone]) => {
     const card = div(`metric-card ${tone}`);
@@ -119,10 +158,15 @@ function renderInsights() {
   const transactions = operational.transaction_outcomes;
   const direct = operational.direct_commit;
   const interactions = operational.interaction_counts;
+  const pending = operational.pending_acknowledgements ?? {
+    count: 0,
+    requested: 0,
+    acknowledged: 0,
+    oldest_at: null,
+  };
   const hot = (contention.hot_paths ?? []).slice(0, 3)
     .map((item) => `${short(item.path, 22)} ×${formatNumber(item.count)}`)
     .join(" · ");
-  const messages = Number(interactions["message-sent"] ?? 0);
   const handoffs = Number(interactions["handoff-offered"] ?? 0);
   nodes.insights.replaceChildren(
     insightCard(
@@ -144,13 +188,14 @@ function renderInsights() {
       ],
     ),
     insightCard(
-      t("insights.interactions"),
-      formatNumber(handoffs + messages),
+      t("insights.pending"),
+      formatNumber(pending.count),
       [
+        [pending.requested, t("insights.requests")],
+        [pending.acknowledged, t("insights.acknowledged")],
         [handoffs, t("insights.handoffs")],
-        [messages, t("insights.messages")],
-        [interactions["message-acknowledged"] ?? 0, t("insights.acknowledged")],
       ],
+      pending.oldest_at ? `${t("insights.oldest")} ${formatCompactAge(pending.oldest_at)}` : "",
     ),
     insightCard(
       t("insights.protocolOnly"),
@@ -159,7 +204,6 @@ function renderInsights() {
         [operational.event_count, t("insights.totalEvents")],
         [activeTotal(operational.active), t("insights.currentAuthority")],
       ],
-      t("insights.protocolOnlyDetail"),
     ),
   );
 }
@@ -186,8 +230,7 @@ function renderWorkspaceOptions() {
 }
 
 function renderProjects() {
-  const projects = state.dashboard.projects
-    .filter((project) => !state.workspace || project.workspace_id === state.workspace)
+  const projects = visibleProjects()
     .sort((left, right) => {
     const leftScore = activeTotal(left.active) * 10000 + left.diagnostic_count * 1000 + left.event_count;
     const rightScore = activeTotal(right.active) * 10000 + right.diagnostic_count * 1000 + right.event_count;
@@ -195,7 +238,7 @@ function renderProjects() {
   });
   nodes["project-count"].textContent = formatNumber(projects.length);
   if (!projects.length) {
-    nodes.projects.replaceChildren(empty("empty.projectsTitle", "empty.projectsBody"));
+    nodes.projects.replaceChildren(empty("empty.quietProjectsTitle", "empty.quietProjectsBody"));
     return;
   }
   nodes.projects.replaceChildren(...projects.map((project) => {
@@ -209,13 +252,21 @@ function renderProjects() {
     root.textContent = project.root;
     identity.append(title, root);
     const facts = div("project-facts");
+    const projectDiagnostics = state.dashboard.operational.diagnostics.filter(
+      (item) => item.workspace_id === project.workspace_id,
+    );
+    const issueTone = projectDiagnostics.some((item) => item.severity === "critical")
+      ? "is-danger"
+      : projectDiagnostics.length
+        ? "is-attention"
+        : "";
     const factsData = [
       [project.event_count, t("project.events")],
       [activeTotal(project.active), t("project.active")],
       [project.diagnostic_count, project.diagnostic_count ? t("project.issues") : t("project.clean")],
     ];
     factsData.forEach(([value, label], index) => {
-      const fact = div(index === 2 && project.diagnostic_count ? "fact is-danger" : "fact");
+      const fact = div(index === 2 && project.diagnostic_count ? `fact ${issueTone}` : "fact");
       const number = document.createElement("b");
       number.textContent = formatNumber(value);
       const text = document.createElement("span");
@@ -267,15 +318,24 @@ function renderDiagnostics() {
   }
   const names = projectNames();
   nodes.diagnostics.replaceChildren(...values.map((item) => {
-    const row = div(`diagnostic-row severity-${item.severity}`);
+    const pending = item.code === "message.ack-stale";
+    const row = div(`diagnostic-row severity-${item.severity}${pending ? " is-pending" : ""}`);
     const badge = document.createElement("span");
     badge.className = "severity-badge";
-    badge.textContent = t(`severity.${item.severity}`);
+    badge.textContent = pending ? t("diagnostic.pendingBadge") : t(`severity.${item.severity}`);
     const identity = div("diagnostic-identity");
     const code = document.createElement("strong");
     code.textContent = diagnosticLabel(item.code);
     const meta = document.createElement("span");
-    meta.textContent = [item.code, names.get(item.workspace_id), short(item.object_id)].filter(Boolean).join(" · ");
+    meta.textContent = pending
+      ? [
+          names.get(item.workspace_id),
+          item.source_owner && item.target_owner ? `${short(item.source_owner)} → ${short(item.target_owner)}` : "",
+          item.at ? `${t("diagnostic.waitingFor")} ${formatCompactAge(item.at)}` : "",
+          item.topic,
+        ].filter(Boolean).join(" · ")
+      : [names.get(item.workspace_id), short(item.object_id)].filter(Boolean).join(" · ");
+    meta.title = [item.code, item.object_id].filter(Boolean).join(" · ");
     identity.append(code, meta);
     row.append(badge, identity);
     return row;
@@ -312,6 +372,7 @@ function renderGraph() {
   nodes["flow-empty"].hidden = result.eventCount !== 0;
   nodes["flow-scroll"].classList.toggle("is-empty", result.eventCount === 0);
   const pieces = [`${formatNumber(result.laneCount)} ${t("flow.runs")}`, `${formatNumber(result.eventCount)} ${t("flow.events")}`];
+  if (result.workCount) pieces.push(`${formatNumber(result.workCount)} ${t("flow.works")}`);
   if (state.dashboard.selection.events_truncated) pieces.push(t("flow.truncated"));
   nodes["flow-summary"].textContent = pieces.join(" · ");
 }
@@ -328,8 +389,14 @@ function render() {
   renderEvents();
   nodes["generated-at"].textContent = formatTime(state.dashboard.generated_at);
   nodes["protocol-version"].textContent = state.dashboard.protocol_version;
-  const degraded = state.dashboard.operational.diagnostic_summary.total > 0 || state.dashboard.collector.last_error;
-  updateStatus(degraded ? "degraded" : "ready", degraded ? "status.degraded" : "status.ready");
+  const diagnostics = state.dashboard.operational.diagnostics ?? [];
+  const needsAttention = diagnostics.some((item) => item.code !== "message.ack-stale")
+    || state.dashboard.collector.last_error;
+  const pending = diagnostics.length > 0 && !needsAttention;
+  updateStatus(
+    needsAttention || pending ? "degraded" : "ready",
+    needsAttention ? "status.degraded" : pending ? "status.pending" : "status.ready",
+  );
 }
 
 async function request(url, options = {}) {

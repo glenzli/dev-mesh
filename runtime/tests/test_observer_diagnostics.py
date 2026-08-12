@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -680,6 +681,97 @@ class ObserverDiagnosticProjectionTest(GitWorkspaceTest):
             report = catalog.report(workspace=workspace_id(self.root))
         self.assertTrue(report["cutover_readiness"]["ready"])
         self.assertEqual(report["cutover_readiness"]["blockers"], {})
+
+    def test_pending_acknowledgements_are_projected_and_stale_requests_are_diagnosed(self) -> None:
+        initialize(self.root)
+        self._event(
+            "message-pending",
+            "message-sent",
+            message_id="message-pending",
+            source_owner="agent-live",
+            target_owner="agent-target",
+            requires_ack=True,
+            topic="coordination",
+        )
+        self._event(
+            "message-acked",
+            "message-sent",
+            message_id="message-acked",
+            source_owner="agent-live",
+            target_owner="agent-target",
+            requires_ack=True,
+            topic="coordination",
+        )
+        self._event(
+            "message-ack",
+            "message-acknowledged",
+            owner="agent-target",
+            run_id="run-target",
+            message_id="message-acked",
+            interaction_kind="request",
+        )
+        database = Path(self.temporary.name) / "observer.sqlite3"
+        with Catalog(database) as catalog:
+            catalog.collect_workspace(self.root)
+            report = catalog.report(workspace=workspace_id(self.root), stale_after_seconds=1)
+        pending = report["pending_acknowledgements"]
+        self.assertEqual(
+            {key: pending[key] for key in ("count", "requested", "acknowledged")},
+            {"count": 1, "requested": 2, "acknowledged": 1},
+        )
+        self.assertEqual(pending["items"][0]["message_id"], "message-pending")
+        self.assertIn("message.ack-stale", report["diagnostic_summary"]["counts"])
+        stale = next(
+            item
+            for item in report["diagnostics"]
+            if item["code"] == "message.ack-stale"
+        )
+        self.assertEqual(
+            {
+                key: stale[key]
+                for key in ("source_owner", "target_owner", "topic")
+            },
+            {
+                "source_owner": "agent-live",
+                "target_owner": "agent-target",
+                "topic": "coordination",
+            },
+        )
+        self.assertIsInstance(stale["at"], str)
+        self.assertNotIn("audit_gaps", report["cutover_readiness"]["blockers"])
+
+    def test_claim_heartbeat_warns_before_it_times_out(self) -> None:
+        initialize(self.root)
+        heartbeat = (datetime.now(UTC) - timedelta(seconds=85)).isoformat().replace(
+            "+00:00", "Z"
+        )
+        self._snapshot(
+            "runs/run-aging.json",
+            {
+                "run_id": "run-aging",
+                "owner": "agent-aging",
+                "status": "active",
+                "joined_at": heartbeat,
+            },
+        )
+        self._snapshot(
+            "claims/scope-aging.json",
+            {
+                "scope": "scope-aging",
+                "owner": "agent-aging",
+                "run_id": "run-aging",
+                "status": "active",
+                "heartbeat_at": heartbeat,
+            },
+        )
+        database = Path(self.temporary.name) / "observer.sqlite3"
+        with Catalog(database) as catalog:
+            catalog.collect_workspace(self.root)
+            report = catalog.report(workspace=workspace_id(self.root), stale_after_seconds=100)
+        codes = {item["code"] for item in report["diagnostics"]}
+        self.assertIn("claim.heartbeat-aging", codes)
+        self.assertNotIn("claim.heartbeat-stale", codes)
+        self.assertNotIn("run.stale", codes)
 
     def test_persisted_recovery_and_terminal_statuses_remain_visible(self) -> None:
         expected_active = {

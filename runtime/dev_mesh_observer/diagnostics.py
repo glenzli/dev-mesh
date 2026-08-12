@@ -110,6 +110,7 @@ def project_diagnostics(
     stale_after_seconds: int,
     collection_errors: list[dict[str, object]] | None = None,
     not_observed_workspaces: list[dict[str, object]] | None = None,
+    pending_acknowledgements: list[dict[str, object]] | None = None,
 ) -> tuple[list[dict[str, object]], dict[str, object], dict[str, object]]:
     """Return bounded findings, full counts, and a non-authoritative cutover view."""
 
@@ -252,8 +253,12 @@ def project_diagnostics(
                         _issue(item, "claim.pending-after-cancel", severity="info")
                     )
             heartbeat = _parse_time(record.get("heartbeat_at"))
-            if heartbeat is not None and (now_time - heartbeat).total_seconds() > stale_after_seconds:
-                diagnostics.append(_issue(item, "claim.heartbeat-stale", severity="info"))
+            if heartbeat is not None:
+                heartbeat_age = (now_time - heartbeat).total_seconds()
+                if heartbeat_age > stale_after_seconds:
+                    diagnostics.append(_issue(item, "claim.heartbeat-stale", severity="info"))
+                elif heartbeat_age >= stale_after_seconds * 0.8:
+                    diagnostics.append(_issue(item, "claim.heartbeat-aging", severity="info"))
             if status in {"released", "published", "aborted"}:
                 diagnostics.append(_issue(item, "claim.finalization-pending"))
 
@@ -364,6 +369,23 @@ def project_diagnostics(
         activity = last_activity_by_run.get(key) or _parse_time(record.get("joined_at"))
         if activity is not None and (now_time - activity).total_seconds() > stale_after_seconds:
             diagnostics.append(_issue(item, "run.stale", severity="info"))
+
+    for pending in pending_acknowledgements or []:
+        sent_at = _parse_time(pending.get("at"))
+        if sent_at is None or (now_time - sent_at).total_seconds() <= stale_after_seconds:
+            continue
+        diagnostics.append(
+            {
+                "code": "message.ack-stale",
+                "severity": "warning",
+                "workspace_id": pending["workspace_id"],
+                "object_id": pending["message_id"],
+                "at": pending.get("at"),
+                "source_owner": pending.get("source_owner"),
+                "target_owner": pending.get("target_owner"),
+                "topic": pending.get("topic"),
+            }
+        )
 
     derived_diagnostics = list(diagnostics)
     for finding in integrity_findings:
