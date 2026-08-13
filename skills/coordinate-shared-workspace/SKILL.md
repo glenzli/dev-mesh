@@ -1,6 +1,6 @@
 ---
 name: coordinate-shared-workspace
-description: Coordinate concurrent Agents or tasks editing one local Git workspace with exact Runs and Claims, bounded status, managed direct commits, handoffs, contention decisions, and short-lived Git microtransactions. Use when work may overlap by path or semantic contract, shared dirty files must be preserved, Git index or canonical branch updates must be serialized, another Agent must acknowledge or receive work, or a crashed workflow needs auditable recovery.
+description: Coordinate concurrent Agents or tasks editing one local Git workspace with exact Runs and Claims, bounded status, managed direct commits, recorded handoffs, contention decisions, and short-lived Git microtransactions. Use when work may overlap by path or semantic contract, shared dirty files must be preserved, Git index or canonical branch updates must be serialized, another Agent must be contacted through real task controls and the action recorded, or a crashed workflow needs auditable recovery.
 ---
 
 # Coordinate a Shared Workspace
@@ -108,17 +108,28 @@ python3 <skill>/scripts/coord.py --root ROOT leave \
 Do not leave `completed` while this Run still owns active authority. A failed or abandoned Run
 retains its authority until an explicit same-owner recovery.
 
-## Communicate without transferring authority
+## Execute communication, then record it
 
-Dev Mesh messages are passive workspace-local records. `send`, acknowledgement, and handoff never
-create, deliver to, start, resume, or wake a Codex task, and an Owner is not a Codex task address.
-Use Codex task controls to contact the actual target first; record Dev Mesh correlation only after
-the target task id is known.
+Dev Mesh is the execution record, not the communication transport. Treat `send` as
+`record-message` and a handoff as `record-handoff-offer`:
 
-Use `send --kind notice` for information and `send --kind request --requires-ack` for a decision.
-Use a caller-supplied stable `--handoff-id` for `--kind handoff`; retry with the same id after an
-uncertain result. Acknowledging a handoff records acceptance but does not silently transfer a
-Claim. Load the contention reference for the full handoff sequence.
+1. Identify the real target task. Use the current environment's task, team, thread, or subagent
+   control to actually send the notice, request, or handoff. Create or resume the target task first
+   when necessary.
+2. If that real communication action fails or is unavailable, stop and report that the target was
+   not contacted. Do not run Dev Mesh `send` and do not claim that notification or handoff occurred.
+3. After the real action succeeds, run Dev Mesh `send` to persist bounded correlation evidence.
+   Instruct the receiver to run `ack` with its exact active Run when acknowledgement is required.
+
+A successful Dev Mesh `send`, `ack`, or handoff command means only that a workspace-local record was
+persisted. It never creates, delivers to, starts, resumes, or wakes a Codex task. `--target-owner` is
+an authority identity, not a task address, and `--requires-ack` does not contact or poll the target.
+
+After executing the real communication, use `send --kind notice` to record information and
+`send --kind request --requires-ack` to record a decision request. Use a caller-supplied stable
+`--handoff-id` for `--kind handoff`; retry with the same id after an uncertain recording result.
+Acknowledging a handoff records acceptance but does not silently transfer a Claim. Load the
+contention reference for the full handoff sequence.
 
 When a Codex task in another Git workspace is created, messaged, awaited, or handed development
 work, load [cross-project-collaboration.md](references/cross-project-collaboration.md). Record one

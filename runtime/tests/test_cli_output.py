@@ -143,3 +143,55 @@ class CliOutputTest(GitWorkspaceTest):
         self.assertEqual(compact["participants"]["count"], 2)
         self.assertEqual(compact["next_action"], "coordinator_proposes_bounded_decision")
         self.assertNotIn("opened_event", compact)
+
+    def test_send_output_states_that_delivery_is_external(self) -> None:
+        compact = project(
+            "send",
+            {
+                "message_id": "message-1",
+                "source_owner": "agent-a",
+                "target_owner": "agent-b",
+                "requires_ack": True,
+            },
+            verbose=False,
+        )
+
+        self.assertEqual(compact["dev_mesh_effect"], "record_persisted")
+        self.assertEqual(
+            compact["external_task_delivery"],
+            "not_performed_by_dev_mesh",
+        )
+        self.assertFalse(compact["target_task_woken_by_dev_mesh"])
+        self.assertEqual(
+            compact["next_action"],
+            "ensure_actual_task_delivery_then_wait_for_acknowledgement",
+        )
+
+        notice = project(
+            "send",
+            {
+                "message_id": "message-2",
+                "source_owner": "agent-a",
+                "target_owner": "agent-b",
+                "requires_ack": False,
+            },
+            verbose=False,
+        )
+        self.assertEqual(notice["next_action"], "ensure_actual_task_delivery")
+
+        verbose = project(
+            "send",
+            {
+                "message_id": "message-3",
+                "source_owner": "agent-a",
+                "target_owner": "agent-b",
+                "requires_ack": True,
+                "body": "bounded checkpoint",
+            },
+            verbose=True,
+        )
+        self.assertEqual(verbose["dev_mesh_effect"], "record_persisted")
+        self.assertEqual(
+            verbose["next_action"],
+            "ensure_actual_task_delivery_then_wait_for_acknowledgement",
+        )

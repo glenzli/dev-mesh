@@ -86,7 +86,13 @@ expires, using the exact expected epoch. This transfers the coordination role, n
 
 ## Transfer responsibility
 
-Send a handoff with a stable caller-supplied id so uncertain retries converge:
+First use the current environment's actual task, team, thread, or subagent communication control to
+deliver the handoff to the real target task. If the target task does not exist, create or dispatch it
+before continuing. If delivery fails, stop: do not write a Dev Mesh handoff and do not describe the
+target as notified.
+
+After actual delivery succeeds, record the handoff with a stable caller-supplied id so uncertain
+recording retries converge:
 
 ```bash
 python3 <skill>/scripts/coord.py --root ROOT send \
@@ -96,7 +102,8 @@ python3 <skill>/scripts/coord.py --root ROOT send \
   --subject "bounded responsibility" --body "checkpoint and validation state"
 ```
 
-The target acknowledges the returned message id with its exact active Run:
+The sender must provide the returned message id to the target through the actual communication
+channel. The target then explicitly records acknowledgement with its exact active Run:
 
 ```bash
 python3 <skill>/scripts/coord.py --root ROOT ack \
@@ -104,9 +111,10 @@ python3 <skill>/scripts/coord.py --root ROOT ack \
   --note "accepted"
 ```
 
-Acceptance does not transfer a Claim. Release/recreate a Claim, or use `tx-handoff` for an active
-transaction. Reject or withdraw with an explicit stable reason code when the transfer will not
-occur.
+`send` success proves only that the offer was recorded; it does not prove delivery and it does not
+run `ack` for the receiver. Recorded acceptance does not transfer a Claim. Release/recreate a Claim,
+or use `tx-handoff` for an active transaction. Reject or withdraw with an explicit stable reason
+code when the transfer will not occur.
 
 ## Use a temporary Git transaction
 

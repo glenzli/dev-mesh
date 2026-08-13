@@ -159,7 +159,11 @@ def _next_action(command: str, value: Mapping[str, object]) -> str | None:
     if command == "contention-open":
         return "coordinator_proposes_bounded_decision"
     if command == "send":
-        return "wait_for_acknowledgement" if value.get("requires_ack") else "done"
+        return (
+            "ensure_actual_task_delivery_then_wait_for_acknowledgement"
+            if value.get("requires_ack")
+            else "ensure_actual_task_delivery"
+        )
     if command == "cross-project-open":
         return "include_correlation_in_target_task_message"
     if command == "cross-project-bind":
@@ -311,7 +315,13 @@ def project(
             return dict(selected)
         return _compact_status(selected, filtered=filtered)
     if verbose:
-        return dict(selected)
+        result = dict(selected)
+        if command == "send":
+            result["next_action"] = _next_action(command, selected)
+            result["dev_mesh_effect"] = "record_persisted"
+            result["external_task_delivery"] = "not_performed_by_dev_mesh"
+            result["target_task_woken_by_dev_mesh"] = False
+        return result
     result = _record(selected)
     for key, item in selected.items():
         if key in _COLLECTION_KEYS and isinstance(item, list):
@@ -319,4 +329,8 @@ def project(
     next_action = _next_action(command, selected)
     if next_action is not None:
         result["next_action"] = next_action
+    if command == "send":
+        result["dev_mesh_effect"] = "record_persisted"
+        result["external_task_delivery"] = "not_performed_by_dev_mesh"
+        result["target_task_woken_by_dev_mesh"] = False
     return result
