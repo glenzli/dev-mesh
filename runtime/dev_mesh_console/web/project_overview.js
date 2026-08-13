@@ -24,11 +24,37 @@ function svgElement(name, attributes = {}) {
   return node;
 }
 
-function connectedComponents(nodes, edges) {
+function hintGroups(projection, nodeById) {
+  const projected = projection?.hint_groups;
+  const rawGroups = Array.isArray(projected) && projected.length
+    ? projected
+    : (projection?.edges ?? [])
+      .filter((edge) => Number(edge.same_run_hint_count) > 0)
+      .map((edge) => ({
+        workspace_ids: [edge.source_workspace_id, edge.target_workspace_id],
+        same_run_hint_count: edge.same_run_hint_count,
+        latest_at: edge.latest_at,
+        samples: edge.samples,
+      }));
+  return rawGroups.map((group) => ({
+    ...group,
+    workspace_ids: [...new Set(group.workspace_ids ?? [])]
+      .filter((identifier) => nodeById.has(identifier)),
+  })).filter((group) => group.workspace_ids.length > 1);
+}
+
+function connectedComponents(nodes, edges, groups) {
   const adjacency = new Map(nodes.map((node) => [node.workspace_id, new Set()]));
   edges.forEach((edge) => {
     adjacency.get(edge.source_workspace_id)?.add(edge.target_workspace_id);
     adjacency.get(edge.target_workspace_id)?.add(edge.source_workspace_id);
+  });
+  groups.forEach((group) => {
+    const [first, ...rest] = group.workspace_ids;
+    rest.forEach((identifier) => {
+      adjacency.get(first)?.add(identifier);
+      adjacency.get(identifier)?.add(first);
+    });
   });
   const unseen = new Set(adjacency.keys());
   const result = [];
@@ -62,17 +88,24 @@ export function projectGraphLayout(
     (edge) => nodeById.has(edge.source_workspace_id)
       && nodeById.has(edge.target_workspace_id)
       && edge.source_workspace_id !== edge.target_workspace_id,
+  ).filter(
+    (edge) => Number(edge.collaboration_count) > 0,
   );
+  const groups = hintGroups(projection, nodeById);
   const relatedIds = new Set(edges.flatMap(
     (edge) => [edge.source_workspace_id, edge.target_workspace_id],
   ));
+  groups.forEach((group) => group.workspace_ids.forEach((identifier) => relatedIds.add(identifier)));
   const nodes = rawNodes.filter((node) => relatedIds.has(node.workspace_id));
   const degree = new Map(nodes.map((node) => [node.workspace_id, 0]));
   edges.forEach((edge) => {
     degree.set(edge.source_workspace_id, (degree.get(edge.source_workspace_id) ?? 0) + 1);
     degree.set(edge.target_workspace_id, (degree.get(edge.target_workspace_id) ?? 0) + 1);
   });
-  const components = connectedComponents(nodes, edges)
+  groups.forEach((group) => group.workspace_ids.forEach((identifier) => {
+    degree.set(identifier, (degree.get(identifier) ?? 0) + group.workspace_ids.length - 1);
+  }));
+  const components = connectedComponents(nodes, edges, groups)
     .map((identifiers) => identifiers.sort((leftId, rightId) => (
       (degree.get(rightId) ?? 0) - (degree.get(leftId) ?? 0)
       || String(nodeById.get(leftId)?.name).localeCompare(String(nodeById.get(rightId)?.name))
@@ -80,25 +113,57 @@ export function projectGraphLayout(
     .sort((leftIds, rightIds) => rightIds.length - leftIds.length);
 
   const positionedNodes = [];
+  const positionedGroups = [];
   const positions = new Map();
   let y = top;
   let maximumWidth = 620;
   components.forEach((identifiers) => {
+    const identifierSet = new Set(identifiers);
+    const componentGroups = groups.filter(
+      (group) => group.workspace_ids.every((identifier) => identifierSet.has(identifier)),
+    ).sort((leftGroup, rightGroup) => (
+      rightGroup.workspace_ids.length - leftGroup.workspace_ids.length
+      || String(rightGroup.latest_at ?? "").localeCompare(String(leftGroup.latest_at ?? ""))
+    ));
+    const groupTrackHeight = componentGroups.length ? componentGroups.length * 18 + 10 : 0;
+    const nodeY = y + groupTrackHeight;
     identifiers.forEach((identifier, index) => {
       const x = left + index * (nodeWidth + nodeGap);
-      const position = { x, y, width: nodeWidth, height: nodeHeight };
+      const position = { x, y: nodeY, width: nodeWidth, height: nodeHeight };
       positions.set(identifier, position);
       positionedNodes.push({ ...nodeById.get(identifier), ...position });
       maximumWidth = Math.max(maximumWidth, x + nodeWidth + left);
     });
-    y += nodeHeight + rowGap;
+    componentGroups.forEach((group, track) => {
+      const memberPositions = group.workspace_ids
+        .map((identifier) => positions.get(identifier))
+        .filter(Boolean)
+        .sort((leftPosition, rightPosition) => leftPosition.x - rightPosition.x);
+      const centers = memberPositions.map((position) => position.x + position.width / 2);
+      const trackY = nodeY - 16 - track * 18;
+      const nodeTop = nodeY - 4;
+      const leftX = centers[0];
+      const rightX = centers[centers.length - 1];
+      const path = [
+        `M ${leftX} ${nodeTop} V ${trackY} H ${rightX} V ${nodeTop}`,
+        ...centers.slice(1, -1).map((center) => `M ${center} ${trackY} V ${nodeTop}`),
+      ].join(" ");
+      positionedGroups.push({
+        ...group,
+        project_count: centers.length,
+        path,
+        labelX: (leftX + rightX) / 2,
+        labelY: trackY - 5,
+      });
+    });
+    y = nodeY + nodeHeight + rowGap;
   });
 
   const positionedEdges = edges.map((edge) => {
     const source = positions.get(edge.source_workspace_id);
     const target = positions.get(edge.target_workspace_id);
-    const protocol = Number(edge.collaboration_count) > 0;
-    const direct = protocol;
+    const protocol = true;
+    const direct = true;
     const direction = direct && edge.directions?.length
       ? [...edge.directions].sort((leftValue, rightValue) => rightValue.count - leftValue.count)[0]
       : null;
@@ -113,9 +178,9 @@ export function projectGraphLayout(
     const endY = to.y + to.height / 2;
     const midpointX = (startX + endX) / 2;
     const sameRow = startY === endY;
-    const arc = Math.min(34, 14 + Math.abs(endX - startX) / 18);
+    const arc = Math.min(24, 10 + Math.abs(endX - startX) / 28);
     const path = sameRow
-      ? `M ${startX} ${startY} Q ${midpointX} ${startY - arc} ${endX} ${endY}`
+      ? `M ${startX} ${startY} Q ${midpointX} ${startY + arc} ${endX} ${endY}`
       : `M ${startX} ${startY} C ${midpointX} ${startY}, ${midpointX} ${endY}, ${endX} ${endY}`;
     return {
       ...edge,
@@ -123,12 +188,13 @@ export function projectGraphLayout(
       protocol,
       path,
       labelX: midpointX,
-      labelY: sameRow ? startY - arc - 5 : (startY + endY) / 2 - 7,
+      labelY: sameRow ? startY + arc + 10 : (startY + endY) / 2 - 7,
     };
   });
   return {
     nodes: positionedNodes,
     edges: positionedEdges,
+    hintGroups: positionedGroups,
     width: maximumWidth,
     height: Math.max(142, y - rowGap + 30),
   };
@@ -153,10 +219,14 @@ function relationLabel(edge, translate, formatNumber) {
   if (Number(edge.open_collaboration_count) > 0) {
     values.push(`${translate("projectOverview.open")} ${formatNumber(edge.open_collaboration_count)}`);
   }
-  if (Number(edge.same_run_hint_count) > 0) {
-    values.push(`${translate("projectOverview.sameTaskHint")} ${formatNumber(edge.same_run_hint_count)}`);
-  }
   return values.join(" · ");
+}
+
+function hintGroupLabel(group, translate, formatNumber) {
+  return [
+    `${translate("projectOverview.sameTaskHint")} ${formatNumber(group.same_run_hint_count)}`,
+    `${formatNumber(group.project_count)} ${translate("projectOverview.projects")}`,
+  ].join(" · ");
 }
 
 export function renderProjectOverview(
@@ -165,7 +235,7 @@ export function renderProjectOverview(
   { current = "", translate, formatNumber, onSelect },
 ) {
   const layout = projectGraphLayout(projection);
-  if (!layout.edges.length) {
+  if (!layout.edges.length && !layout.hintGroups.length) {
     container.replaceChildren(emptyState(translate));
     return { projectCount: 0, relationCount: 0 };
   }
@@ -206,11 +276,29 @@ export function renderProjectOverview(
   defs.append(protocolMarker);
   svg.append(defs);
 
+  layout.hintGroups.forEach((groupData) => {
+    const group = svgElement("g");
+    group.classList.add("project-hint-group");
+    const path = svgElement("path", { d: groupData.path });
+    const label = svgElement("text", {
+      x: groupData.labelX,
+      y: groupData.labelY,
+      "text-anchor": "middle",
+    });
+    label.textContent = hintGroupLabel(groupData, translate, formatNumber);
+    const title = svgElement("title");
+    title.textContent = groupData.samples?.map(
+      (sample) => [sample.owner, sample.run_id].filter(Boolean).join(" · "),
+    ).join("\n") || label.textContent;
+    group.append(title, path, label);
+    svg.append(group);
+  });
+
   layout.edges.forEach((edge) => {
     const group = svgElement("g");
     group.classList.add(
       "project-relation",
-      edge.protocol ? "protocol" : "same-run-hint",
+      "protocol",
     );
     const path = svgElement("path", { d: edge.path });
     if (edge.protocol) path.setAttribute("marker-end", "url(#project-arrow-protocol)");
@@ -261,5 +349,8 @@ export function renderProjectOverview(
   });
   scroll.append(svg);
   container.replaceChildren(legend, scroll);
-  return { projectCount: layout.nodes.length, relationCount: layout.edges.length };
+  return {
+    projectCount: layout.nodes.length,
+    relationCount: layout.edges.length + layout.hintGroups.length,
+  };
 }

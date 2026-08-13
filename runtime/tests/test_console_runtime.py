@@ -82,7 +82,6 @@ class ConsoleRuntimeTest(GitWorkspaceTest):
             edges: [{{
               source_workspace_id: "left",
               target_workspace_id: "right",
-              same_run_hint_count: 1,
               collaboration_count: 1,
               open_collaboration_count: 1,
               directions: [],
@@ -100,19 +99,21 @@ class ConsoleRuntimeTest(GitWorkspaceTest):
           const hintLayout = projectGraphLayout({{
             nodes: [
               {{workspace_id: "left", name: "left"}},
+              {{workspace_id: "middle", name: "middle"}},
               {{workspace_id: "right", name: "right"}},
             ],
-            edges: [{{
-              source_workspace_id: "left",
-              target_workspace_id: "right",
+            edges: [],
+            hint_groups: [{{
+              workspace_ids: ["left", "middle", "right"],
               same_run_hint_count: 1,
-              collaboration_count: 0,
-              open_collaboration_count: 0,
-              directions: [],
+              samples: [{{owner: "agent-a", run_id: "run-a"}}],
             }}],
           }});
-          if (hintLayout.edges[0].protocol || hintLayout.edges[0].direct) {{
-            throw new Error(`same-run hint became directed collaboration ${{JSON.stringify(hintLayout)}}`);
+          if (hintLayout.nodes.length !== 3 || hintLayout.edges.length !== 0 || hintLayout.hintGroups.length !== 1) {{
+            throw new Error(`same-run hint was not grouped ${{JSON.stringify(hintLayout)}}`);
+          }}
+          if (hintLayout.hintGroups[0].project_count !== 3 || !hintLayout.hintGroups[0].path.includes(" H ")) {{
+            throw new Error(`same-run hint group lacks one multi-project bracket ${{JSON.stringify(hintLayout)}}`);
           }}
         """
         subprocess.run(

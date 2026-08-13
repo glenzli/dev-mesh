@@ -6,7 +6,6 @@ import json
 import sqlite3
 from collections import Counter, defaultdict
 from datetime import UTC, datetime, timedelta
-from itertools import combinations
 from pathlib import Path
 
 from dev_mesh_coord.constants import PROTOCOL, PROTOCOL_VERSION
@@ -100,6 +99,7 @@ def _project_collaboration(
         }
 
     relations: dict[tuple[str, str], dict[str, object]] = {}
+    hint_groups_by_workspaces: dict[tuple[str, ...], dict[str, object]] = {}
 
     def relation(left: str, right: str) -> dict[str, object]:
         key = tuple(sorted((left, right)))
@@ -108,7 +108,6 @@ def _project_collaboration(
             {
                 "source_workspace_id": key[0],
                 "target_workspace_id": key[1],
-                "same_run_hint_count": 0,
                 "collaboration_count": 0,
                 "open_collaboration_count": 0,
                 "completed_collaboration_count": 0,
@@ -119,22 +118,26 @@ def _project_collaboration(
         )
 
     for (owner, run_id), workspaces in identities.items():
-        workspace_ids = sorted(workspaces)
+        workspace_ids = tuple(sorted(workspaces))
         if len(workspace_ids) < 2:
             continue
-        for left, right in combinations(workspace_ids, 2):
-            edge = relation(left, right)
-            edge["same_run_hint_count"] = int(edge["same_run_hint_count"]) + 1
-            latest_at = max(
-                str(workspaces[left]["latest_at"]),
-                str(workspaces[right]["latest_at"]),
+        group = hint_groups_by_workspaces.setdefault(
+            workspace_ids,
+            {
+                "workspace_ids": list(workspace_ids),
+                "same_run_hint_count": 0,
+                "latest_at": None,
+                "samples": [],
+            },
+        )
+        group["same_run_hint_count"] = int(group["same_run_hint_count"]) + 1
+        latest_at = max(str(workspaces[item]["latest_at"]) for item in workspace_ids)
+        group["latest_at"] = max(str(group["latest_at"] or ""), latest_at)
+        samples = group["samples"]
+        if isinstance(samples, list) and len(samples) < PROJECT_RELATION_SAMPLE_LIMIT:
+            samples.append(
+                {"owner": owner, "run_id": run_id, "evidence": "same-run-hint"}
             )
-            edge["latest_at"] = max(str(edge["latest_at"] or ""), latest_at)
-            samples = edge["samples"]
-            if isinstance(samples, list) and len(samples) < PROJECT_RELATION_SAMPLE_LIMIT:
-                samples.append(
-                    {"owner": owner, "run_id": run_id, "evidence": "same-run-hint"}
-                )
 
     cross_project_relations: dict[str, dict[str, object]] = {}
     for row in connection.execute(
@@ -257,10 +260,20 @@ def _project_collaboration(
         key=lambda edge: (
             str(edge["latest_at"] or ""),
             int(edge["collaboration_count"]),
-            int(edge["same_run_hint_count"]),
         ),
         reverse=True,
     )
+    hint_groups = sorted(
+        hint_groups_by_workspaces.values(),
+        key=lambda group: (
+            str(group["latest_at"] or ""),
+            int(group["same_run_hint_count"]),
+            len(group["workspace_ids"]),
+        ),
+        reverse=True,
+    )
+    for group in hint_groups:
+        related_workspace_ids.update(str(item) for item in group["workspace_ids"])
     nodes = [
         {"workspace_id": identifier, "name": workspace_names.get(identifier, identifier)}
         for identifier in sorted(
@@ -271,16 +284,13 @@ def _project_collaboration(
     return {
         "nodes": nodes,
         "edges": edges,
+        "hint_groups": hint_groups,
         "project_count": len(nodes),
-        "relation_count": len(edges),
+        "relation_count": len(edges) + len(hint_groups),
         "collaboration_relation_count": sum(
             int(edge["collaboration_count"]) > 0 for edge in edges
         ),
-        "inferred_relation_count": sum(
-            int(edge["collaboration_count"]) == 0
-            and int(edge["same_run_hint_count"]) > 0
-            for edge in edges
-        ),
+        "inferred_relation_count": len(hint_groups),
     }
 
 

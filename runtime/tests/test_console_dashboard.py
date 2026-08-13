@@ -105,19 +105,23 @@ class ConsoleDashboardTest(GitWorkspaceTest):
         self.assertEqual(counts[workspace_id(other)], 1)
 
     def test_project_relations_label_same_run_names_as_inferred_hint(self) -> None:
-        other = Path(self.temporary.name) / "other-shared-run"
-        other.mkdir()
-        git(other, "init", "-b", "main")
-        git(other, "config", "user.name", "Dev Mesh Test")
-        git(other, "config", "user.email", "dev-mesh@example.invalid")
-        (other / "app.txt").write_text("base\n", encoding="utf-8")
-        git(other, "add", "app.txt")
-        git(other, "commit", "-m", "base")
-        initialize(other)
-        join_run(other, run_id="run-a", owner="agent-a", task="cross-project dashboard")
+        others = []
+        for name in ("other-shared-run", "third-shared-run"):
+            other = Path(self.temporary.name) / name
+            other.mkdir()
+            git(other, "init", "-b", "main")
+            git(other, "config", "user.name", "Dev Mesh Test")
+            git(other, "config", "user.email", "dev-mesh@example.invalid")
+            (other / "app.txt").write_text("base\n", encoding="utf-8")
+            git(other, "add", "app.txt")
+            git(other, "commit", "-m", "base")
+            initialize(other)
+            join_run(other, run_id="run-a", owner="agent-a", task="cross-project dashboard")
+            others.append(other)
 
         with Catalog(self.database) as catalog:
-            catalog.collect_workspace(other)
+            for other in others:
+                catalog.collect_workspace(other)
             dashboard = build_dashboard(
                 catalog.connection,
                 workspace=workspace_id(self.root),
@@ -125,19 +129,19 @@ class ConsoleDashboardTest(GitWorkspaceTest):
             )
 
         projection = dashboard["project_collaboration"]
-        self.assertEqual(projection["project_count"], 2)
+        self.assertEqual(projection["project_count"], 3)
         self.assertEqual(projection["relation_count"], 1)
         self.assertEqual(projection["collaboration_relation_count"], 0)
         self.assertEqual(projection["inferred_relation_count"], 1)
-        edge = projection["edges"][0]
+        self.assertEqual(projection["edges"], [])
+        group = projection["hint_groups"][0]
         self.assertEqual(
-            {edge["source_workspace_id"], edge["target_workspace_id"]},
-            {workspace_id(self.root), workspace_id(other)},
+            set(group["workspace_ids"]),
+            {workspace_id(self.root), *(workspace_id(other) for other in others)},
         )
-        self.assertEqual(edge["same_run_hint_count"], 1)
-        self.assertEqual(edge["collaboration_count"], 0)
-        self.assertEqual(edge["samples"][0]["owner"], "agent-a")
-        self.assertEqual(edge["samples"][0]["run_id"], "run-a")
+        self.assertEqual(group["same_run_hint_count"], 1)
+        self.assertEqual(group["samples"][0]["owner"], "agent-a")
+        self.assertEqual(group["samples"][0]["run_id"], "run-a")
 
     def test_local_acknowledgement_does_not_upgrade_same_run_hint(self) -> None:
         join_run(self.root, run_id="run-b", owner="agent-b", task="receive project request")
@@ -173,13 +177,11 @@ class ConsoleDashboardTest(GitWorkspaceTest):
             catalog.collect_workspace(other)
             dashboard = build_dashboard(catalog.connection, window_hours=48)
 
-        edge = dashboard["project_collaboration"]["edges"][0]
         projection = dashboard["project_collaboration"]
         self.assertEqual(projection["collaboration_relation_count"], 0)
         self.assertEqual(projection["inferred_relation_count"], 1)
-        self.assertEqual(edge["same_run_hint_count"], 1)
-        self.assertEqual(edge["collaboration_count"], 0)
-        self.assertEqual(edge["directions"], [])
+        self.assertEqual(projection["edges"], [])
+        self.assertEqual(projection["hint_groups"][0]["same_run_hint_count"], 1)
 
     def test_project_collaboration_joins_explicit_extension_across_distinct_runs(self) -> None:
         other = Path(self.temporary.name) / "other-explicit-collaboration"
@@ -250,7 +252,6 @@ class ConsoleDashboardTest(GitWorkspaceTest):
         projection = dashboard["project_collaboration"]
         self.assertEqual(projection["collaboration_relation_count"], 1)
         self.assertEqual(projection["inferred_relation_count"], 0)
-        self.assertEqual(edge["same_run_hint_count"], 0)
         self.assertEqual(edge["collaboration_count"], 1)
         self.assertEqual(edge["open_collaboration_count"], 0)
         self.assertEqual(edge["completed_collaboration_count"], 1)
