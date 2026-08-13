@@ -4,10 +4,18 @@ Load this reference when the current task creates, messages, waits on, or hands 
 whose development workspace differs from the current Git workspace. This is correlation only; it
 does not grant authority in either workspace.
 
+First use Codex task controls to create or identify the real target task. Dev Mesh cannot deliver a
+message to a Codex task or wake it, and `target_owner` is not a task address. Once the task id is
+known, record `opened`, then send the returned correlation to that task through the actual Codex
+task control. If creation already dispatched an initial prompt, send the correlation as a follow-up.
+A workspace-local request or handoff may accompany the work after both Runs exist, but it does not
+establish a cross-project relation. Identical Owner/Run text in multiple workspaces is only a
+possible sign that one task visited several projects.
+
 ## Open the relation
 
-Join an exact Run in the source workspace first. After Codex provides the target task id, choose one
-stable collaboration id and record the source edge:
+Join an exact Run in the source workspace first. After the real task communication provides the
+target task id, choose one stable collaboration id and record the source edge:
 
 ```bash
 python3 <skill>/scripts/coord.py --root SOURCE_ROOT cross-project-open \

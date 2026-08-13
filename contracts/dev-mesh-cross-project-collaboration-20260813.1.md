@@ -30,6 +30,11 @@ The source records the target Codex task id when it is known. The target workspa
 may be unknown at that point. A receiver binds its exact active Run later; producers never infer a
 missing target from timestamps, similar names, or conversation text.
 
+Owner and Run identities are scoped by workspace. Identical Owner/Run strings in two workspaces do
+not establish a collaboration: they may represent one Codex task visiting multiple projects or
+unrelated local naming. Observer may expose this only as explicitly labelled, non-directional hint
+evidence.
+
 ## 3. Lifecycle
 
 The bounded lifecycle is:
@@ -97,12 +102,19 @@ scan or rewrite prior event history.
   lowercase hexadecimal characters.
 - One normal collaboration produces three small immutable events. An implementation must not emit
   heartbeats or per-tool-call events for this extension.
-- Observer may aggregate matching collaboration ids across registered workspaces. It must label
-  exact `bound` evidence separately from same-Run inference and must not reconstruct authority.
+- Observer may aggregate matching collaboration ids across registered workspaces. Only exact
+  receiver `bound` evidence, or a later exact `closed` phase that repeats both participants, counts
+  as cross-task collaboration. Same-Run names may be shown as a hint but must not contribute to
+  collaboration counts or direction, and workspace-local messages or handoffs must not be promoted
+  into cross-project evidence.
 
 ## 6. Operational boundary
 
-Codex task creation, task messages, waits, and wakeups remain owned by Codex. This extension is an
-explicit cooperative bridge: the initiating Agent records `opened` and includes the returned
-correlation in the task communication; the receiving Agent records `bound`; one participant records
-`closed`. Calls that bypass the Dev Mesh producer remain outside its observation boundary.
+Codex task creation, task messages, waits, and wakeups remain owned by Codex. Base-protocol `send`,
+acknowledgement, and handoff are passive workspace-local records; they never deliver to, start,
+resume, or wake a Codex task. This extension is an explicit cooperative bridge: the initiating
+Agent creates or identifies the real target task, records `opened` after its task id is known, and
+uses the actual Codex task control to deliver the returned correlation. When task creation already
+dispatched an initial prompt, that delivery is a follow-up message. The receiving Agent records
+`bound`; one participant records `closed`. Calls that bypass the Dev Mesh producer remain outside
+its observation boundary.

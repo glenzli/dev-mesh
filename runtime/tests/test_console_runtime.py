@@ -82,8 +82,7 @@ class ConsoleRuntimeTest(GitWorkspaceTest):
             edges: [{{
               source_workspace_id: "left",
               target_workspace_id: "right",
-              shared_run_count: 1,
-              interaction_count: 0,
+              same_run_hint_count: 1,
               collaboration_count: 1,
               open_collaboration_count: 1,
               directions: [],
@@ -97,6 +96,23 @@ class ConsoleRuntimeTest(GitWorkspaceTest):
           }}
           if (!layout.edges[0].protocol || !layout.edges[0].direct) {{
             throw new Error(`explicit collaboration was not projected as direct ${{JSON.stringify(layout)}}`);
+          }}
+          const hintLayout = projectGraphLayout({{
+            nodes: [
+              {{workspace_id: "left", name: "left"}},
+              {{workspace_id: "right", name: "right"}},
+            ],
+            edges: [{{
+              source_workspace_id: "left",
+              target_workspace_id: "right",
+              same_run_hint_count: 1,
+              collaboration_count: 0,
+              open_collaboration_count: 0,
+              directions: [],
+            }}],
+          }});
+          if (hintLayout.edges[0].protocol || hintLayout.edges[0].direct) {{
+            throw new Error(`same-run hint became directed collaboration ${{JSON.stringify(hintLayout)}}`);
           }}
         """
         subprocess.run(

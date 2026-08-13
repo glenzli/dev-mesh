@@ -80,7 +80,7 @@ def _project_collaboration(
     since: str,
     workspace_names: dict[str, str],
 ) -> dict[str, object]:
-    """Project exact cross-workspace Run and addressed interaction evidence."""
+    """Separate explicit cross-task collaboration from same-Run workspace hints."""
 
     identities: dict[tuple[str, str], dict[str, dict[str, object]]] = defaultdict(dict)
     for row in connection.execute(
@@ -108,8 +108,7 @@ def _project_collaboration(
             {
                 "source_workspace_id": key[0],
                 "target_workspace_id": key[1],
-                "shared_run_count": 0,
-                "interaction_count": 0,
+                "same_run_hint_count": 0,
                 "collaboration_count": 0,
                 "open_collaboration_count": 0,
                 "completed_collaboration_count": 0,
@@ -125,7 +124,7 @@ def _project_collaboration(
             continue
         for left, right in combinations(workspace_ids, 2):
             edge = relation(left, right)
-            edge["shared_run_count"] = int(edge["shared_run_count"]) + 1
+            edge["same_run_hint_count"] = int(edge["same_run_hint_count"]) + 1
             latest_at = max(
                 str(workspaces[left]["latest_at"]),
                 str(workspaces[right]["latest_at"]),
@@ -133,19 +132,17 @@ def _project_collaboration(
             edge["latest_at"] = max(str(edge["latest_at"] or ""), latest_at)
             samples = edge["samples"]
             if isinstance(samples, list) and len(samples) < PROJECT_RELATION_SAMPLE_LIMIT:
-                samples.append({"owner": owner, "run_id": run_id, "evidence": "shared-run"})
+                samples.append(
+                    {"owner": owner, "run_id": run_id, "evidence": "same-run-hint"}
+                )
 
-    exchanges: dict[tuple[str, str], dict[str, str]] = {}
     cross_project_relations: dict[str, dict[str, object]] = {}
     for row in connection.execute(
         """
-        SELECT workspace_id, at, event, owner, run_id, record_json
+        SELECT workspace_id, at, owner, run_id, record_json
         FROM events
         WHERE protocol_version = ? AND at >= ?
-          AND event IN (
-            'message-sent', 'message-acknowledged',
-            'handoff-offered', 'handoff-accepted'
-          )
+          AND event = 'message-sent'
         ORDER BY at, event_id
         """,
         (PROTOCOL_VERSION, since),
@@ -195,59 +192,16 @@ def _project_collaboration(
             if cross_project.get("phase") == "closed":
                 relation_record["outcome"] = cross_project.get("outcome")
             continue
-        message_id = record.get("message_id")
-        if not isinstance(message_id, str):
-            continue
-        source_workspace = str(row["workspace_id"])
-        exchange = exchanges.setdefault(
-            (source_workspace, message_id),
-            {"workspace_id": source_workspace, "at": str(row["at"])},
-        )
-        exchange["at"] = max(exchange["at"], str(row["at"]))
-        if str(row["event"]) in {"message-sent", "handoff-offered"}:
-            if isinstance(row["owner"], str) and isinstance(row["run_id"], str):
-                exchange.setdefault("source_owner", str(row["owner"]))
-                exchange.setdefault("source_run_id", str(row["run_id"]))
-            if isinstance(record.get("target_owner"), str):
-                exchange.setdefault("target_owner", str(record["target_owner"]))
-            if isinstance(record.get("target_run_id"), str):
-                exchange.setdefault("target_run_id", str(record["target_run_id"]))
-        elif isinstance(row["owner"], str) and isinstance(row["run_id"], str):
-            exchange.setdefault("target_owner", str(row["owner"]))
-            exchange.setdefault("target_run_id", str(row["run_id"]))
-
-    for exchange in exchanges.values():
-        target_owner = exchange.get("target_owner")
-        target_run_id = exchange.get("target_run_id")
-        if not isinstance(target_owner, str) or not isinstance(target_run_id, str):
-            continue
-        source_workspace = exchange["workspace_id"]
-        target_workspaces = set(identities.get((target_owner, target_run_id), {}))
-        target_workspaces.discard(source_workspace)
-        if len(target_workspaces) != 1:
-            continue
-        target_workspace = next(iter(target_workspaces))
-        edge = relation(source_workspace, target_workspace)
-        edge["interaction_count"] = int(edge["interaction_count"]) + 1
-        edge["latest_at"] = max(str(edge["latest_at"] or ""), exchange["at"])
-        directions = edge["directions"]
-        if isinstance(directions, Counter):
-            directions[(source_workspace, target_workspace)] += 1
-        samples = edge["samples"]
-        if isinstance(samples, list) and len(samples) < PROJECT_RELATION_SAMPLE_LIMIT:
-            samples.append(
-                {
-                    "owner": target_owner,
-                    "run_id": target_run_id,
-                    "evidence": "addressed-interaction",
-                }
-            )
-
     for collaboration_id, collaboration in cross_project_relations.items():
         source_workspace = collaboration.get("source_workspace_id")
         target_workspace = collaboration.get("target_workspace_id")
+        phases = collaboration.get("phases")
+        participant_confirmed = isinstance(phases, set) and bool(
+            phases.intersection({"bound", "closed"})
+        )
         if (
             collaboration.get("invalid")
+            or not participant_confirmed
             or not isinstance(source_workspace, str)
             or not isinstance(target_workspace, str)
             or source_workspace == target_workspace
@@ -257,7 +211,6 @@ def _project_collaboration(
             continue
         edge = relation(source_workspace, target_workspace)
         edge["collaboration_count"] = int(edge["collaboration_count"]) + 1
-        phases = collaboration.get("phases")
         closed = isinstance(phases, set) and "closed" in phases
         if closed:
             if collaboration.get("outcome") == "completed":
@@ -304,8 +257,7 @@ def _project_collaboration(
         key=lambda edge: (
             str(edge["latest_at"] or ""),
             int(edge["collaboration_count"]),
-            int(edge["interaction_count"]),
-            int(edge["shared_run_count"]),
+            int(edge["same_run_hint_count"]),
         ),
         reverse=True,
     )
@@ -321,6 +273,14 @@ def _project_collaboration(
         "edges": edges,
         "project_count": len(nodes),
         "relation_count": len(edges),
+        "collaboration_relation_count": sum(
+            int(edge["collaboration_count"]) > 0 for edge in edges
+        ),
+        "inferred_relation_count": sum(
+            int(edge["collaboration_count"]) == 0
+            and int(edge["same_run_hint_count"]) > 0
+            for edge in edges
+        ),
     }
 
 

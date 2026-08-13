@@ -98,8 +98,7 @@ export function projectGraphLayout(
     const source = positions.get(edge.source_workspace_id);
     const target = positions.get(edge.target_workspace_id);
     const protocol = Number(edge.collaboration_count) > 0;
-    const addressed = Number(edge.interaction_count) > 0;
-    const direct = protocol || addressed;
+    const direct = protocol;
     const direction = direct && edge.directions?.length
       ? [...edge.directions].sort((leftValue, rightValue) => rightValue.count - leftValue.count)[0]
       : null;
@@ -122,7 +121,6 @@ export function projectGraphLayout(
       ...edge,
       direct,
       protocol,
-      addressed,
       path,
       labelX: midpointX,
       labelY: sameRow ? startY - arc - 5 : (startY + endY) / 2 - 7,
@@ -150,16 +148,13 @@ function emptyState(translate) {
 function relationLabel(edge, translate, formatNumber) {
   const values = [];
   if (Number(edge.collaboration_count) > 0) {
-    values.push(`${translate("projectOverview.crossProject")} ${formatNumber(edge.collaboration_count)}`);
+    values.push(`${translate("projectOverview.crossTask")} ${formatNumber(edge.collaboration_count)}`);
   }
   if (Number(edge.open_collaboration_count) > 0) {
     values.push(`${translate("projectOverview.open")} ${formatNumber(edge.open_collaboration_count)}`);
   }
-  if (Number(edge.interaction_count) > 0) {
-    values.push(`${translate("projectOverview.addressed")} ${formatNumber(edge.interaction_count)}`);
-  }
-  if (Number(edge.shared_run_count) > 0) {
-    values.push(`${translate("projectOverview.sharedRun")} ${formatNumber(edge.shared_run_count)}`);
+  if (Number(edge.same_run_hint_count) > 0) {
+    values.push(`${translate("projectOverview.sameTaskHint")} ${formatNumber(edge.same_run_hint_count)}`);
   }
   return values.join(" · ");
 }
@@ -180,13 +175,10 @@ export function renderProjectOverview(
   const protocolLegend = document.createElement("span");
   protocolLegend.className = "protocol";
   protocolLegend.textContent = translate("projectOverview.protocolRelation");
-  const directLegend = document.createElement("span");
-  directLegend.className = "addressed";
-  directLegend.textContent = translate("projectOverview.addressedRelation");
-  const sharedLegend = document.createElement("span");
-  sharedLegend.className = "shared";
-  sharedLegend.textContent = translate("projectOverview.sharedRunRelation");
-  legend.append(protocolLegend, directLegend, sharedLegend);
+  const hintLegend = document.createElement("span");
+  hintLegend.className = "hint";
+  hintLegend.textContent = translate("projectOverview.sameTaskHintRelation");
+  legend.append(protocolLegend, hintLegend);
 
   const scroll = document.createElement("div");
   scroll.className = "project-graph-scroll";
@@ -211,22 +203,17 @@ export function renderProjectOverview(
   });
   protocolMarker.classList.add("protocol");
   protocolMarker.append(svgElement("path", { d: "M 2 2 L 8 5 L 2 8" }));
-  const addressedMarker = protocolMarker.cloneNode(true);
-  addressedMarker.setAttribute("id", "project-arrow-addressed");
-  addressedMarker.classList.remove("protocol");
-  addressedMarker.classList.add("addressed");
-  defs.append(protocolMarker, addressedMarker);
+  defs.append(protocolMarker);
   svg.append(defs);
 
   layout.edges.forEach((edge) => {
     const group = svgElement("g");
     group.classList.add(
       "project-relation",
-      edge.protocol ? "protocol" : (edge.addressed ? "addressed" : "shared-run"),
+      edge.protocol ? "protocol" : "same-run-hint",
     );
     const path = svgElement("path", { d: edge.path });
     if (edge.protocol) path.setAttribute("marker-end", "url(#project-arrow-protocol)");
-    else if (edge.addressed) path.setAttribute("marker-end", "url(#project-arrow-addressed)");
     const label = svgElement("text", {
       x: edge.labelX,
       y: edge.labelY,

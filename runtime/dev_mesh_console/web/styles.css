@@ -293,20 +293,16 @@ select, input {
 .project-graph-legend { display: flex; gap: 18px; padding: 8px 14px; border-bottom: 1px solid var(--border); color: var(--muted); font-size: 10px; }
 .project-graph-legend span { display: inline-flex; align-items: center; gap: 7px; }
 .project-graph-legend span::before { width: 22px; height: 0; border-top: 2px solid var(--accent); content: ""; }
-.project-graph-legend .protocol::after, .project-graph-legend .addressed::after { content: ">"; font: 700 11px ui-monospace, monospace; transform: translateX(-13px); }
+.project-graph-legend .protocol::after { content: ">"; font: 700 11px ui-monospace, monospace; transform: translateX(-13px); }
 .project-graph-legend .protocol::after { color: var(--accent); }
-.project-graph-legend .addressed::before { border-top-color: var(--muted); }
-.project-graph-legend .addressed::after { color: var(--muted); }
-.project-graph-legend .shared::before { border-top-style: dashed; border-top-color: var(--handoff); }
+.project-graph-legend .hint::before { border-top-style: dashed; border-top-color: var(--muted); }
 .project-graph-scroll { width: 100%; overflow: auto; }
 .project-graph { display: block; min-width: 100%; }
 .project-relation path { fill: none; stroke: var(--handoff); stroke-width: 1.8; }
-.project-relation.shared-run path { stroke-dasharray: 5 5; }
+.project-relation.same-run-hint path { stroke: var(--muted); stroke-dasharray: 5 5; opacity: .72; }
 .project-relation.protocol path { stroke: var(--accent); stroke-width: 2.2; }
-.project-relation.addressed path { stroke: var(--muted); }
 .project-graph marker path { fill: none; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
 .project-graph marker.protocol path { stroke: var(--accent); }
-.project-graph marker.addressed path { stroke: var(--muted); }
 .project-relation text { fill: var(--muted); font: 700 9px ui-monospace, SFMono-Regular, monospace; paint-order: stroke; stroke: var(--surface); stroke-width: 5px; }
 .project-graph-node { cursor: pointer; }
 .project-graph-node rect { fill: var(--surface-raised); stroke: color-mix(in srgb, var(--accent) 34%, var(--border-strong)); stroke-width: 1.4; }

@@ -110,6 +110,11 @@ retains its authority until an explicit same-owner recovery.
 
 ## Communicate without transferring authority
 
+Dev Mesh messages are passive workspace-local records. `send`, acknowledgement, and handoff never
+create, deliver to, start, resume, or wake a Codex task, and an Owner is not a Codex task address.
+Use Codex task controls to contact the actual target first; record Dev Mesh correlation only after
+the target task id is known.
+
 Use `send --kind notice` for information and `send --kind request --requires-ack` for a decision.
 Use a caller-supplied stable `--handoff-id` for `--kind handoff`; retry with the same id after an
 uncertain result. Acknowledging a handoff records acceptance but does not silently transfer a
@@ -120,6 +125,10 @@ work, load [cross-project-collaboration.md](references/cross-project-collaborati
 stable relation after the target task id is known, let the receiver bind its exact workspace and
 Run, and close the relation once. This optional extension is diagnostic only and is not needed for
 ordinary single-workspace work.
+
+Owner and Run identities are workspace-scoped. Matching Owner/Run text in two workspaces may be a
+single Codex task visiting both projects, but it is never proof that two tasks collaborated. Do not
+replace `cross-project-open` and receiver `bind` evidence with matching names or a local handoff.
 
 ## Keep routine context bounded
 
