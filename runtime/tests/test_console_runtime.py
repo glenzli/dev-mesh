@@ -27,7 +27,7 @@ class ConsoleRuntimeTest(GitWorkspaceTest):
             / "flow_layout.js"
         ).as_uri()
         script = f"""
-          import {{ tooltipPosition }} from {json.dumps(module)};
+          import {{ activeRunKeys, buildFlowLayout, identityKey, timeLabelMode, tooltipPosition, transactionBranchOffset }} from {json.dumps(module)};
           const scrolled = tooltipPosition(
             {{ x: 1780, y: 42 }},
             {{ scrollLeft: 1200, clientWidth: 800, tooltipWidth: 250 }},
@@ -41,6 +41,34 @@ class ConsoleRuntimeTest(GitWorkspaceTest):
           );
           if (unscrolled.left !== 116 || unscrolled.top !== 32) {{
             throw new Error(`unexpected initial position ${{JSON.stringify(unscrolled)}}`);
+          }}
+          const layout = buildFlowLayout([
+            {{event_id: "a", owner: "agent-a", run_id: "run-one", at: "2026-08-14T08:00:00Z"}},
+            {{event_id: "b", owner: "agent-a", run_id: "run-two", at: "2026-08-14T08:00:01Z"}},
+            {{event_id: "c", owner: "agent-a", run_id: "run-one", at: "2026-08-14T08:00:02Z"}},
+          ]);
+          const row = layout.ownerRows[0];
+          if (row.height < 96 || layout.timeAxisY + 4 >= row.top) {{
+            throw new Error(`timeline ruler collides with lane ${{JSON.stringify({{row, timeAxisY: layout.timeAxisY}})}}`);
+          }}
+          if (transactionBranchOffset({{event: "transaction-created"}}) !== 15
+              || transactionBranchOffset({{event: "transaction-published"}}) !== 15
+              || transactionBranchOffset({{event: "claim-created"}}) !== 0) {{
+            throw new Error("transaction branch offsets must remain continuous");
+          }}
+          if (timeLabelMode(238, 410) !== "range" || timeLabelMode(238, 520) !== "endpoints") {{
+            throw new Error("dense time labels must collapse into one range label");
+          }}
+          if (identityKey("active-agent", "run-1") !== "active-agent\\u0000run-1") {{
+            throw new Error("active Run identity must match flow lanes exactly");
+          }}
+          const activeRuns = activeRunKeys([
+            {{kind: "run", status: "active", owner: "active-agent", run_id: "run-1"}},
+            {{kind: "claim", status: "active", owner: "active-agent", run_id: "run-1"}},
+            {{kind: "run", status: "closed", owner: "closed-agent", run_id: "run-2"}},
+          ]);
+          if (!activeRuns.has(identityKey("active-agent", "run-1")) || activeRuns.size !== 1) {{
+            throw new Error("only active Runs may animate flow start nodes");
           }}
         """
         subprocess.run(

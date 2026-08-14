@@ -10,6 +10,33 @@ export function eventLaneKey(event) {
   return `${source ?? "unattributed"}\u0000unattributed`;
 }
 
+const transactionEvents = new Set([
+  "transaction-created",
+  "transaction-prepared",
+  "transaction-validated",
+  "transaction-refreshed",
+  "transaction-conflicted",
+  "transaction-published",
+  "transaction-aborted",
+]);
+
+export function transactionBranchOffset(event) {
+  return transactionEvents.has(event.event) ? 15 : 0;
+}
+
+export function timeLabelMode(firstX, lastX, { labelWidth = 102, gap = 16 } = {}) {
+  return lastX - firstX < labelWidth * 2 + gap ? "range" : "endpoints";
+}
+
+export function activeRunKeys(activeDetails = []) {
+  return new Set(
+    activeDetails
+      .filter((item) => item?.kind === "run" && item.status === "active")
+      .map((item) => identityKey(item.owner, item.run_id))
+      .filter(Boolean),
+  );
+}
+
 export function tooltipPosition(
   point,
   { scrollLeft = 0, clientWidth = 0, tooltipWidth = 0 },
@@ -52,7 +79,7 @@ function assignRunSlots(runs) {
 
 export function buildFlowLayout(
   events,
-  { top = 38, laneHeight = 56, subLaneGap = 19, groupGap = 12 } = {},
+  { top = 76, laneHeight = 72, subLaneGap = 24, groupGap = 16 } = {},
 ) {
   const groupedRuns = new Map();
   events.forEach((event, index) => {
@@ -191,6 +218,10 @@ export function buildFlowLayout(
     groups,
     runPositions,
     groupCount: groups.length,
-    height: cursorY + 20,
+    // Keep the time ruler clear of the first owner band.  It is deliberately
+    // independent of the lane baseline so a one-row flow does not look like
+    // the ruler is part of that Agent's execution line.
+    timeAxisY: Math.max(20, top - laneHeight / 2 - 14),
+    height: cursorY + 24,
   };
 }

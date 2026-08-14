@@ -1,8 +1,11 @@
 import { eventLabel, language, t } from "/i18n.js";
 import {
+  activeRunKeys,
   buildFlowLayout,
   eventLaneKey as laneKey,
   identityKey,
+  timeLabelMode,
+  transactionBranchOffset,
   tooltipPosition,
 } from "/flow_layout.js";
 
@@ -35,14 +38,6 @@ const semantics = {
     "contention-cancelled",
   ]),
 };
-
-const branchTrackEvents = new Set([
-  "transaction-prepared",
-  "transaction-validated",
-  "transaction-refreshed",
-  "transaction-conflicted",
-  "transaction-aborted",
-]);
 
 const stoppedEvents = new Set([
   "transaction-aborted",
@@ -164,7 +159,11 @@ function responseLabel(event) {
 }
 
 function branchOffset(event) {
-  return branchTrackEvents.has(event.event) ? 15 : 0;
+  // A microtransaction is one continuous temporary branch.  Keeping every
+  // transaction event on its branch track avoids a visual zig-zag at each
+  // lifecycle transition; only entering and leaving that transaction crosses
+  // between the main line and the branch track.
+  return transactionBranchOffset(event);
 }
 
 function connectorPath(startX, startY, endX, endY) {
@@ -187,19 +186,30 @@ function nodeRightExtent(event, workNumber) {
   return nodeClearance(event);
 }
 
+function isTimelineAnchor(event) {
+  return event.event === "agent-joined"
+    || event.authority_effect === "terminal"
+    || event.authority_effect === "release";
+}
+
 function buildEventPositions(events, left, workNumbers) {
   const positions = new Map();
   const previousByLane = new Map();
-  let previousGlobalX = left - 8;
+  // The flow preserves event order instead of pretending to be a duration
+  // chart.  Keep a modest global gap as well as a larger same-run gap so
+  // dense lifecycle clusters remain readable without inventing time.
+  const globalGap = 12;
+  let previousGlobalX = left - globalGap;
   events.forEach((event) => {
     const key = laneKey(event);
     const previous = previousByLane.get(key);
-    let x = previousGlobalX + 8;
+    let x = previousGlobalX + globalGap;
     if (previous) {
+      const anchorGap = isTimelineAnchor(previous.event) || isTimelineAnchor(event) ? 6 : 0;
       const minimumLaneGap = nodeRightExtent(
         previous.event,
         workNumbers.get(workKey(previous.event)),
-      ) + nodeClearance(event) + 14;
+      ) + nodeClearance(event) + 18 + anchorGap;
       x = Math.max(x, previous.x + minimumLaneGap);
     }
     positions.set(event.event_id, x);
@@ -392,10 +402,13 @@ export function renderFlow(svg, tooltip, dashboard, projectNames) {
     return { laneCount: 0, runCount: 0, eventCount: 0, workCount: 0 };
   }
 
-  const left = 216;
+  // Owner identity cards end at x=208.  Keep a visible buffer before the
+  // first execution node so a short flow never reads as part of the card.
+  const left = 238;
   const layout = buildFlowLayout(events);
   const lanes = layout.runLanes;
   const laneKeys = new Set(lanes.map((lane) => lane.key));
+  const activeRuns = activeRunKeys(dashboard.active_details ?? []);
   const lanePositions = layout.runPositions;
   const ownerRowsByOwner = new Map(layout.ownerRows.map((row) => [row.owner, row]));
   const workNumbers = new Map();
@@ -604,6 +617,7 @@ export function renderFlow(svg, tooltip, dashboard, projectNames) {
       : null;
     const selfResponse = event.event === "contention-decision-responded" && isSelfResponse(event, proposal);
     const workNumber = workNumbers.get(workKey(event)) ?? null;
+    const activeRunStart = event.event === "agent-joined" && activeRuns.has(laneKey(event));
     const node = eventNode(event, x, y, type, selfResponse);
     node.classList.add("flow-node", type);
     node.classList.add(`event-${event.event}`);
@@ -616,6 +630,7 @@ export function renderFlow(svg, tooltip, dashboard, projectNames) {
         event.scope,
         event.transaction_id,
         workNumber ? `${t("flow.work")} ${workNumber}` : null,
+        activeRunStart ? t("flow.running") : null,
       ].filter(Boolean).join(" · "),
     );
     if (event.event === "contention-decision-proposed") node.classList.add("decision-proposal");
@@ -629,6 +644,7 @@ export function renderFlow(svg, tooltip, dashboard, projectNames) {
       );
     }
     if (event.event === "agent-joined") node.classList.add("start");
+    if (activeRunStart) node.classList.add("active-run-start");
     if (event.event === "claim-paused" && event.details?.disposition) {
       node.classList.add(`pause-${event.details.disposition}`);
     }
@@ -648,6 +664,11 @@ export function renderFlow(svg, tooltip, dashboard, projectNames) {
     node.addEventListener("focus", show);
     node.addEventListener("mouseleave", () => { tooltip.hidden = true; });
     node.addEventListener("blur", () => { tooltip.hidden = true; });
+    if (activeRunStart) {
+      const halo = element("circle", { cx: x, cy: y, r: 11, "aria-hidden": "true" });
+      halo.classList.add("flow-active-run-halo");
+      svg.append(halo);
+    }
     svg.append(node);
 
     if (workNumber) {
@@ -780,13 +801,33 @@ export function renderFlow(svg, tooltip, dashboard, projectNames) {
 
   const first = events[0];
   const last = events[events.length - 1];
-  const firstText = element("text", { x: left, y: 20 });
-  firstText.classList.add("time-label");
-  firstText.textContent = timestamp(first.at);
-  const lastText = element("text", { x: positions.get(last.event_id), y: 20, "text-anchor": "end" });
-  lastText.classList.add("time-label");
-  lastText.textContent = timestamp(last.at);
-  svg.append(firstText, lastText);
+  const ruler = element("line", {
+    x1: left,
+    y1: layout.timeAxisY + 4,
+    x2: width - 12,
+    y2: layout.timeAxisY + 4,
+  });
+  ruler.classList.add("flow-time-axis");
+  const firstLabel = timestamp(first.at);
+  const lastLabel = timestamp(last.at);
+  if (timeLabelMode(left, positions.get(last.event_id)) === "range") {
+    const rangeText = element("text", { x: left, y: layout.timeAxisY });
+    rangeText.classList.add("time-label", "time-range-label");
+    rangeText.textContent = firstLabel === lastLabel ? firstLabel : `${firstLabel} → ${lastLabel}`;
+    svg.append(ruler, rangeText);
+  } else {
+    const firstText = element("text", { x: left, y: layout.timeAxisY });
+    firstText.classList.add("time-label");
+    firstText.textContent = firstLabel;
+    const lastText = element("text", {
+      x: positions.get(last.event_id),
+      y: layout.timeAxisY,
+      "text-anchor": "end",
+    });
+    lastText.classList.add("time-label");
+    lastText.textContent = lastLabel;
+    svg.append(ruler, firstText, lastText);
+  }
 
   return {
     laneCount: layout.ownerRows.length,
