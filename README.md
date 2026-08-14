@@ -5,14 +5,15 @@
 Dev Mesh 是面向多个 Agent 共享同一个 Git 工作区的当前代协同层。它为短周期工作提供明确
 权限，处理工作重叠，串行化协作式 Git 发布，并留下可在事后检查的有界证据。
 
-系统有意保持本地化和轻量：普通的非重叠修改只经过一个 Run、一个 Claim、一次受管提交和
-一次干净退出。只有实际发生重叠时，才会进入争用处理、临时分支和微事务。
+系统有意保持本地化和轻量：普通的非重叠修改只经过一个 Run、一个 Claim、一个 Work Result
+和一次干净退出。Git 提交是可选且独立的发布步骤；只有实际发生重叠时，才会进入争用处理、
+临时分支和微事务。
 
 ## 当前代
 
-当前启用的权限合同是 `dev-mesh.coordination@20260812.1`。这是第二代实现，但协议使用不可变
+当前启用的权限合同是 `dev-mesh.coordination@20260814.1`。这是第二代实现，但协议使用不可变
 的 `YYYYMMDD.x` 标识，而不是持续变化的 `v2` 标签。可选且兼容的跨项目证据合同是
-`dev-mesh.cross-project-collaboration@20260813.1`。
+`dev-mesh.cross-project-collaboration@20260814.1`。
 
 工作区权限位于 `.dev-mesh/`。已退役的 `.agent-coordination/` 状态不会迁移或恢复；切换后只
 保留用于阻止旧写入方的 tombstone。退役流程见 [`docs/CUTOVER.md`](docs/CUTOVER.md)。
@@ -21,7 +22,11 @@ Dev Mesh 是面向多个 Agent 共享同一个 Git 工作区的当前代协同�
 
 - **Run** — 一个 Agent 任务在一个 Git 工作区中的执行身份。
 - **Claim** — 该 Run 可以修改的精确路径和语义资源。
-- **Contention** — Claim 重叠时的有界决策：等待、重分配、交接，或使用临时事务分支。
+- **Work Result** — 完成工作的非权限证据；它释放 Claim，但不声称已提交或提供私有回滚点。
+- **Workspace bytes** — 对明确声明的 Git ignored 小文件记录有界内容指纹，使其也能完成
+  Work Result 和 baseline 接力；它不创建分支、不提交数据，也不替代数据库事务。
+- **Contention** — Claim 重叠时，待写入方可以直接等待；只有重分配、交接、独占或分支卸载
+  会进入双方确认。
 - **受管 Git 发布** — 直接提交和事务发布共享一个 canonical Git fence，避免协作 Agent 争用
   工作区 index 或分支。
 - **Events** — 低频、不可变的生命周期证据；heartbeat 只更新快照，不产生事件流量。
@@ -38,11 +43,18 @@ Dev Mesh 记录通信，但不负责投递。Agent 必须先通过宿主环境�
 
 ```text
 检查 -> 加入 Run -> Claim 有界工作 -> 编辑 -> 验证
-     -> 受管直接提交 -> 释放 Claim -> 离开 Run
+     -> 完成 Work Result -> 释放 Claim -> 离开 Run
+                               \
+                                -> 可选受管发布
 ```
 
 没有重叠时，不会引入额外协调流程。返回的 `next_action` 发现重叠或恢复需求时，技能才会把
 Agent 路由到对应的争用、事务或恢复步骤。
+
+最常见的重叠不需要完整协商：后到的 Claim 自动进入待仲裁状态，选择等待后，原 Claim 完成
+即可激活。`parallel-tx` 不是两个 Agent 同时离开主线，而是把待写入方卸载到一个短命分支；
+只有双方都声明了互不相交的语义写资源时才能选择它。继承 dirty baseline 时，接受动作同时绑定
+内容摘要、canonical revision 和分支；其间任一项变化都会返回新证据，要求 Agent 再确认一次。
 
 ## 协同模型一览
 
@@ -89,8 +101,8 @@ python3 scripts/install_console_service.py status
 
 ## 仓库导航
 
-- [`runtime/dev_mesh_coord/`](runtime/dev_mesh_coord/) — 权限、争用、可恢复 Git effect、受管
-  提交、微事务和跨项目关系生产端。
+- [`runtime/dev_mesh_coord/`](runtime/dev_mesh_coord/) — 权限、Work Result、dirty baseline、争用、
+  可恢复 Git effect、受管提交、微事务和跨项目关系生产端。
 - [`runtime/dev_mesh_observer/`](runtime/dev_mesh_observer/) — 有界源验证、catalog、诊断和报告。
 - [`runtime/dev_mesh_console/`](runtime/dev_mesh_console/) — loopback API、采集生命周期和浏览器
   看板。

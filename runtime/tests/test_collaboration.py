@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from unittest import mock
 
-from dev_mesh_coord import contention, interactions, work
+from dev_mesh_coord import contention, interactions, work, work_results
 from dev_mesh_coord.control_plane import initialize, resolve
 from dev_mesh_coord.lifecycle import (
     activate_pending_claim,
@@ -41,7 +41,6 @@ class CollaborationTest(GitWorkspaceTest):
             task="parallel",
             paths=["app.txt"],
             semantic_writes=["router"],
-            allow_overlap=True,
         )
         plane = resolve(self.root)
         conflicts = list((plane.state_root / "contentions/active").glob("*.json"))
@@ -83,7 +82,7 @@ class CollaborationTest(GitWorkspaceTest):
             owner="agent-b",
             run_id="run-b",
             epoch=1,
-            decision="wait",
+            decision="exclusive",
             reason="semantic writes overlap",
         )
         revision = int(proposed["decision_revision"])
@@ -106,6 +105,120 @@ class CollaborationTest(GitWorkspaceTest):
             evidence="original writer released",
         )
         self.assertEqual(active["status"], "active")
+
+    def test_pending_participant_selects_wait_without_shared_consensus(self) -> None:
+        pending, opened = self._overlap()
+        completed = contention.select_wait(
+            self.root,
+            contention_id=str(opened["contention_id"]),
+            scope="parallel",
+            owner="agent-b",
+            run_id="run-b",
+            reason="primary change is short",
+        )
+        self.assertEqual(completed["status"], "completed")
+        self.assertEqual(completed["decision"], "wait")
+        with self.assertRaisesRegex(ValueError, "still overlaps"):
+            activate_pending_claim(
+                self.root,
+                scope="parallel",
+                owner="agent-b",
+                run_id="run-b",
+            )
+
+        (self.root / "app.txt").write_text("base\nprimary complete\n", encoding="utf-8")
+        work_results.complete_claim(
+            self.root,
+            result_id="primary-result",
+            scope="primary",
+            owner="agent-a",
+            run_id="run-a",
+            summary="primary complete",
+            validation_evidence="focused checks passed",
+        )
+        continued = activate_pending_claim(
+            self.root,
+            scope="parallel",
+            owner="agent-b",
+            run_id="run-b",
+        )
+        self.assertEqual(continued["status"], "pending-baseline")
+        accepted = work_results.accept_baseline(
+            self.root,
+            scope="parallel",
+            owner="agent-b",
+            run_id="run-b",
+            baseline_sha256=str(continued["baseline"]["baseline_sha256"]),
+        )
+        self.assertEqual(accepted["status"], "active")
+
+        events = [
+            json.loads(path.read_text())
+            for path in resolve(self.root).state_root.joinpath("events").glob("*.json")
+        ]
+        self.assertEqual(
+            sum(event["event"] == "contention-completed" for event in events), 1
+        )
+        self.assertFalse(
+            any(event["event"] == "contention-decision-proposed" for event in events)
+        )
+        self.assertFalse(
+            any(event["event"] == "contention-decision-responded" for event in events)
+        )
+        retried = contention.select_wait(
+            self.root,
+            contention_id=str(opened["contention_id"]),
+            scope="parallel",
+            owner="agent-b",
+            run_id="run-b",
+            reason="primary change is short",
+        )
+        self.assertFalse(retried["event_emitted"])
+        with self.assertRaisesRegex(ValueError, "does not match"):
+            contention.select_wait(
+                self.root,
+                contention_id=str(opened["contention_id"]),
+                scope="parallel",
+                owner="agent-b",
+                run_id="run-b",
+                reason="a different retry reason",
+            )
+
+    def test_branch_offload_requires_semantic_resources_from_every_claim(self) -> None:
+        join_run(self.root, run_id="run-c", owner="agent-c", task="unclassified overlap")
+        release_claim(
+            self.root,
+            scope="primary",
+            owner="agent-a",
+            run_id="run-a",
+            summary="replace with unclassified authority",
+        )
+        create_claim(
+            self.root,
+            scope="unclassified-primary",
+            owner="agent-a",
+            run_id="run-a",
+            task="unclassified primary",
+            paths=["app.txt"],
+        )
+        pending = create_claim(
+            self.root,
+            scope="unclassified-pending",
+            owner="agent-c",
+            run_id="run-c",
+            task="unclassified pending",
+            paths=["app.txt"],
+        )
+        with self.assertRaisesRegex(ValueError, "requires semantic writes"):
+            contention.propose(
+                self.root,
+                contention_id=str(pending["contention_id"]),
+                owner="agent-c",
+                run_id="run-c",
+                epoch=1,
+                decision="parallel-tx",
+                reason="missing semantic evidence must fail closed",
+            )
 
     def test_contention_open_repairs_snapshot_event_and_claim_correlation_gaps(self) -> None:
         with mock.patch.object(

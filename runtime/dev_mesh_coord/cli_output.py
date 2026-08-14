@@ -36,6 +36,18 @@ _FIELDS = (
     "alternate_scope",
     "transaction_id",
     "direct_commit_id",
+    "result_id",
+    "projection_mode",
+    "workspace_bytes_sha256",
+    "workspace_file_count",
+    "workspace_missing_path_count",
+    "workspace_total_bytes",
+    "baseline_sha256",
+    "evidence_sha256",
+    "baseline_changed",
+    "baseline_accepted",
+    "retry_required",
+    "source_kind",
     "cleanup_id",
     "candidate_revision",
     "base_revision",
@@ -55,6 +67,7 @@ _FIELDS = (
     "source_workspace_id",
     "target_workspace_id",
     "target_task_id",
+    "reconciled",
     "reason_code",
     "plan_digest",
     "cutover_id",
@@ -98,6 +111,35 @@ def _record(value: Mapping[str, object]) -> dict[str, object]:
     cleanup = value.get("cleanup")
     if isinstance(cleanup, Mapping):
         projected["cleanup"] = _record(cleanup)
+    baseline = value.get("baseline")
+    if isinstance(baseline, Mapping):
+        projected["baseline"] = {
+            key: baseline[key]
+            for key in (
+                "baseline_sha256",
+                "evidence_sha256",
+                "actual_path_count",
+                "actual_paths_sha256",
+                "actual_path_sample",
+                "related_result_ids",
+                "projection_mode",
+                "workspace_bytes_sha256",
+                "workspace_file_count",
+                "workspace_missing_path_count",
+                "workspace_total_bytes",
+            )
+            if key in baseline
+        }
+    status = value.get("status")
+    if status in {"pending-arbitration", "pending-baseline"}:
+        projected["write_authority"] = "none"
+    elif status == "active" and value.get("scope") is not None:
+        projected["write_authority"] = "granted"
+    if status == "pending-baseline" and isinstance(baseline, Mapping):
+        projected["required_action"] = "inspect_declared_paths_then_accept_exact_baseline"
+        projected["accept_baseline_sha256"] = baseline.get("baseline_sha256")
+        if value.get("baseline_changed") is True:
+            projected["retry_required"] = True
     return projected
 
 
@@ -133,9 +175,13 @@ def _next_action(command: str, value: Mapping[str, object]) -> str | None:
     status = value.get("status")
     if command == "join":
         return "inspect_scoped_status_then_claim"
-    if command in {"claim", "claim-activate", "claim-resume"}:
+    if command in {"claim", "claim-activate", "claim-resume", "claim-pause", "claim-baseline-accept"}:
         if status == "pending-arbitration":
             return "stop_overlap_writes_and_coordinate"
+        if status == "pending-baseline":
+            if value.get("baseline_changed") is True:
+                return "review_changed_baseline_then_retry_accept"
+            return "review_and_accept_inherited_baseline"
         if status == "paused":
             return "wait_for_resume_condition"
         if status == "active":
@@ -146,12 +192,22 @@ def _next_action(command: str, value: Mapping[str, object]) -> str | None:
             if status == "completed"
             else "run_direct_commit_reconcile_with_verbose_output"
         )
+    if command == "claim-complete":
+        return "leave_when_no_owned_authority_remains"
+    if command == "publish-results":
+        return (
+            "leave_when_no_owned_authority_remains"
+            if status == "completed"
+            else "run_direct_commit_reconcile_with_verbose_output"
+        )
     if command == "claim-release":
         return "leave_when_no_owned_authority_remains"
     if command == "leave":
         return "done"
     if command == "contention-propose":
         return "collect_exact_revision_responses"
+    if command == "contention-wait":
+        return "wait_for_overlap_release_then_activate_claim"
     if command == "contention-respond":
         return "coordinator_enacts_after_all_participants_accept"
     if command in {"contention-enact", "contention-cancel"}:
@@ -168,7 +224,7 @@ def _next_action(command: str, value: Mapping[str, object]) -> str | None:
         return "include_correlation_in_target_task_message"
     if command == "cross-project-bind":
         return "perform_requested_work_then_close_relation"
-    if command == "cross-project-close":
+    if command in {"cross-project-close", "cross-project-reconcile-close"}:
         return "done"
     if command == "ack":
         return "complete_explicit_authority_transfer_if_needed"
@@ -262,11 +318,11 @@ def _compact_status(value: Mapping[str, object], *, filtered: bool) -> dict[str,
         {
             "kind": "claim",
             **_record(item),
+            "next_action": _next_action("claim-pause" if item.get("status") == "paused" else "claim", item),
         }
         for item in claims
         if item.get("status") in {"pending-arbitration", "paused"}
     ]
-    action_required = [*blocker_items, *pending]
     result: dict[str, object] = {
         "protocol": value.get("protocol"),
         "counts": {
@@ -277,9 +333,10 @@ def _compact_status(value: Mapping[str, object], *, filtered: bool) -> dict[str,
             "pending_claims": sum(
                 item.get("status") == "pending-arbitration" for item in claims
             ),
-            "blocked_runs": len(blocker_items),
+            "leave_blocked_runs": len(blocker_items),
         },
-        "action_required": _collection(action_required),
+        "action_required": _collection(pending),
+        "leave_constraints": _collection(blocker_items),
     }
     if filtered:
         result["runs"] = _collection(runs)
@@ -316,6 +373,8 @@ def project(
         return _compact_status(selected, filtered=filtered)
     if verbose:
         result = dict(selected)
+        if command == "contention-wait":
+            result["write_authority"] = "none"
         if command == "send":
             result["next_action"] = _next_action(command, selected)
             result["dev_mesh_effect"] = "record_persisted"
@@ -323,6 +382,8 @@ def project(
             result["target_task_woken_by_dev_mesh"] = False
         return result
     result = _record(selected)
+    if command == "contention-wait":
+        result["write_authority"] = "none"
     for key, item in selected.items():
         if key in _COLLECTION_KEYS and isinstance(item, list):
             result[key] = _collection(item)

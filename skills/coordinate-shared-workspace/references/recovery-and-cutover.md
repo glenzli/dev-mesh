@@ -33,6 +33,8 @@ python3 <skill>/scripts/coord.py --root ROOT run-recover-authority \
 Recovery preflights every referenced object before changing one. It rebinds ordinary authority to
 the same owner and records bounded lineage. A sealed direct-commit or contention terminal intent
 keeps the original exact Run identity and must be completed by reconciliation, not rewritten.
+The same rule applies to a Claim already in `completing`: recovery finishes its sealed Work Result
+and terminal event instead of changing the recorded author Run.
 
 When a Run cannot close normally, record the real terminal outcome and reason:
 
@@ -76,13 +78,33 @@ Doctors report missing, orphaned, mismatched, symlinked, or residue facts. They 
 Observer may report missing/duplicate terminal evidence, invalid or missing sources, stale
 collection, and cutover readiness; these remain diagnostics and never authorize repair.
 
-## Activate the protocol in a stop window
+## Activate or upgrade the protocol in a stop window
 
-Cutover is fresh-start retirement, not migration. Do not run it during ordinary Agent work. Read
+Cutover is fresh-start retirement, not object migration. Do not run it during ordinary Agent work. Read
 `docs/CUTOVER.md` in the Dev Mesh repository before proceeding and require explicit user
 authorization for every destructive or global step.
 
-Build and review a plan outside both state roots:
+For a current `20260812.1` workspace, build the repository-local version plan:
+
+```bash
+python3 <skill>/scripts/coord.py --root ROOT --verbose version-cutover-plan \
+  --cutover-id CUTOVER_ID
+```
+
+After every writer is stopped, apply and verify the exact digest. Retiring nonempty old authority
+requires the explicit second confirmation:
+
+```bash
+python3 <skill>/scripts/coord.py --root ROOT version-cutover-apply \
+  --cutover-id CUTOVER_ID --plan-digest PLAN_DIGEST \
+  --confirm-agents-stopped --confirm-discard-old-authority
+
+python3 <skill>/scripts/coord.py --root ROOT version-cutover-verify \
+  --cutover-id CUTOVER_ID --plan-digest PLAN_DIGEST
+```
+
+For a pre-Dev-Mesh `.agent-coordination` workspace, build and review the legacy plan outside both
+state roots:
 
 ```bash
 python3 <skill>/scripts/coord.py --root ROOT --verbose cutover-plan \

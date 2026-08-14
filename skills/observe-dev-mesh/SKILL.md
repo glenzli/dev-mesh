@@ -1,12 +1,12 @@
 ---
 name: observe-dev-mesh
-description: Collect, diagnose, and display Dev Mesh coordination protocol 20260812.1 across local Git workspaces without writing source workspaces. Use when opening the local Web Console, checking active authority, viewing project-linked collaboration flows, measuring contention or transactions, investigating audit gaps and source integrity, or assessing cutover readiness.
+description: Collect, diagnose, and display Dev Mesh coordination protocol 20260814.1 across local Git workspaces without writing source workspaces. Use when opening the local Web Console, checking active authority and inherited baselines, viewing project-linked collaboration flows and Work Results, measuring contention or transactions, investigating audit gaps and source integrity, or assessing cutover readiness.
 ---
 
 # Observe Dev Mesh
 
 Use the repository-owned read-only Observer. It discovers only the current
-`.dev-mesh/coord/20260812.1` control plane and writes solely to the caller-selected SQLite catalog.
+`.dev-mesh/coord/20260814.1` control plane and writes solely to the caller-selected SQLite catalog.
 
 ## Open the Web Console
 
@@ -48,6 +48,8 @@ Use `--workspace <workspace-id>` for one project and `--stale-after-seconds <sec
 stalled-work diagnostics. Treat these fields as the operational summary:
 
 - `active`: current Runs, Claims, contentions, transactions, cleanup, work, and managed direct commits.
+- `work_results`: completed non-authoritative work, pending dirty-baseline acknowledgement, and
+  completion intents awaiting reconciliation.
 - `diagnostics`: bounded integrity, lifecycle, recovery, terminal-correlation, and ownership findings.
 - `cutover_readiness`: fail-closed answer for whether the observed current control planes are empty
   and audit-complete enough to retire.

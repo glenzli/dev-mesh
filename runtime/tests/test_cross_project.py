@@ -9,7 +9,7 @@ from unittest import mock
 from dev_mesh_coord import cross_project
 from dev_mesh_coord.cli import main
 from dev_mesh_coord.control_plane import initialize, resolve
-from dev_mesh_coord.lifecycle import join_run
+from dev_mesh_coord.lifecycle import join_run, leave_run
 
 from helpers import GitWorkspaceTest, git
 
@@ -104,10 +104,10 @@ class CrossProjectCollaborationTest(GitWorkspaceTest):
         self.assertLess(max(path.stat().st_size for path in event_paths), 4096)
         for event in [*self._events(self.root), *self._events(self.target)]:
             self.assertEqual(event["event"], "message-sent")
-            self.assertEqual(event["protocol_version"], "20260812.1")
+            self.assertEqual(event["protocol_version"], "20260814.1")
             self.assertEqual(event["authority_effect"], "none")
             extension = event["cross_project"]
-            self.assertEqual(extension["protocol_version"], "20260813.1")
+            self.assertEqual(extension["protocol_version"], "20260814.1")
             self.assertEqual(extension["collaboration_id"], collaboration_id)
             self.assertNotIn("body", event)
             self.assertNotIn("prompt", event)
@@ -154,6 +154,172 @@ class CrossProjectCollaborationTest(GitWorkspaceTest):
                 target_run_id="target-run",
                 target_task_id="target-task",
                 kind="request",
+                outcome="completed",
+            )
+
+    def test_terminal_target_run_can_be_closed_by_same_owner_reconciliation(self) -> None:
+        collaboration_id = "late-target-close"
+        source_workspace_id = cross_project.workspace_id(self.root)
+        cross_project.open_collaboration(
+            self.root,
+            collaboration_id=collaboration_id,
+            source_owner="source-agent",
+            source_run_id="source-run",
+            target_task_id="target-task",
+            target_workspace_id=cross_project.workspace_id(self.target),
+            target_owner="target-agent",
+            kind="integration",
+        )
+        cross_project.bind_collaboration(
+            self.target,
+            collaboration_id=collaboration_id,
+            source_workspace_id=source_workspace_id,
+            source_owner="source-agent",
+            source_run_id="source-run",
+            target_owner="target-agent",
+            target_run_id="target-run",
+            target_task_id="target-task",
+            kind="integration",
+        )
+        leave_run(
+            self.target,
+            run_id="target-run",
+            owner="target-agent",
+            outcome="completed",
+            summary="target work completed before relation close",
+        )
+        join_run(
+            self.target,
+            run_id="target-close-run",
+            owner="target-agent",
+            task="reconcile late relation close",
+        )
+
+        with self.assertRaisesRegex(ValueError, "not active"):
+            cross_project.close_collaboration(
+                self.target,
+                collaboration_id=collaboration_id,
+                actor_role="target",
+                owner="target-agent",
+                run_id="target-run",
+                source_workspace_id=source_workspace_id,
+                source_owner="source-agent",
+                source_run_id="source-run",
+                target_workspace_id=cross_project.workspace_id(self.target),
+                target_owner="target-agent",
+                target_run_id="target-run",
+                target_task_id="target-task",
+                kind="integration",
+                outcome="completed",
+            )
+        with self.assertRaisesRegex(ValueError, "differs from the original"):
+            cross_project.bind_collaboration(
+                self.target,
+                collaboration_id=collaboration_id,
+                source_workspace_id=source_workspace_id,
+                source_owner="source-agent",
+                source_run_id="source-run",
+                target_owner="target-agent",
+                target_run_id="target-close-run",
+                target_task_id="target-task",
+                kind="integration",
+            )
+
+        with mock.patch.object(cross_project, "write_event", side_effect=RuntimeError("stop")):
+            with self.assertRaisesRegex(RuntimeError, "stop"):
+                cross_project.reconcile_closed_collaboration(
+                    self.target,
+                    collaboration_id=collaboration_id,
+                    owner="target-agent",
+                    run_id="target-close-run",
+                    outcome="completed",
+                )
+        output = StringIO()
+        with redirect_stdout(output):
+            result = main(
+                [
+                    "--root",
+                    str(self.target),
+                    "cross-project-reconcile-close",
+                    "--collaboration-id",
+                    collaboration_id,
+                    "--owner",
+                    "target-agent",
+                    "--run-id",
+                    "target-close-run",
+                    "--outcome",
+                    "completed",
+                ]
+            )
+        self.assertEqual(result, 0)
+        closed = json.loads(output.getvalue())
+        again = cross_project.reconcile_closed_collaboration(
+            self.target,
+            collaboration_id=collaboration_id,
+            owner="target-agent",
+            run_id="target-close-run",
+            outcome="completed",
+        )
+        self.assertTrue(closed["reconciled"])
+        self.assertEqual(closed["next_action"], "done")
+        self.assertEqual(again["message_id"], closed["message_id"])
+        closed_events = [
+            event
+            for event in self._events(self.target)
+            if event["cross_project"]["phase"] == "closed"
+        ]
+        self.assertEqual(len(closed_events), 1)
+        extension = closed_events[0]["cross_project"]
+        self.assertEqual(extension["target"]["run_id"], "target-run")
+        self.assertEqual(extension["reconciliation"]["by"]["run_id"], "target-close-run")
+        self.assertEqual(
+            extension["reconciliation"]["basis"],
+            "bound-target-run-terminal",
+        )
+
+    def test_late_close_rejects_active_target_and_different_owner(self) -> None:
+        collaboration_id = "late-close-gates"
+        cross_project.open_collaboration(
+            self.root,
+            collaboration_id=collaboration_id,
+            source_owner="source-agent",
+            source_run_id="source-run",
+            target_task_id="target-task",
+            target_workspace_id=cross_project.workspace_id(self.target),
+            target_owner="target-agent",
+            kind="request",
+        )
+        cross_project.bind_collaboration(
+            self.target,
+            collaboration_id=collaboration_id,
+            source_workspace_id=cross_project.workspace_id(self.root),
+            source_owner="source-agent",
+            source_run_id="source-run",
+            target_owner="target-agent",
+            target_run_id="target-run",
+            target_task_id="target-task",
+            kind="request",
+        )
+        join_run(
+            self.target,
+            run_id="other-owner-run",
+            owner="other-agent",
+            task="must not reconcile another owner",
+        )
+        with self.assertRaisesRegex(ValueError, "successor Run"):
+            cross_project.reconcile_closed_collaboration(
+                self.target,
+                collaboration_id=collaboration_id,
+                owner="other-agent",
+                run_id="other-owner-run",
+                outcome="completed",
+            )
+        with self.assertRaisesRegex(ValueError, "normal close"):
+            cross_project.reconcile_closed_collaboration(
+                self.target,
+                collaboration_id=collaboration_id,
+                owner="target-agent",
+                run_id="target-run",
                 outcome="completed",
             )
 

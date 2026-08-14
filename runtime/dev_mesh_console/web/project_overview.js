@@ -216,8 +216,16 @@ function relationLabel(edge, translate, formatNumber) {
   if (Number(edge.collaboration_count) > 0) {
     values.push(`${translate("projectOverview.crossTask")} ${formatNumber(edge.collaboration_count)}`);
   }
-  if (Number(edge.open_collaboration_count) > 0) {
-    values.push(`${translate("projectOverview.open")} ${formatNumber(edge.open_collaboration_count)}`);
+  const pending = Number(edge.pending_settlement_count || 0);
+  const active = Number(
+    edge.active_collaboration_count
+      ?? Math.max(0, Number(edge.open_collaboration_count || 0) - pending),
+  );
+  if (active > 0) {
+    values.push(`${translate("projectOverview.open")} ${formatNumber(active)}`);
+  }
+  if (pending > 0) {
+    values.push(`${translate("projectOverview.pendingSettlement")} ${formatNumber(pending)}`);
   }
   return values.join(" · ");
 }
@@ -310,7 +318,8 @@ export function renderProjectOverview(
     label.textContent = relationLabel(edge, translate, formatNumber);
     const title = svgElement("title");
     title.textContent = edge.samples?.map(
-      (sample) => [sample.owner, sample.run_id, sample.collaboration_id].filter(Boolean).join(" · "),
+      (sample) => [sample.owner, sample.run_id, sample.collaboration_id, sample.status]
+        .filter(Boolean).join(" · "),
     ).join("\n") || label.textContent;
     group.append(title, path, label);
     svg.append(group);

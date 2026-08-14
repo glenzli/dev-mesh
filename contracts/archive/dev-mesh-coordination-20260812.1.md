@@ -1,6 +1,6 @@
 # `dev-mesh.coordination@20260812.1`
 
-Status: isolated release candidate; not active in the canonical workspace
+Status: archived; frozen and not writable
 
 Event schema: `1`
 

@@ -1,11 +1,11 @@
 # Dev Mesh Architecture
 
 Dev Mesh coordinates short-lived Agent work inside one shared Git workspace. The activated
-coordination contract is `dev-mesh.coordination@20260812.1`; protocol versions use `YYYYMMDD.x` and
+coordination contract is `dev-mesh.coordination@20260814.1`; protocol versions use `YYYYMMDD.x` and
 are immutable after activation.
 
 Cross-project task correlation is the separate optional
-`dev-mesh.cross-project-collaboration@20260813.1` extension. It reuses the base event carrier and
+`dev-mesh.cross-project-collaboration@20260814.1` extension. It reuses the base event carrier and
 does not change workspace authority or require a control-plane migration.
 
 ## Runtime boundaries
@@ -32,11 +32,13 @@ does not change workspace authority or require a control-plane migration.
 └── coord/
     ├── current.json
     ├── cutovers/
-    └── 20260812.1/
+    ├── archive/<cutover-id>/20260812.1/
+    └── 20260814.1/
         ├── protocol.json
         ├── events/
         ├── runs/
         ├── claims/
+        ├── work-results/
         ├── handoffs/
         ├── contentions/
         ├── transactions/
@@ -56,7 +58,7 @@ only `.agent-coordination/TOMBSTONE.json` at the old location to fence legacy wr
 ## Normal lifecycle
 
 ```text
-join Run -> create bounded Claim -> edit -> validate -> managed direct commit -> release -> leave
+join Run -> create bounded Claim -> edit -> validate -> Work Result -> release -> leave
 ```
 
 No overlap means no contention, checkout, or transaction. An overlapping request is pending and has
@@ -69,8 +71,8 @@ its own exact materialization and cleanup facts.
 
 ## Navigation
 
-- Normative behavior: `contracts/dev-mesh-coordination-20260812.1.md`
-- Cross-project correlation: `contracts/dev-mesh-cross-project-collaboration-20260813.1.md`
+- Normative behavior: `contracts/dev-mesh-coordination-20260814.1.md`
+- Cross-project correlation: `contracts/dev-mesh-cross-project-collaboration-20260814.1.md`
 - Current/event schemas: `schemas/`
 - Retirement procedure: `docs/CUTOVER.md`
 - Runtime and fault-injection checks: `runtime/tests/`

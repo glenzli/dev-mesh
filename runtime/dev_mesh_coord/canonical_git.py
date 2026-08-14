@@ -5,16 +5,16 @@ from __future__ import annotations
 import hashlib
 import os
 import subprocess
-import tempfile
 import time
 import uuid
 from pathlib import Path
 
 from . import git_backend as git
 from . import git_effects
-from .constants import MAX_TRANSACTION_CHANGED_PATHS
+from .constants import MAX_CLAIM_PATHS, MAX_WORK_RESULTS_PER_COMMIT
 from .control_plane import ControlPlane, operation
 from .events import build_event, materialized, write_event
+from .workspace_projection import declared_projection, path_projection, within
 from .storage import (
     now,
     read_json,
@@ -60,26 +60,8 @@ def _path(plane: ControlPlane, direct_commit_id: str, *, active: bool = True) ->
     )
 
 
-def _within(changed: str, declared: str) -> bool:
-    changed_path = Path(changed)
-    declared_path = Path(declared)
-    return changed_path == declared_path or declared_path in changed_path.parents
-
-
-def _path_projection(paths: list[str]) -> dict[str, object]:
-    digest = hashlib.sha256()
-    for path in paths:
-        digest.update(path.encode("utf-8", errors="surrogateescape"))
-        digest.update(b"\0")
-    return {
-        "actual_path_count": len(paths),
-        "actual_paths_sha256": digest.hexdigest(),
-        "actual_path_sample": paths[:16],
-    }
-
-
 def _staged_projection(base: str, tree: str, paths: list[str]) -> dict[str, object]:
-    path_projection = _path_projection(paths)
+    projected_paths = path_projection(paths)
     digest = hashlib.sha256()
     digest.update(base.encode("ascii"))
     digest.update(b"\0")
@@ -87,9 +69,9 @@ def _staged_projection(base: str, tree: str, paths: list[str]) -> dict[str, obje
     return {
         "staged_tree": tree,
         "staged_diff_sha256": digest.hexdigest(),
-        "staged_path_count": path_projection["actual_path_count"],
-        "staged_paths_sha256": path_projection["actual_paths_sha256"],
-        "staged_path_sample": path_projection["actual_path_sample"],
+        "staged_path_count": projected_paths["actual_path_count"],
+        "staged_paths_sha256": projected_paths["actual_paths_sha256"],
+        "staged_path_sample": projected_paths["actual_path_sample"],
     }
 
 
@@ -123,68 +105,42 @@ def _staged_paths(root: Path) -> list[str]:
 def _expected_projection(
     root: Path, plane: ControlPlane, declared: list[str], base_revision: str
 ) -> dict[str, object]:
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix="direct-index-", suffix=".tmp", dir=plane.state_root / "locks"
+    projection = declared_projection(
+        root, plane, declared, base_revision, require_changes=True
     )
-    os.close(descriptor)
-    temporary = Path(temporary_name)
-    temporary.unlink()
-    environment = {**os.environ, "GIT_INDEX_FILE": str(temporary)}
-    try:
-        _run_git(root, "read-tree", base_revision, environment=environment)
-        _run_git(root, "add", "-A", "--", *declared, environment=environment)
-        expected_tree = _run_git(
-            root, "write-tree", environment=environment
-        ).stdout.strip()
-        raw_paths = _run_git(
-            root,
-            "diff",
-            "--cached",
-            "--name-only",
-            "-z",
-            "--no-renames",
-            base_revision,
-            environment=environment,
-        ).stdout.encode("utf-8", errors="surrogateescape")
-        paths = sorted(
-            path.decode("utf-8", errors="surrogateescape")
-            for path in raw_paths.split(b"\0")
-            if path
-        )
-    finally:
-        try:
-            temporary.unlink()
-        except FileNotFoundError:
-            pass
-    if not paths:
-        raise ValueError("direct commit has no declared-path changes")
-    if len(paths) > MAX_TRANSACTION_CHANGED_PATHS:
-        raise ValueError(
-            f"direct commit changes more than {MAX_TRANSACTION_CHANGED_PATHS} paths"
-        )
-    outside = [
-        path
-        for path in paths
-        if not any(_within(path, allowed) for allowed in declared)
-    ]
-    if outside:
-        raise ValueError(
-            "direct commit projection exceeds declared paths: " + ", ".join(outside)
-        )
-    worktree_digest = hashlib.sha256()
-    worktree_digest.update(base_revision.encode("ascii"))
-    worktree_digest.update(b"\0")
-    worktree_digest.update(expected_tree.encode("ascii"))
-    worktree_digest.update(b"\0")
-    for path in paths:
-        worktree_digest.update(path.encode("utf-8", errors="surrogateescape"))
-        worktree_digest.update(b"\0")
     return {
-        "expected_index_tree": expected_tree,
-        "intended_worktree_sha256": worktree_digest.hexdigest(),
-        "intended_paths": paths,
-        **_path_projection(paths),
+        **projection,
+        "intended_worktree_sha256": projection["content_sha256"],
+        "intended_paths": projection["actual_paths"],
     }
+
+
+def _result_publication_blockers(
+    plane: ControlPlane, declared: list[str]
+) -> list[dict[str, object]]:
+    """Return current writable Claims whose shared bytes still cover result paths."""
+
+    blockers: list[dict[str, object]] = []
+    for path in sorted((plane.state_root / "claims").glob("*.json")):
+        claim = read_json(path, base=plane.state_root)
+        if claim.get("intent") == "read":
+            continue
+        claim_paths = [item for item in claim.get("paths", []) if isinstance(item, str)]
+        if not any(
+            within(left, right) or within(right, left)
+            for left in declared
+            for right in claim_paths
+        ):
+            continue
+        blockers.append(
+            {
+                "scope": claim.get("scope"),
+                "owner": claim.get("owner"),
+                "run_id": claim.get("run_id"),
+                "status": claim.get("status"),
+            }
+        )
+    return blockers
 
 
 def _assert_projection_unchanged(
@@ -375,7 +331,8 @@ def _advance(
                 "reason_code": "canonical-commit-completed",
                 "base_revision": base,
                 "candidate_revision": candidate,
-                **_path_projection(staged_paths),
+                "work_result_ids": record.get("work_result_ids", []),
+                **path_projection(staged_paths),
             },
         )
         record.update(
@@ -421,6 +378,76 @@ def _advance(
     raise ValueError("direct commit has an unsupported recovery status")
 
 
+def _start_commit(
+    root: Path,
+    plane: ControlPlane,
+    canonical_fd: int,
+    *,
+    scope: str,
+    owner: str,
+    run_id: str,
+    declared: list[str],
+    summary: str,
+    validation_evidence: str,
+    source_kind: str,
+    work_result_ids: list[str],
+) -> dict[str, object]:
+    branch = git.branch(root)
+    if not git.index_is_empty(root):
+        raise ValueError("canonical Git index must be empty before direct commit")
+    base = git.head(root)
+    projection = _expected_projection(root, plane, declared, base)
+    direct_commit_id = f"direct-commit-{uuid.uuid4().hex}"
+    started_event = build_event(
+        "direct-commit-started",
+        payload={
+            "direct_commit_id": direct_commit_id,
+            "scope": scope,
+            "owner": owner,
+            "run_id": run_id,
+            "status": "staging",
+            "source_kind": source_kind,
+            "work_result_ids": work_result_ids,
+            "base_revision": base,
+            "canonical_branch": branch,
+            **path_projection(
+                [
+                    item
+                    for item in projection.get("intended_paths", [])
+                    if isinstance(item, str)
+                ]
+            ),
+        },
+    )
+    record = materialized(
+        {
+            "schema": 1,
+            "direct_commit_id": direct_commit_id,
+            "scope": scope,
+            "owner": owner,
+            "run_id": run_id,
+            "status": "staging",
+            "source_kind": source_kind,
+            "work_result_ids": work_result_ids,
+            "canonical_branch": branch,
+            "base_revision": base,
+            "paths": declared,
+            "summary": summary,
+            "validation_evidence": validation_evidence,
+            "started_event": started_event,
+            **projection,
+            "created_at": now(),
+        }
+    )
+    path = _path(plane, direct_commit_id)
+    write_json_exclusive(path, record, base=plane.state_root)
+    _ensure_started(plane, record)
+    try:
+        return _advance(root, plane, path, record, canonical_fd)
+    except (OSError, RuntimeError, ValueError) as error:
+        return _attention(plane, path, record, error)
+
+
 def commit(
     root: Path,
     *,
@@ -457,63 +484,100 @@ def commit(
                 or claim.get("intent") == "read"
             ):
                 raise ValueError("direct commit requires the exact active writable Claim")
+            if claim.get("projection_mode", "git-tree") != "git-tree":
+                raise ValueError("workspace-bytes Claims cannot publish through Git")
             if run.get("owner") != owner or run.get("status") != "active":
                 raise ValueError("direct commit requires the exact active Claim Run")
-            branch = git.branch(root)
-            if branch != claim.get("canonical_branch"):
+            if git.branch(root) != claim.get("canonical_branch"):
                 raise ValueError("canonical branch changed while the Claim was active")
-            if not git.index_is_empty(root):
-                raise ValueError("canonical Git index must be empty before direct commit")
-            base = git.head(root)
             declared = [
                 item for item in claim.get("paths", []) if isinstance(item, str)
             ]
-            projection = _expected_projection(root, plane, declared, base)
-            direct_commit_id = f"direct-commit-{uuid.uuid4().hex}"
-            started_event = build_event(
-                "direct-commit-started",
-                payload={
-                    "direct_commit_id": direct_commit_id,
-                    "scope": scope,
-                    "owner": owner,
-                    "run_id": run_id,
-                    "status": "staging",
-                    "base_revision": base,
-                    "canonical_branch": branch,
-                    **_path_projection(
-                        [
-                            item
-                            for item in projection.get("intended_paths", [])
-                            if isinstance(item, str)
-                        ]
-                    ),
-                },
+            return _start_commit(
+                root,
+                plane,
+                canonical_fd,
+                scope=scope,
+                owner=owner,
+                run_id=run_id,
+                declared=declared,
+                summary=summary,
+                validation_evidence=validation_evidence,
+                source_kind="active-claim",
+                work_result_ids=[],
             )
-            record = materialized(
-                {
-                    "schema": 1,
-                    "direct_commit_id": direct_commit_id,
-                    "scope": scope,
-                    "owner": owner,
-                    "run_id": run_id,
-                    "status": "staging",
-                    "canonical_branch": branch,
-                    "base_revision": base,
-                    "paths": declared,
-                    "summary": summary,
-                    "validation_evidence": validation_evidence,
-                    "started_event": started_event,
-                    **projection,
-                    "created_at": now(),
-                }
+
+
+def commit_results(
+    root: Path,
+    *,
+    result_ids: list[str],
+    owner: str,
+    run_id: str,
+    summary: str,
+    validation_evidence: str,
+) -> dict[str, object]:
+    owner = require_slug(owner, "owner")
+    run_id = require_identifier(run_id, "run id")
+    summary = require_text(summary, "commit summary", 300)
+    validation_evidence = require_text(
+        validation_evidence, "validation evidence", 2000
+    )
+    result_ids = sorted({require_identifier(item, "result id") for item in result_ids})
+    if not result_ids:
+        raise ValueError("publish-results requires at least one Work Result")
+    if len(result_ids) > MAX_WORK_RESULTS_PER_COMMIT:
+        raise ValueError(
+            f"publish-results accepts at most {MAX_WORK_RESULTS_PER_COMMIT} Work Results"
+        )
+    root = git.repository_root(root)
+    with operation(root, "publish-results") as plane:
+        with git_effects.canonical_fence(plane) as canonical_fd:
+            if _active_records(plane):
+                raise ValueError("another direct commit requires reconciliation")
+            if _transaction_publication_pending(plane):
+                raise ValueError("an unresolved transaction publication blocks result publication")
+            run = read_json(
+                plane.state_root / "runs" / f"{run_id}.json", base=plane.state_root
             )
-            path = _path(plane, direct_commit_id)
-            write_json_exclusive(path, record, base=plane.state_root)
-            _ensure_started(plane, record)
-            try:
-                return _advance(root, plane, path, record, canonical_fd)
-            except (OSError, RuntimeError, ValueError) as error:
-                return _attention(plane, path, record, error)
+            if run.get("owner") != owner or run.get("status") != "active":
+                raise ValueError("publish-results requires the exact active publisher Run")
+            declared: list[str] = []
+            for result_id in result_ids:
+                result = read_json(
+                    plane.state_root / "work-results" / f"{result_id}.json",
+                    base=plane.state_root,
+                )
+                if result.get("result_id") != result_id or result.get("kind") != "dev-mesh.work-result":
+                    raise ValueError("Work Result identity is malformed")
+                if result.get("projection_mode", "git-tree") != "git-tree":
+                    raise ValueError("workspace-bytes Work Results cannot publish through Git")
+                for path in result.get("paths", []):
+                    if isinstance(path, str) and path not in declared:
+                        declared.append(path)
+            if len(declared) > MAX_CLAIM_PATHS:
+                raise ValueError(
+                    f"published Work Results exceed the {MAX_CLAIM_PATHS}-path direct boundary"
+                )
+            blockers = _result_publication_blockers(plane, declared)
+            if blockers:
+                raise ValueError(
+                    "published Work Result paths still have active editing authority: "
+                    + repr(blockers[:16])
+                )
+            return _start_commit(
+                root,
+                plane,
+                canonical_fd,
+                scope="work-results",
+                owner=owner,
+                run_id=run_id,
+                declared=declared,
+                summary=summary,
+                validation_evidence=validation_evidence,
+                source_kind="work-results",
+                work_result_ids=result_ids,
+            )
 
 
 def reconcile(

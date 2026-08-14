@@ -29,7 +29,7 @@ class CutoverTest(GitWorkspaceTest):
         archive_root = Path(self.temporary.name) / "archives"
         journal = Path(self.temporary.name) / "cutover.json"
         plan = build_plan(self.root, archive_root=archive_root)
-        self.assertEqual(plan["target_version"], "20260812.1")
+        self.assertEqual(plan["target_version"], "20260814.1")
         self.assertEqual(plan["legacy_inventory"]["active_object_files"]["claims"], 1)
         write_plan(journal, plan)
         with self.assertRaisesRegex(ValueError, "active authority objects"):
@@ -51,7 +51,7 @@ class CutoverTest(GitWorkspaceTest):
         archive = Path(str(plan["archive_path"]))
         self.assertEqual(tree_digest(archive), plan["legacy_digest"])
         self.assertEqual(list((self.root / ".agent-coordination").iterdir()), [self.root / ".agent-coordination/TOMBSTONE.json"])
-        self.assertEqual(resolve(self.root).version, "20260812.1")
+        self.assertEqual(resolve(self.root).version, "20260814.1")
         self.assertTrue(verify(journal, expected_plan_digest=str(plan["plan_digest"]))["verified"])
 
     def test_effect_ahead_of_journal_is_reconciled(self) -> None:
@@ -249,7 +249,7 @@ class ObserverTest(GitWorkspaceTest):
             scanned = catalog.collect_roots([Path(self.temporary.name)])
             report = catalog.report(workspace=workspace_id(self.root))
         self.assertGreaterEqual(collected["inserted_events"], 2)
-        self.assertEqual(report["protocol_version"], "20260812.1")
+        self.assertEqual(report["protocol_version"], "20260814.1")
         self.assertEqual(report["active"]["claim"], 1)
         self.assertEqual(report["event_counts"]["claim-created"], 1)
         self.assertEqual(report["non_collaborative_runs"], [])

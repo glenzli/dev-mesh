@@ -165,6 +165,8 @@ def begin(
             raise ValueError("transaction must promote the exact pending Claim owner and Run")
         if claim.get("status") != "pending-arbitration":
             raise ValueError("only a pending-arbitration Claim can become a microtransaction")
+        if claim.get("projection_mode", "git-tree") != "git-tree":
+            raise ValueError("workspace-bytes Claims must wait; they cannot use a Git microtransaction")
         run = read_json(plane.state_root / "runs" / f"{run_id}.json", base=plane.state_root)
         if run.get("owner") != owner or run.get("status") != "active":
             raise ValueError("transaction requires the exact active Claim Run")

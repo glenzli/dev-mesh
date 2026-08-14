@@ -32,6 +32,7 @@ class CanonicalGitTest(GitWorkspaceTest):
             run_id="run-a",
             task="edit app",
             paths=["app.txt"],
+            semantic_writes=["direct-slice"],
             validation="focused direct checks",
         )
 
@@ -200,6 +201,7 @@ class CanonicalGitTest(GitWorkspaceTest):
             run_id="run-b",
             task="parallel app edit",
             paths=["app.txt"],
+            semantic_writes=["parallel-slice"],
             allow_overlap=True,
         )
         contention_id = str(pending["contention_id"])

@@ -123,7 +123,7 @@ def _tombstone(root: Path) -> dict[str, object] | None:
     if (
         value.get("kind") != "dev-mesh.coordination.legacy-tombstone"
         or value.get("target_protocol") != PROTOCOL
-        or value.get("target_version") != PROTOCOL_VERSION
+        or value.get("target_version") not in {"20260812.1", PROTOCOL_VERSION}
     ):
         raise ProtocolError("split_brain", "legacy tombstone targets another protocol")
     return value
@@ -139,8 +139,8 @@ def _read_current(root: Path) -> ControlPlane:
     state = coordination / PROTOCOL_VERSION
     ensure_regular_directory(state, "active coordination state")
     protocol = _protocol_record(state / "protocol.json")
-    if len({manifest["created_at"], current["activated_at"], protocol["created_at"]}) != 1:
-        raise ProtocolError("split_brain", "control-plane marker timestamps disagree")
+    if current["activated_at"] != protocol["created_at"]:
+        raise ProtocolError("split_brain", "current and protocol activation timestamps disagree")
     legacy = root / LEGACY_DIRECTORY
     tombstone = _tombstone(root)
     if legacy.exists() and tombstone is None:

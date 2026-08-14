@@ -8,7 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from helpers import GitWorkspaceTest
+from helpers import GitWorkspaceTest, git
 from dev_mesh_coord.errors import STABLE_ERROR_CODES, error_json
 
 
@@ -34,7 +34,7 @@ class CliTest(GitWorkspaceTest):
                     emitted.add(node.args[0].value)
         self.assertLessEqual(emitted, STABLE_ERROR_CODES)
         self.assertNotIn("legacy_retired", STABLE_ERROR_CODES)
-        contract = (REPOSITORY / "contracts/dev-mesh-coordination-20260812.1.md").read_text(
+        contract = (REPOSITORY / "contracts/dev-mesh-coordination-20260814.1.md").read_text(
             encoding="utf-8"
         )
         stable_section = contract.split("## Stable control-plane failures\n", 1)[1]
@@ -59,10 +59,51 @@ class CliTest(GitWorkspaceTest):
         self.assertEqual(completed.returncode, expected, completed.stderr)
         return completed
 
+    def test_claim_cli_accepts_explicit_workspace_bytes_projection(self) -> None:
+        (self.root / ".gitignore").write_text("local/\n", encoding="utf-8")
+        git(self.root, "add", ".gitignore")
+        git(self.root, "commit", "-m", "ignore local data")
+        root = str(self.root)
+        self._run("dev_mesh_coord", "--root", root, "init")
+        self._run(
+            "dev_mesh_coord",
+            "--root",
+            root,
+            "join",
+            "--owner",
+            "cli-agent",
+            "--run-id",
+            "cli-run",
+            "--task",
+            "write ignored data",
+        )
+        claim = json.loads(
+            self._run(
+                "dev_mesh_coord",
+                "--root",
+                root,
+                "claim",
+                "--scope",
+                "cli-local-data",
+                "--owner",
+                "cli-agent",
+                "--run-id",
+                "cli-run",
+                "--task",
+                "write ignored data",
+                "--path",
+                "local/state.json",
+                "--projection-mode",
+                "workspace-bytes",
+            ).stdout
+        )
+        self.assertEqual(claim["status"], "active")
+        self.assertEqual(claim["projection_mode"], "workspace-bytes")
+
     def test_json_cli_and_observer_vertical_slice(self) -> None:
         root = str(self.root)
         initialized = self._run("dev_mesh_coord", "--root", root, "init")
-        self.assertEqual(json.loads(initialized.stdout)["protocol"], "20260812.1")
+        self.assertEqual(json.loads(initialized.stdout)["protocol"], "20260814.1")
         self._run(
             "dev_mesh_coord",
             "--root",
@@ -137,7 +178,7 @@ class CliTest(GitWorkspaceTest):
                 "cli-run",
             ).stdout
         )
-        self.assertEqual(status["protocol"], "20260812.1")
+        self.assertEqual(status["protocol"], "20260814.1")
         self.assertEqual(status["claims"]["sample"][0]["scope"], "cli-read")
         verbose_status = json.loads(
             self._run(
@@ -167,7 +208,7 @@ class CliTest(GitWorkspaceTest):
         )
         self.assertEqual(json.loads(collected.stdout)["workspace_count"], 1)
         report = self._run("dev_mesh_observer", "--db", str(database), "report")
-        self.assertEqual(json.loads(report.stdout)["protocol_version"], "20260812.1")
+        self.assertEqual(json.loads(report.stdout)["protocol_version"], "20260814.1")
 
     def test_no_alternate_state_directory_escape_hatch(self) -> None:
         failed = self._run(

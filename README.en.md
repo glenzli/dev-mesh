@@ -8,15 +8,15 @@ cooperative Git publication, and leaves bounded evidence that can be inspected a
 over.
 
 The system is deliberately local and lightweight: an ordinary non-overlapping change follows one
-Run, one Claim, one managed commit, and a clean exit. Contention, temporary branches, and
-microtransactions appear only when the work actually overlaps.
+Run, one Claim, one Work Result, and a clean exit. Git commit is an optional independent publication
+step. Contention, temporary branches, and microtransactions appear only when work actually overlaps.
 
 ## Current generation
 
-The active authority contract is `dev-mesh.coordination@20260812.1`. This is the second-generation
+The active authority contract is `dev-mesh.coordination@20260814.1`. This is the second-generation
 implementation, but protocol versions use immutable `YYYYMMDD.x` identifiers rather than a mutable
 `v2` label. The optional compatible cross-project evidence contract is
-`dev-mesh.cross-project-collaboration@20260813.1`.
+`dev-mesh.cross-project-collaboration@20260814.1`.
 
 Workspace authority lives under `.dev-mesh/`. Retired `.agent-coordination/` state is not migrated
 or revived; the cutover leaves only a tombstone that fences old writers. See
@@ -26,8 +26,13 @@ or revived; the cutover leaves only a tombstone that fences old writers. See
 
 - **Run** — one Agent task in one Git workspace.
 - **Claim** — the exact paths and semantic resources that Run may change.
-- **Contention** — a bounded decision when Claims overlap: wait, reassign, hand off, or use a
-  temporary transaction branch.
+- **Work Result** — non-authority evidence of completed work; it releases the Claim without
+  claiming a commit or private rollback point.
+- **Workspace bytes** — a bounded content fingerprint for explicitly declared small Git-ignored
+  files, allowing Work Result completion and baseline continuation without branching, publishing
+  the data, or replacing a database transaction.
+- **Contention** — when Claims overlap, the pending writer may simply wait. Only reassignment,
+  handoff, exclusivity, or branch offload requires both parties to agree.
 - **Managed Git publication** — direct commits and transaction publication share one canonical Git
   fence, so cooperating Agents do not race the workspace index or branch.
 - **Events** — low-frequency immutable lifecycle evidence. Heartbeats update snapshots without
@@ -46,12 +51,21 @@ skill owns the operational instructions. Its normal path is:
 
 ```text
 inspect -> join Run -> claim bounded work -> edit -> validate
-        -> managed direct commit -> release Claim -> leave Run
+        -> complete Work Result -> release Claim -> leave Run
+                                  \
+                                   -> optional managed publication
 ```
 
 No overlap means no coordinator ceremony beyond that path. When the returned `next_action` reports
 overlap or recovery, the skill routes the Agent to the corresponding contention, transaction, or
 recovery instructions.
+
+The common overlap path does not require a full negotiation: the later Claim becomes pending, it
+selects wait, and it can activate after the original Claim completes. `parallel-tx` does not move
+both Agents off the canonical line; it offloads only the pending writer to a short-lived branch,
+and is available only when both Claims declare disjoint semantic writes. Dirty-baseline
+acceptance binds the content digest, canonical revision, and branch. If any of them changes, the
+command returns fresh evidence and requires one explicit retry.
 
 ## See the coordination model
 
@@ -101,8 +115,9 @@ liveness; consumers still connect to the current endpoint.
 
 ## Repository map
 
-- [`runtime/dev_mesh_coord/`](runtime/dev_mesh_coord/) — authority, contention, recoverable Git
-  effects, managed commits, microtransactions, and cross-project relation production.
+- [`runtime/dev_mesh_coord/`](runtime/dev_mesh_coord/) — authority, Work Results, dirty baselines,
+  contention, recoverable Git effects, managed commits, microtransactions, and cross-project
+  relation production.
 - [`runtime/dev_mesh_observer/`](runtime/dev_mesh_observer/) — bounded source validation, catalog,
   diagnostics, and reports.
 - [`runtime/dev_mesh_console/`](runtime/dev_mesh_console/) — loopback API, collection lifecycle, and

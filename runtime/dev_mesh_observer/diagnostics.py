@@ -10,27 +10,41 @@ MAX_DIAGNOSTICS = 256
 
 TERMINAL_EVENTS = {
     "run": {"agent-left"},
+    "claim": {
+        "claim-released",
+        "claim-completed",
+        "transaction-published",
+        "transaction-aborted",
+    },
     "handoff": {"handoff-accepted", "handoff-rejected", "handoff-withdrawn"},
     "contention": {"contention-completed", "contention-cancelled"},
     "transaction": {"transaction-published", "transaction-aborted"},
     "direct-commit": {"direct-commit-completed"},
     "cleanup": {"cleanup-completed"},
     "work": {"work-resumed"},
+    "work-result": {"claim-completed"},
 }
 
 TERMINAL_STATUSES = {
     "run": {"closed"},
+    "claim": {"released", "completed", "published", "aborted"},
     "handoff": {"accepted", "rejected", "withdrawn"},
     "contention": {"completed", "cancelled"},
     "transaction": {"published", "aborted"},
     "direct-commit": {"completed"},
     "cleanup": {"completed"},
     "work": {"resumed"},
+    "work-result": {"recorded"},
 }
 
 OPEN_EVENTS = {
     "run": {"agent-joined"},
-    "claim": {"claim-created", "claim-activated"},
+    "claim": {
+        "claim-created",
+        "claim-activated",
+        "claim-baseline-required",
+        "claim-baseline-accepted",
+    },
     "handoff": {"handoff-offered"},
     "contention": {"contention-opened"},
     "transaction": {"transaction-created"},
@@ -41,7 +55,7 @@ OPEN_EVENTS = {
 
 CLOSE_EVENTS = {
     "run": {"agent-left"},
-    "claim": {"claim-released", "transaction-published", "transaction-aborted"},
+    "claim": TERMINAL_EVENTS["claim"],
     "handoff": TERMINAL_EVENTS["handoff"],
     "contention": TERMINAL_EVENTS["contention"],
     "transaction": TERMINAL_EVENTS["transaction"],
@@ -74,12 +88,14 @@ def _issue(
 def _event_object_id(kind: str, record: dict[str, object]) -> str | None:
     field = {
         "run": "run_id",
+        "claim": "scope",
         "handoff": "handoff_id",
         "contention": "contention_id",
         "transaction": "transaction_id",
         "direct-commit": "direct_commit_id",
         "cleanup": "cleanup_id",
         "work": "work_state_id",
+        "work-result": "result_id",
     }[kind]
     value = record.get(field)
     return value if isinstance(value, str) else None
@@ -95,6 +111,7 @@ def _lifecycle_object_id(kind: str, record: dict[str, object]) -> str | None:
         "direct-commit": "direct_commit_id",
         "cleanup": "cleanup_id",
         "work": "work_state_id",
+        "work-result": "result_id",
     }[kind]
     value = record.get(field)
     return value if isinstance(value, str) else None
@@ -261,6 +278,12 @@ def project_diagnostics(
                     diagnostics.append(_issue(item, "claim.heartbeat-aging", severity="info"))
             if status in {"released", "published", "aborted"}:
                 diagnostics.append(_issue(item, "claim.finalization-pending"))
+            elif status == "pending-baseline":
+                diagnostics.append(
+                    _issue(item, "claim.baseline-acknowledgement-pending", severity="info")
+                )
+            elif status == "completing":
+                diagnostics.append(_issue(item, "claim.completion-pending"))
 
         if kind == "transaction" and lifecycle == "active":
             exact_run = (
@@ -462,10 +485,12 @@ def _cutover_readiness(
         blocker: str | None = None
         if kind == "run" and status == "active":
             blocker = "active_runs"
-        elif kind == "claim" and status in {
+        elif kind == "claim" and lifecycle == "current" and status in {
             "active",
             "paused",
             "pending-arbitration",
+            "pending-baseline",
+            "completing",
             "transaction",
             "released",
             "published",

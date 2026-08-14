@@ -65,7 +65,7 @@ class CliOutputTest(GitWorkspaceTest):
             for index in range(MAX_COMPACT_ITEMS * 2 + 5)
         ]
         status = {
-            "protocol": "20260812.1",
+            "protocol": "20260814.1",
             "runs": runs,
             "claims": claims,
             "blockers": {"run-1": [{"kind": "claim", "id": "scope-1"}]},
@@ -75,8 +75,12 @@ class CliOutputTest(GitWorkspaceTest):
         self.assertNotIn("runs", overview)
         self.assertTrue(overview["action_required"]["truncated"])
         self.assertEqual(len(overview["action_required"]["sample"]), MAX_COMPACT_ITEMS)
-        self.assertEqual(overview["action_required"]["sample"][0]["kind"], "run")
-        self.assertEqual(overview["action_required"]["sample"][0]["blocker_count"], 1)
+        self.assertEqual(overview["action_required"]["sample"][0]["kind"], "claim")
+        self.assertEqual(overview["counts"]["leave_blocked_runs"], 1)
+        self.assertEqual(overview["leave_constraints"]["sample"][0]["kind"], "run")
+        self.assertEqual(
+            overview["leave_constraints"]["sample"][0]["blocker_count"], 1
+        )
 
         filtered = project(
             "status",
@@ -144,6 +148,64 @@ class CliOutputTest(GitWorkspaceTest):
         self.assertEqual(compact["next_action"], "coordinator_proposes_bounded_decision")
         self.assertNotIn("opened_event", compact)
 
+        waiting = project(
+            "contention-wait",
+            contention.select_wait(
+                self.root,
+                contention_id=str(record["contention_id"]),
+                scope="pending",
+                owner="agent-b",
+                run_id="run-b",
+                reason="active edit is short",
+            ),
+            verbose=False,
+        )
+        self.assertEqual(
+            waiting["next_action"], "wait_for_overlap_release_then_activate_claim"
+        )
+        self.assertEqual(waiting["write_authority"], "none")
+
+    def test_pending_baseline_projection_names_the_only_digest_to_accept(self) -> None:
+        compact = project(
+            "claim",
+            {
+                "scope": "continued",
+                "owner": "agent-b",
+                "run_id": "run-b",
+                "status": "pending-baseline",
+                "baseline": {
+                    "baseline_sha256": "accepted-digest",
+                    "actual_paths_sha256": "diagnostic-digest",
+                    "evidence_sha256": "evidence-digest",
+                },
+            },
+            verbose=False,
+        )
+        self.assertEqual(compact["write_authority"], "none")
+        self.assertEqual(
+            compact["required_action"],
+            "inspect_declared_paths_then_accept_exact_baseline",
+        )
+        self.assertEqual(compact["accept_baseline_sha256"], "accepted-digest")
+
+        changed = project(
+            "claim-baseline-accept",
+            {
+                "scope": "continued",
+                "owner": "agent-b",
+                "run_id": "run-b",
+                "status": "pending-baseline",
+                "baseline_changed": True,
+                "baseline_accepted": False,
+                "baseline": {"baseline_sha256": "new-digest"},
+            },
+            verbose=False,
+        )
+        self.assertTrue(changed["retry_required"])
+        self.assertEqual(
+            changed["next_action"], "review_changed_baseline_then_retry_accept"
+        )
+
     def test_send_output_states_that_delivery_is_external(self) -> None:
         compact = project(
             "send",
@@ -195,3 +257,15 @@ class CliOutputTest(GitWorkspaceTest):
             verbose["next_action"],
             "ensure_actual_task_delivery_then_wait_for_acknowledgement",
         )
+
+    def test_pause_projection_remains_a_blocking_state(self) -> None:
+        blocked = project(
+            "claim-pause",
+            {
+                "scope": "blocked",
+                "status": "paused",
+                "pause": {"blocker_kind": "dependency"},
+            },
+            verbose=False,
+        )
+        self.assertEqual(blocked["next_action"], "wait_for_resume_condition")

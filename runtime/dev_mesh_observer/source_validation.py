@@ -9,8 +9,10 @@ from pathlib import Path
 
 from dev_mesh_coord.constants import (
     AUTHORITY_EFFECTS,
+    CLAIM_PROJECTION_MODES,
     EVENT_SCHEMA,
     MAX_EVENT_BYTES,
+    PAUSE_BLOCKER_KINDS,
     PROTOCOL,
     PROTOCOL_VERSION,
 )
@@ -26,11 +28,14 @@ SNAPSHOT_STATUSES = {
         "active",
         "paused",
         "pending-arbitration",
+        "pending-baseline",
+        "completing",
         "transaction",
         "released",
         "published",
         "aborted",
     },
+    ("claim", "archive"): {"released", "completed", "published", "aborted"},
     ("handoff", "current"): {"offered", "accepted", "rejected", "withdrawn"},
     ("contention", "active"): {
         "awaiting-decision",
@@ -71,6 +76,7 @@ SNAPSHOT_STATUSES = {
     ("cleanup", "archive"): {"completed"},
     ("work", "active"): {"waiting", "diverted", "finalizing", "resumed"},
     ("work", "archive"): {"resumed"},
+    ("work-result", "current"): {"recorded"},
 }
 
 SNAPSHOT_REQUIRED_FIELDS = {
@@ -90,6 +96,7 @@ SNAPSHOT_REQUIRED_FIELDS = {
     ),
     "cleanup": ("cleanup_id", "transaction_id", "owner", "run_id", "created_at"),
     "work": ("work_state_id", "scope", "owner", "run_id", "suspended_at"),
+    "work-result": ("result_id", "scope", "owner", "run_id", "completed_at"),
 }
 
 SNAPSHOT_TIME_FIELDS = {
@@ -101,6 +108,7 @@ SNAPSHOT_TIME_FIELDS = {
     "direct-commit": ("created_at",),
     "cleanup": ("created_at",),
     "work": ("suspended_at",),
+    "work-result": ("completed_at",),
 }
 
 SNAPSHOT_ID_FIELDS = {
@@ -112,6 +120,7 @@ SNAPSHOT_ID_FIELDS = {
     "direct-commit": "direct_commit_id",
     "cleanup": "cleanup_id",
     "work": "work_state_id",
+    "work-result": "result_id",
 }
 
 EVENT_IDENTITY_FIELDS = {
@@ -121,10 +130,13 @@ EVENT_IDENTITY_FIELDS = {
     "claim-created": ("scope",),
     "claim-requested": ("scope",),
     "claim-activated": ("scope",),
+    "claim-baseline-required": ("scope",),
+    "claim-baseline-accepted": ("scope",),
     "claim-updated": ("scope",),
     "claim-paused": ("scope",),
     "claim-resumed": ("scope",),
     "claim-released": ("scope",),
+    "claim-completed": ("scope", "result_id"),
     "message-sent": ("message_id",),
     "message-acknowledged": ("message_id",),
     "handoff-offered": ("handoff_id",),
@@ -262,12 +274,43 @@ def snapshot_record(
         if not _valid_time(record.get(field)):
             raise ProtocolError("marker_invalid", f"{kind} snapshot has invalid {field}: {path}")
     object_id = str(record[SNAPSHOT_ID_FIELDS[kind]])
-    if kind == "work" and lifecycle == "archive":
+    if kind in {"work", "claim"} and lifecycle == "archive":
         suffix = f"-{object_id}.json"
-        timestamp_prefix = path.name[: -len(suffix)] if path.name.endswith(suffix) else ""
-        path_matches = timestamp_prefix.isdigit()
+        prefix = path.name[: -len(suffix)] if path.name.endswith(suffix) else ""
+        path_matches = bool(prefix) and (kind == "claim" or prefix.isdigit())
     else:
         path_matches = path.name == f"{object_id}.json"
     if not path_matches:
         raise ProtocolError("marker_invalid", f"{kind} snapshot id does not match source path: {path}")
+    if kind == "claim" and record.get("status") == "paused":
+        pause = record.get("pause")
+        if (
+            not isinstance(pause, dict)
+            or pause.get("blocker_kind") not in PAUSE_BLOCKER_KINDS
+        ):
+            raise ProtocolError("marker_invalid", f"paused Claim metadata is invalid: {path}")
+    if kind in {"claim", "work-result"}:
+        projection_mode = record.get("projection_mode", "git-tree")
+        if projection_mode not in CLAIM_PROJECTION_MODES:
+            raise ProtocolError(
+                "marker_invalid", f"{kind} snapshot projection mode is invalid: {path}"
+            )
+        if projection_mode == "workspace-bytes":
+            if kind == "claim" and record.get("status") in {
+                "active",
+                "paused",
+                "completing",
+            } and not isinstance(record.get("workspace_base"), dict):
+                raise ProtocolError(
+                    "marker_invalid", f"workspace-bytes Claim lacks its baseline: {path}"
+                )
+            if kind == "work-result" and (
+                not isinstance(record.get("workspace_bytes_sha256"), str)
+                or not isinstance(record.get("workspace_file_count"), int)
+                or not isinstance(record.get("workspace_missing_path_count"), int)
+                or not isinstance(record.get("workspace_total_bytes"), int)
+            ):
+                raise ProtocolError(
+                    "marker_invalid", f"workspace-bytes Work Result is incomplete: {path}"
+                )
     return record

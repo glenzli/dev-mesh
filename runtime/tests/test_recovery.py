@@ -321,7 +321,7 @@ class AuthorityRecoveryTest(GitWorkspaceTest):
                 owner="agent-b",
                 run_id="run-b",
                 epoch=1,
-                decision="wait",
+                decision="exclusive",
                 reason="must be fenced",
             )
         join_run(self.root, run_id="run-b2", owner="agent-b", task="recover overlap")
@@ -390,7 +390,7 @@ class AuthorityRecoveryTest(GitWorkspaceTest):
             owner="agent-b",
             run_id="run-b",
             epoch=1,
-            decision="wait",
+            decision="exclusive",
             reason="bounded wait",
         )
         revision = int(proposed["decision_revision"])
@@ -478,7 +478,7 @@ class AuthorityRecoveryTest(GitWorkspaceTest):
             owner="agent-b",
             run_id="run-b",
             epoch=1,
-            decision="wait",
+            decision="exclusive",
             reason="finish before recovery",
         )
         revision = int(proposed["decision_revision"])
@@ -845,7 +845,7 @@ class AuthorityRecoveryTest(GitWorkspaceTest):
             owner="agent-b",
             run_id="run-b",
             epoch=1,
-            decision="wait",
+            decision="exclusive",
             reason="short overlap",
         )
         revision = int(proposed["decision_revision"])

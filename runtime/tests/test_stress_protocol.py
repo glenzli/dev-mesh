@@ -229,41 +229,13 @@ class BoundedMultiAgentStressTest(GitWorkspaceTest):
                 allow_overlap=True,
             )
             contention_id = str(pending["contention_id"])
-            proposed = contention.propose(
+            contention.select_wait(
                 self.root,
                 contention_id=contention_id,
+                scope=waiting_scope,
                 owner=waiting_owner,
                 run_id=waiting_run,
-                epoch=1,
-                decision="wait",
                 reason="bounded overlapping edit is shorter than a branch transaction",
-            )
-            revision = int(proposed["decision_revision"])
-            responses = (
-                (primary_scope, primary_owner, primary_run),
-                (waiting_scope, waiting_owner, waiting_run),
-            )
-
-            def respond(identity: tuple[str, str, str]) -> None:
-                scope, owner, run_id = identity
-                contention.respond(
-                    self.root,
-                    contention_id=contention_id,
-                    scope=scope,
-                    owner=owner,
-                    run_id=run_id,
-                    revision=revision,
-                    accept=True,
-                )
-
-            with ThreadPoolExecutor(max_workers=2) as executor:
-                list(executor.map(respond, responses))
-            contention.enact(
-                self.root,
-                contention_id=contention_id,
-                owner=waiting_owner,
-                run_id=waiting_run,
-                epoch=1,
             )
             release_claim(
                 self.root,

@@ -10,6 +10,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from dev_mesh_coord.control_plane import resolve
+from dev_mesh_coord.constants import PROTOCOL_VERSION as COORDINATION_VERSION
 
 from .catalog import Catalog
 
@@ -88,7 +89,7 @@ def _pending_event_count(
         str(row[0])
         for row in connection.execute(
             "SELECT source_path FROM events WHERE protocol_version = ?",
-            (PROTOCOL_VERSION,),
+            (COORDINATION_VERSION,),
         )
     }
     pending = 0

@@ -12,7 +12,7 @@ from .storage import read_json, require_identifier, require_slug, write_json_exc
 
 
 EXTENSION_PROTOCOL = "dev-mesh.cross-project-collaboration"
-EXTENSION_VERSION = "20260813.1"
+EXTENSION_VERSION = "20260814.1"
 COLLABORATION_KINDS = {
     "notice",
     "request",
@@ -75,6 +75,7 @@ def _record_phase(
     source: dict[str, object],
     target: dict[str, object],
     outcome: str | None = None,
+    reconciliation: dict[str, object] | None = None,
 ) -> dict[str, object]:
     collaboration_id = require_identifier(collaboration_id, "collaboration id")
     kind = _kind(kind)
@@ -89,11 +90,19 @@ def _record_phase(
             raise ValueError("closed collaboration requires a supported outcome")
     elif outcome is not None:
         raise ValueError("only a closed collaboration may have an outcome")
+    if reconciliation is not None and phase != "closed":
+        raise ValueError("only a closed collaboration may carry reconciliation evidence")
 
     with operation(root, f"cross-project-{phase}") as plane:
         _active_run(plane, owner, run_id)
         local_workspace_id = workspace_id(plane.workspace_root)
-        actor = source if actor_role == "source" else target
+        actor = (
+            reconciliation.get("by")
+            if reconciliation is not None
+            else source if actor_role == "source" else target
+        )
+        if not isinstance(actor, dict):
+            raise ValueError("cross-project reconciliation actor is malformed")
         if actor.get("workspace_id") != local_workspace_id:
             raise ValueError("actor role does not match the current workspace")
         if actor.get("owner") != owner or actor.get("run_id") != run_id:
@@ -111,6 +120,8 @@ def _record_phase(
             "target": target,
             "outcome": outcome,
         }
+        if reconciliation is not None:
+            extension["reconciliation"] = reconciliation
         event_payload: dict[str, object] = {
             "message_id": message_id,
             "owner": owner,
@@ -177,7 +188,74 @@ def _record_phase(
             "target_run_id": target.get("run_id"),
             "target_task_id": target.get("task_id"),
             "outcome": outcome,
+            "reconciled": reconciliation is not None,
         }
+
+
+def _bound_extension(
+    plane: ControlPlane,
+    *,
+    collaboration_id: str,
+) -> dict[str, object]:
+    local_workspace_id = workspace_id(plane.workspace_root)
+    message_id = _message_id(collaboration_id, "bound", local_workspace_id)
+    path = plane.state_root / "messages" / f"{message_id}.json"
+    if not path.exists():
+        raise ValueError("target workspace has no exact bound collaboration record")
+    record = read_json(path, base=plane.state_root)
+    extension = record.get("cross_project")
+    if not isinstance(extension, dict):
+        raise ValueError("bound collaboration record is malformed")
+    if (
+        extension.get("protocol") != EXTENSION_PROTOCOL
+        or extension.get("protocol_version") != EXTENSION_VERSION
+        or extension.get("collaboration_id") != collaboration_id
+        or extension.get("phase") != "bound"
+        or extension.get("actor_role") != "target"
+        or extension.get("outcome") is not None
+        or extension.get("kind") not in COLLABORATION_KINDS
+    ):
+        raise ValueError("bound collaboration record has inconsistent exact facts")
+    source = extension.get("source")
+    target = extension.get("target")
+    if not isinstance(source, dict) or not isinstance(target, dict):
+        raise ValueError("bound collaboration participants are malformed")
+    source_workspace_id = source.get("workspace_id")
+    source_owner = source.get("owner")
+    source_run_id = source.get("run_id")
+    target_workspace_id = target.get("workspace_id")
+    target_task_id = target.get("task_id")
+    target_owner = target.get("owner")
+    target_run_id = target.get("run_id")
+    if (
+        not isinstance(source_workspace_id, str)
+        or _workspace_id(source_workspace_id, "source workspace id") == local_workspace_id
+        or not isinstance(source_owner, str)
+        or require_slug(source_owner, "source owner") != source_owner
+        or not isinstance(source_run_id, str)
+        or require_identifier(source_run_id, "source run id") != source_run_id
+        or target_workspace_id != local_workspace_id
+        or not isinstance(target_task_id, str)
+        or require_identifier(target_task_id, "target task id") != target_task_id
+        or not isinstance(target_owner, str)
+        or require_slug(target_owner, "target owner") != target_owner
+        or not isinstance(target_run_id, str)
+        or require_identifier(target_run_id, "target run id") != target_run_id
+    ):
+        raise ValueError("bound collaboration participant identity is inconsistent")
+    event = record.get("event")
+    if (
+        record.get("message_id") != message_id
+        or record.get("source_owner") != source_owner
+        or record.get("source_run_id") != source_run_id
+        or record.get("target_owner") != target_owner
+        or record.get("target_run_id") != target_run_id
+        or not isinstance(event, dict)
+        or event.get("message_id") != message_id
+        or event.get("cross_project") != extension
+    ):
+        raise ValueError("bound collaboration record and event intent disagree")
+    return extension
 
 
 def open_collaboration(
@@ -304,4 +382,75 @@ def close_collaboration(
         source=source,
         target=target,
         outcome=outcome,
+    )
+
+
+def reconcile_closed_collaboration(
+    root: Path,
+    *,
+    collaboration_id: str,
+    owner: str,
+    run_id: str,
+    outcome: str,
+) -> dict[str, object]:
+    """Close a bound relation after its exact target Run has already terminated.
+
+    Reconciliation is target-workspace only. It preserves the original source and target binding;
+    the new same-owner active Run is recorded separately as the reconciler and gains no authority
+    over either workspace from this diagnostic action.
+    """
+
+    collaboration_id = require_identifier(collaboration_id, "collaboration id")
+    owner = require_slug(owner, "owner")
+    run_id = require_identifier(run_id, "run id")
+    if outcome not in COLLABORATION_OUTCOMES:
+        raise ValueError("closed collaboration requires a supported outcome")
+
+    with operation(root, "cross-project-reconcile-close") as plane:
+        _active_run(plane, owner, run_id)
+        extension = _bound_extension(plane, collaboration_id=collaboration_id)
+        source = extension["source"]
+        target = extension["target"]
+        assert isinstance(source, dict) and isinstance(target, dict)
+        if target.get("owner") != owner:
+            raise ValueError("late close requires an active successor Run of the bound target owner")
+        target_run_id = target.get("run_id")
+        if not isinstance(target_run_id, str):
+            raise ValueError("bound collaboration target Run is malformed")
+        if target_run_id == run_id:
+            raise ValueError("active bound target Run must use the normal close operation")
+        target_run = read_json(
+            plane.state_root / "runs" / f"{target_run_id}.json",
+            base=plane.state_root,
+        )
+        if target_run.get("owner") != owner or target_run.get("status") != "closed":
+            raise ValueError("late close requires the exact bound target Run to be terminal")
+        target_outcome = target_run.get("outcome")
+        if target_outcome not in {"completed", "failed", "abandoned"}:
+            raise ValueError("bound target Run has an unsupported terminal outcome")
+        reconciliation = {
+            "basis": "bound-target-run-terminal",
+            "by": {
+                "workspace_id": workspace_id(plane.workspace_root),
+                "owner": owner,
+                "run_id": run_id,
+            },
+            "target_run_status": "closed",
+            "target_run_outcome": target_outcome,
+        }
+        kind = extension["kind"]
+        assert isinstance(kind, str)
+
+    return _record_phase(
+        root,
+        collaboration_id=collaboration_id,
+        phase="closed",
+        kind=kind,
+        actor_role="target",
+        owner=owner,
+        run_id=run_id,
+        source=source,
+        target=target,
+        outcome=outcome,
+        reconciliation=reconciliation,
     )

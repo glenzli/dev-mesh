@@ -61,11 +61,16 @@ const compactEvents = new Set([
   "transaction-validated",
   "transaction-refreshed",
   "direct-commit-started",
+  "claim-baseline-required",
+  "claim-baseline-accepted",
 ]);
 
 const trackedWorkEvents = new Set([
   "claim-created",
   "claim-requested",
+  "claim-baseline-required",
+  "claim-baseline-accepted",
+  "claim-completed",
   "claim-released",
   "claim-paused",
   "claim-resumed",
@@ -87,6 +92,10 @@ function semantic(eventName) {
     if (values.has(eventName)) return name;
   }
   return "normal";
+}
+
+function flowEventLabel(event) {
+  return eventLabel(event.event);
 }
 
 function interactionPeer(event) {
@@ -259,7 +268,7 @@ function setTooltip(
   tooltip.replaceChildren();
   const title = document.createElement("strong");
   const selfResponse = event.event === "contention-decision-responded" && isSelfResponse(event, proposal);
-  title.textContent = selfResponse ? t("flow.selfConfirmationTitle") : eventLabel(event.event);
+  title.textContent = selfResponse ? t("flow.selfConfirmationTitle") : flowEventLabel(event);
   const meta = document.createElement("span");
   meta.textContent = `${timestamp(event.at)} · ${projectName}`;
   const identity = document.createElement("span");
@@ -601,7 +610,7 @@ export function renderFlow(svg, tooltip, dashboard, projectNames) {
     node.setAttribute(
       "aria-label",
       [
-        eventLabel(event.event),
+        flowEventLabel(event),
         event.owner,
         event.run_id,
         event.scope,
@@ -620,6 +629,9 @@ export function renderFlow(svg, tooltip, dashboard, projectNames) {
       );
     }
     if (event.event === "agent-joined") node.classList.add("start");
+    if (event.event === "claim-paused" && event.details?.disposition) {
+      node.classList.add(`pause-${event.details.disposition}`);
+    }
     if (event.authority_effect === "terminal" || event.authority_effect === "release") node.classList.add("terminal");
     node.tabIndex = 0;
     const projectName = projectNames.get(event.workspace_id) ?? event.workspace_id;

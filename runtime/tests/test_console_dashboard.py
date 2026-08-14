@@ -267,6 +267,79 @@ class ConsoleDashboardTest(GitWorkspaceTest):
         )
         self.assertEqual(edge["samples"][0]["collaboration_id"], relation_id)
 
+    def test_project_collaboration_marks_terminal_bound_run_as_pending_settlement(self) -> None:
+        other = Path(self.temporary.name) / "other-late-close"
+        other.mkdir()
+        git(other, "init", "-b", "main")
+        git(other, "config", "user.name", "Dev Mesh Test")
+        git(other, "config", "user.email", "dev-mesh@example.invalid")
+        (other / "app.txt").write_text("base\n", encoding="utf-8")
+        git(other, "add", "app.txt")
+        git(other, "commit", "-m", "base")
+        initialize(other)
+        join_run(other, run_id="target-run", owner="target-agent", task="cross-project target")
+        relation_id = "dashboard-late-close"
+        cross_project.open_collaboration(
+            self.root,
+            collaboration_id=relation_id,
+            source_owner="agent-a",
+            source_run_id="run-a",
+            target_task_id="target-task",
+            target_workspace_id=workspace_id(other),
+            target_owner="target-agent",
+            kind="integration",
+        )
+        cross_project.bind_collaboration(
+            other,
+            collaboration_id=relation_id,
+            source_workspace_id=workspace_id(self.root),
+            source_owner="agent-a",
+            source_run_id="run-a",
+            target_owner="target-agent",
+            target_run_id="target-run",
+            target_task_id="target-task",
+            kind="integration",
+        )
+        leave_run(
+            other,
+            run_id="target-run",
+            owner="target-agent",
+            outcome="completed",
+            summary="completed before closing relation",
+        )
+
+        with Catalog(self.database) as catalog:
+            catalog.collect_workspace(self.root)
+            catalog.collect_workspace(other)
+            pending_dashboard = build_dashboard(catalog.connection, window_hours=48)
+        pending_edge = pending_dashboard["project_collaboration"]["edges"][0]
+        self.assertEqual(pending_edge["open_collaboration_count"], 1)
+        self.assertEqual(pending_edge["active_collaboration_count"], 0)
+        self.assertEqual(pending_edge["pending_settlement_count"], 1)
+        self.assertEqual(pending_edge["samples"][0]["status"], "pending-settlement")
+
+        join_run(
+            other,
+            run_id="target-close-run",
+            owner="target-agent",
+            task="reconcile late close",
+        )
+        cross_project.reconcile_closed_collaboration(
+            other,
+            collaboration_id=relation_id,
+            owner="target-agent",
+            run_id="target-close-run",
+            outcome="completed",
+        )
+        with Catalog(self.database) as catalog:
+            catalog.collect_workspace(other)
+            closed_dashboard = build_dashboard(catalog.connection, window_hours=48)
+        closed_edge = closed_dashboard["project_collaboration"]["edges"][0]
+        self.assertEqual(closed_edge["open_collaboration_count"], 0)
+        self.assertEqual(closed_edge["pending_settlement_count"], 0)
+        self.assertEqual(closed_edge["completed_collaboration_count"], 1)
+        self.assertEqual(closed_edge["samples"][0]["status"], "completed")
+
     def test_pending_acknowledgement_updates_after_ack(self) -> None:
         join_run(self.root, run_id="run-b", owner="agent-b", task="ack dashboard request")
         message = send(
@@ -412,7 +485,7 @@ class ConsoleDashboardTest(GitWorkspaceTest):
             owner="agent-b",
             run_id="run-b",
             epoch=1,
-            decision="wait",
+            decision="exclusive",
             reason="wait for the primary owner",
         )
         contention.respond(
@@ -451,7 +524,7 @@ class ConsoleDashboardTest(GitWorkspaceTest):
             for event in dashboard["events"]
             if event["event"] == "contention-decision-responded"
         )
-        self.assertEqual(proposed["details"]["decision"], "wait")
+        self.assertEqual(proposed["details"]["decision"], "exclusive")
         self.assertEqual(proposed["details"]["revision"], 1)
         self.assertIs(responded["details"]["accepted"], True)
         self.assertEqual(responded["details"]["revision"], 1)
@@ -508,6 +581,7 @@ class ConsoleDashboardTest(GitWorkspaceTest):
             run_id="run-a",
             task="primary branch owner",
             paths=["other.txt"],
+            semantic_writes=["primary-dashboard-slice"],
         )
         join_run(self.root, run_id="run-b", owner="agent-b", task="parallel branch work")
         pending = create_claim(
@@ -517,6 +591,7 @@ class ConsoleDashboardTest(GitWorkspaceTest):
             run_id="run-b",
             task="parallel branch work",
             paths=["other.txt"],
+            semantic_writes=["parallel-dashboard-slice"],
             allow_overlap=True,
         )
         contention_id = str(pending["contention_id"])

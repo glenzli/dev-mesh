@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 PROTOCOL = "dev-mesh.coordination"
-PROTOCOL_VERSION = "20260812.1"
-EVENT_SCHEMA = 1
+PROTOCOL_VERSION = "20260814.1"
+EVENT_SCHEMA = 2
 DEV_MESH_DIRECTORY = ".dev-mesh"
 LEGACY_DIRECTORY = ".agent-coordination"
 TOMBSTONE_NAME = "TOMBSTONE.json"
@@ -24,6 +24,7 @@ STATE_DIRECTORIES = (
     "transactions/archive",
     "direct-commits/active",
     "direct-commits/archive",
+    "work-results",
     "cleanups/active",
     "cleanups/archive",
     "checkouts",
@@ -38,10 +39,13 @@ AUTHORITY_EFFECTS = {
     "claim-created": "grant",
     "claim-requested": "none",
     "claim-activated": "grant",
+    "claim-baseline-required": "none",
+    "claim-baseline-accepted": "grant",
     "claim-updated": "retain",
     "claim-paused": "retain",
     "claim-resumed": "retain",
     "claim-released": "release",
+    "claim-completed": "release",
     "message-sent": "none",
     "message-acknowledged": "none",
     "handoff-offered": "none",
@@ -75,9 +79,10 @@ AUTHORITY_EFFECTS = {
 
 INTERACTION_KINDS = {"notice", "request", "handoff"}
 INTERACTION_TOPICS = {"general", "conflict", "decision", "takeover", "validation"}
-CONTENTION_DECISIONS = {"wait", "handoff", "parallel-tx", "exclusive"}
+CONTENTION_DECISIONS = {"handoff", "parallel-tx", "exclusive"}
 RUN_OUTCOMES = {"completed", "failed", "abandoned"}
 CLAIM_INTENTS = {"read", "local-edit", "semantic-edit", "exclusive-refactor"}
+CLAIM_PROJECTION_MODES = {"git-tree", "workspace-bytes"}
 PAUSE_BLOCKER_KINDS = {"authorization", "environment", "dependency", "external-resource", "other"}
 EVIDENCE_REQUIRED_PAUSE_BLOCKERS = {"authorization", "environment", "external-resource"}
 
@@ -85,4 +90,6 @@ MAX_CLAIM_PATHS = 128
 MAX_SEMANTIC_RESOURCES = 64
 MAX_CONTENTION_PARTICIPANTS = 64
 MAX_TRANSACTION_CHANGED_PATHS = 128
+MAX_WORK_RESULTS_PER_COMMIT = 64
+MAX_WORKSPACE_BYTES = 16 * 1024 * 1024
 MAX_EVENT_BYTES = 256 * 1024

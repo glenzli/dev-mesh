@@ -415,6 +415,9 @@ select, input {
 .flow-node.event-transaction-refreshed { fill: var(--surface-raised); stroke: var(--branch); stroke-dasharray: 2 2; }
 .flow-node.event-transaction-conflicted { fill: var(--surface-raised); stroke: var(--danger); stroke-width: 2.5; }
 .flow-node.event-direct-commit-started { fill: var(--surface-raised); stroke: var(--accent); }
+.flow-node.event-claim-baseline-required { fill: var(--surface-raised); stroke: var(--waiting); stroke-dasharray: 2 2; }
+.flow-node.event-claim-baseline-accepted { fill: var(--handoff); stroke: var(--surface-raised); }
+.flow-node.event-claim-completed { fill: var(--good); stroke: var(--surface-raised); }
 .work-number-badge { pointer-events: none; }
 .work-number-badge circle { fill: var(--surface-raised); stroke: var(--text); stroke-width: 1.1; }
 .work-number-badge text { fill: var(--text); font: 700 7px ui-monospace, SFMono-Regular, monospace; }

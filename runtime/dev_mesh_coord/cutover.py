@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import stat
 import subprocess
 import uuid
 from pathlib import Path
@@ -42,7 +43,74 @@ def _assert_exact_git_root(root: Path) -> Path:
 
 def _coordination_status_line(line: str) -> bool:
     value = line[3:] if len(line) >= 3 else line
-    return value == LEGACY_DIRECTORY or value.startswith(f"{LEGACY_DIRECTORY}/") or value == ".dev-mesh" or value.startswith(".dev-mesh/")
+    return (
+        value == LEGACY_DIRECTORY
+        or value.startswith(f"{LEGACY_DIRECTORY}/")
+        or value == ".dev-mesh"
+        or value.startswith(".dev-mesh/")
+        or value == ".dev-mesh.bootstrap.lock"
+    )
+
+
+def _coordination_path(path: str) -> bool:
+    return (
+        path == LEGACY_DIRECTORY
+        or path.startswith(f"{LEGACY_DIRECTORY}/")
+        or path == ".dev-mesh"
+        or path.startswith(".dev-mesh/")
+        or path == ".dev-mesh.bootstrap.lock"
+    )
+
+
+def _untracked_facts(root: Path) -> dict[str, object]:
+    raw = _run_git(root, "ls-files", "--others", "--exclude-standard", "-z")
+    paths = sorted(
+        path
+        for path in raw.split("\0")
+        if path and not _coordination_path(path)
+    )
+    digest = hashlib.sha256()
+    total_bytes = 0
+    try:
+        for relative in paths:
+            path = root / relative
+            facts = path.lstat()
+            encoded_path = relative.encode("utf-8", errors="surrogateescape")
+            digest.update(encoded_path)
+            digest.update(b"\0")
+            digest.update(f"{stat.S_IMODE(facts.st_mode):o}".encode("ascii"))
+            digest.update(b"\0")
+            if stat.S_ISREG(facts.st_mode):
+                digest.update(b"F\0")
+                digest.update(str(facts.st_size).encode("ascii"))
+                digest.update(b"\0")
+                total_bytes += facts.st_size
+                with path.open("rb") as stream:
+                    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                        digest.update(chunk)
+            elif stat.S_ISLNK(facts.st_mode):
+                target = os.readlink(path).encode("utf-8", errors="surrogateescape")
+                digest.update(b"L\0")
+                digest.update(str(len(target)).encode("ascii"))
+                digest.update(b"\0")
+                digest.update(target)
+                total_bytes += len(target)
+            else:
+                raise ProtocolError(
+                    "git_fact_unavailable",
+                    f"untracked path has unsupported file type: {relative}",
+                )
+            digest.update(b"\0")
+    except OSError as error:
+        raise ProtocolError(
+            "git_fact_unavailable", f"cannot bind untracked workspace content: {error}"
+        ) from error
+    return {
+        "untracked_paths": paths,
+        "untracked_file_count": len(paths),
+        "untracked_total_bytes": total_bytes,
+        "untracked_content_sha256": digest.hexdigest(),
+    }
 
 
 def git_facts(root: Path) -> dict[str, object]:
@@ -52,14 +120,14 @@ def git_facts(root: Path) -> dict[str, object]:
     user_status = sorted(line for line in status if not _coordination_status_line(line))
     staged = sorted(line[3:] for line in user_status if line[:1] not in {" ", "?"})
     dirty = sorted(line[3:] for line in user_status if len(line) > 1 and line[1] not in {" ", "?"})
-    untracked = sorted(line[3:] for line in user_status if line.startswith("??"))
+    untracked = _untracked_facts(root)
     return {
         "head": _run_git(root, "rev-parse", "HEAD").strip(),
         "branch": _run_git(root, "branch", "--show-current").strip(),
         "status": user_status,
         "staged_paths": staged,
         "dirty_paths": dirty,
-        "untracked_paths": untracked,
+        **untracked,
         "worktree_diff_sha256": hashlib.sha256(
             _run_git(root, "diff", "--binary", "--", ".", f":(exclude){LEGACY_DIRECTORY}", ":(exclude).dev-mesh").encode(
                 "utf-8", errors="surrogateescape"

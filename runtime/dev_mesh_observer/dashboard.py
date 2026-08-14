@@ -38,8 +38,14 @@ DETAIL_FIELDS = (
     "target_run_id",
     "message_id",
     "interaction_kind",
+    "disposition",
+    "blocker_kind",
     "work_state_id",
     "direct_commit_id",
+    "result_id",
+    "baseline_sha256",
+    "evidence_sha256",
+    "source_kind",
 )
 
 PROJECT_RELATION_SAMPLE_LIMIT = 4
@@ -70,6 +76,23 @@ def _cross_project_envelope(record: dict[str, object]) -> dict[str, object] | No
         or WORKSPACE_ID.fullmatch(target_workspace_id) is None
     ):
         return None
+    reconciliation = value.get("reconciliation")
+    if reconciliation is not None:
+        by = reconciliation.get("by") if isinstance(reconciliation, dict) else None
+        if (
+            value.get("phase") != "closed"
+            or value.get("actor_role") != "target"
+            or not isinstance(by, dict)
+            or reconciliation.get("basis") != "bound-target-run-terminal"
+            or not isinstance(by.get("workspace_id"), str)
+            or WORKSPACE_ID.fullmatch(str(by["workspace_id"])) is None
+            or not isinstance(by.get("owner"), str)
+            or not isinstance(by.get("run_id"), str)
+            or reconciliation.get("target_run_status") != "closed"
+            or reconciliation.get("target_run_outcome")
+            not in {"completed", "failed", "abandoned"}
+        ):
+            return None
     return value
 
 
@@ -80,6 +103,18 @@ def _project_collaboration(
     workspace_names: dict[str, str],
 ) -> dict[str, object]:
     """Separate explicit cross-task collaboration from same-Run workspace hints."""
+
+    run_statuses = {
+        (str(row["workspace_id"]), str(row["object_id"])): str(row["status"])
+        for row in connection.execute(
+            """
+            SELECT workspace_id, object_id, status
+            FROM snapshots
+            WHERE protocol_version = ? AND kind = 'run'
+            """,
+            (PROTOCOL_VERSION,),
+        )
+    }
 
     identities: dict[tuple[str, str], dict[str, dict[str, object]]] = defaultdict(dict)
     for row in connection.execute(
@@ -110,6 +145,8 @@ def _project_collaboration(
                 "target_workspace_id": key[1],
                 "collaboration_count": 0,
                 "open_collaboration_count": 0,
+                "active_collaboration_count": 0,
+                "pending_settlement_count": 0,
                 "completed_collaboration_count": 0,
                 "latest_at": None,
                 "samples": [],
@@ -185,7 +222,13 @@ def _project_collaboration(
             if isinstance(phases, set):
                 phases.add(str(cross_project["phase"]))
             actor_role = str(cross_project["actor_role"])
-            actor = source if actor_role == "source" else target
+            reconciliation = cross_project.get("reconciliation")
+            actor = (
+                reconciliation["by"]
+                if isinstance(reconciliation, dict)
+                else source if actor_role == "source" else target
+            )
+            assert isinstance(actor, dict)
             if (
                 actor.get("workspace_id") != str(row["workspace_id"])
                 or actor.get("owner") != row["owner"]
@@ -215,6 +258,18 @@ def _project_collaboration(
         edge = relation(source_workspace, target_workspace)
         edge["collaboration_count"] = int(edge["collaboration_count"]) + 1
         closed = isinstance(phases, set) and "closed" in phases
+        target_run_id = collaboration.get("target_run_id")
+        target_run_status = (
+            run_statuses.get((target_workspace, target_run_id))
+            if isinstance(target_run_id, str)
+            else None
+        )
+        pending_settlement = (
+            not closed
+            and isinstance(phases, set)
+            and "bound" in phases
+            and target_run_status == "closed"
+        )
         if closed:
             if collaboration.get("outcome") == "completed":
                 edge["completed_collaboration_count"] = int(
@@ -222,6 +277,12 @@ def _project_collaboration(
                 ) + 1
         else:
             edge["open_collaboration_count"] = int(edge["open_collaboration_count"]) + 1
+            counter = (
+                "pending_settlement_count"
+                if pending_settlement
+                else "active_collaboration_count"
+            )
+            edge[counter] = int(edge[counter]) + 1
         edge["latest_at"] = max(
             str(edge["latest_at"] or ""), str(collaboration["latest_at"])
         )
@@ -237,6 +298,14 @@ def _project_collaboration(
                     "collaboration_id": collaboration_id,
                     "kind": collaboration.get("kind"),
                     "evidence": "cross-project-collaboration",
+                    "status": (
+                        "completed"
+                        if closed
+                        else "pending-settlement"
+                        if pending_settlement
+                        else "active"
+                    ),
+                    "target_run_status": target_run_status,
                 }
             )
 
@@ -474,8 +543,7 @@ def build_dashboard(
         if not _active_snapshot(record, kind, lifecycle):
             continue
         active_counts_by_workspace[identifier][kind] += 1
-        active_details.append(
-            {
+        active_detail = {
                 "workspace_id": identifier,
                 "kind": kind,
                 "object_id": str(row["object_id"]),
@@ -484,7 +552,7 @@ def build_dashboard(
                 "run_id": record.get("run_id") or record.get("owner_run_id"),
                 "scope": record.get("scope"),
             }
-        )
+        active_details.append(active_detail)
 
     for event in events:
         contention_id = event.get("contention_id")

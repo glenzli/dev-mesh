@@ -290,6 +290,106 @@ def _assert_coordinator(
     return coordinator
 
 
+def select_wait(
+    root: Path,
+    *,
+    contention_id: str,
+    scope: str,
+    owner: str,
+    run_id: str,
+    reason: str,
+) -> dict[str, object]:
+    """Let the non-authoritative trigger Claim wait without two-party consensus.
+
+    Waiting constrains only the pending participant.  It never changes the
+    active Claim, so coordinator proposal/response/enact would add ceremony
+    without protecting another authority boundary.
+    """
+
+    contention_id = require_identifier(contention_id, "contention id")
+    scope = require_slug(scope, "scope")
+    owner = require_slug(owner, "owner")
+    run_id = require_identifier(run_id, "run id")
+    reason = require_text(reason, "wait reason", 1000)
+    with operation(root, "contention-wait") as plane:
+        archive = _path(plane, contention_id, active=False)
+        if archive.exists():
+            completed = read_json(archive, base=plane.state_root)
+            participant = next(
+                (
+                    item
+                    for item in completed.get("participants", [])
+                    if isinstance(item, dict) and item.get("scope") == scope
+                ),
+                None,
+            )
+            if (
+                completed.get("decision") != "wait"
+                or completed.get("trigger_scope") != scope
+                or not isinstance(participant, dict)
+                or participant.get("owner") != owner
+                or participant.get("run_id") != run_id
+                or completed.get("decision_reason") != reason
+            ):
+                raise ValueError("archived contention does not match this wait selection")
+            return {**completed, "archive": str(archive), "event_emitted": False}
+
+        path, record = _active(plane, contention_id)
+        _assert_mutable(record)
+        if record.get("status") not in {"awaiting-decision", "decision-rejected"}:
+            raise ValueError("contention already has an in-flight shared decision")
+        if record.get("trigger_scope") != scope:
+            raise ValueError("only the pending trigger Claim may select unilateral wait")
+        claim = _claim(plane, scope)
+        if (
+            claim.get("owner") != owner
+            or claim.get("run_id") != run_id
+            or claim.get("status") != "pending-arbitration"
+            or claim.get("contention_id") != contention_id
+        ):
+            raise ValueError("wait requires the exact pending trigger Claim")
+        actor_run = read_json(
+            plane.state_root / "runs" / f"{run_id}.json", base=plane.state_root
+        )
+        if actor_run.get("owner") != owner or actor_run.get("status") != "active":
+            raise ValueError("wait selection requires the exact active trigger Run")
+        coordinator = record.get("coordinator")
+        if not isinstance(coordinator, dict):
+            raise ValueError("contention coordinator is malformed")
+        revision = int(record.get("decision_revision", 0)) + 1
+        terminal_event = build_event(
+            "contention-completed",
+            payload={
+                "contention_id": contention_id,
+                "owner": owner,
+                "run_id": run_id,
+                "epoch": coordinator.get("epoch"),
+                "coordinator_epoch": coordinator.get("epoch"),
+                "coordinator_run_id": coordinator.get("run_id"),
+                "revision": revision,
+                "decision": "wait",
+                "status": "completed",
+                "reason_code": "pending-participant-selected-wait",
+                "reason": reason,
+                "scopes": record.get("scopes"),
+                "owners": record.get("owners"),
+            },
+        )
+        record.update(
+            {
+                "status": "finalizing",
+                "decision_revision": revision,
+                "decision": "wait",
+                "decision_reason": reason,
+                "responses": {},
+                "terminal_event": terminal_event,
+            }
+        )
+        replace_json(path, record, base=plane.state_root)
+        write_event(plane, terminal_event)
+        return _archive_terminal(plane, path, record, terminal_event)
+
+
 def renew(
     root: Path,
     *,
@@ -392,8 +492,22 @@ def propose(
         coordinator = _assert_coordinator(plane, record, owner, run_id, epoch)
         participant_claims = [_claim(plane, str(scope)) for scope in record.get("scopes", [])]
         if decision == "parallel-tx":
+            if any(
+                claim.get("projection_mode", "git-tree") != "git-tree"
+                for claim in participant_claims
+            ):
+                raise ValueError(
+                    "workspace-bytes Claims must select wait, handoff, or exclusive coordination"
+                )
             if any(claim.get("intent") == "exclusive-refactor" for claim in participant_claims):
                 raise ValueError("exclusive-refactor Claims cannot select parallel transactions")
+            if any(
+                not any(isinstance(item, str) for item in claim.get("semantic_writes", []))
+                for claim in participant_claims
+            ):
+                raise ValueError(
+                    "parallel-tx branch offload requires semantic writes from every Claim"
+                )
             for index, left in enumerate(participant_claims):
                 left_writes = set(item for item in left.get("semantic_writes", []) if isinstance(item, str))
                 left_sensitive = set(item for item in left.get("sensitive_to", []) if isinstance(item, str))

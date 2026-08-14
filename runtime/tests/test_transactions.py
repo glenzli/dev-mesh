@@ -25,7 +25,15 @@ class TransactionTest(GitWorkspaceTest):
         initialize(self.root)
         join_run(self.root, run_id="run-a", owner="agent-a", task="primary")
         join_run(self.root, run_id="run-b", owner="agent-b", task="parallel")
-        create_claim(self.root, scope="primary", owner="agent-a", run_id="run-a", task="primary", paths=["app.txt"])
+        create_claim(
+            self.root,
+            scope="primary",
+            owner="agent-a",
+            run_id="run-a",
+            task="primary",
+            paths=["app.txt"],
+            semantic_writes=["left-side"],
+        )
         pending = create_claim(
             self.root,
             scope="parallel",
@@ -33,6 +41,7 @@ class TransactionTest(GitWorkspaceTest):
             run_id="run-b",
             task="parallel",
             paths=["app.txt"],
+            semantic_writes=["right-side"],
             allow_overlap=True,
         )
         self.contention_id = str(pending["contention_id"])
@@ -582,3 +591,48 @@ class TransactionTest(GitWorkspaceTest):
         )
         self.assertEqual(aborted["status"], "aborted")
         self.assertEqual(aborted["cleanup"]["status"], "completed")
+
+
+class WorkspaceBytesTransactionTest(GitWorkspaceTest):
+    def test_workspace_bytes_contention_rejects_parallel_transaction_decision(self) -> None:
+        (self.root / ".gitignore").write_text("local/\n", encoding="utf-8")
+        git(self.root, "add", ".gitignore")
+        git(self.root, "commit", "-m", "ignore local data")
+        initialize(self.root)
+        join_run(self.root, run_id="run-data-a", owner="agent-a", task="first data writer")
+        join_run(self.root, run_id="run-data-b", owner="agent-b", task="second data writer")
+        create_claim(
+            self.root,
+            scope="data-primary",
+            owner="agent-a",
+            run_id="run-data-a",
+            task="create ignored data",
+            paths=["local/state.json"],
+            semantic_writes=["local-state-a"],
+            projection_mode="workspace-bytes",
+        )
+        pending = create_claim(
+            self.root,
+            scope="data-parallel",
+            owner="agent-b",
+            run_id="run-data-b",
+            task="also create ignored data",
+            paths=["local/state.json"],
+            semantic_writes=["local-state-b"],
+            projection_mode="workspace-bytes",
+            allow_overlap=True,
+        )
+        contention_id = str(pending["contention_id"])
+        with self.assertRaisesRegex(ValueError, "must select wait"):
+            contention.propose(
+                self.root,
+                contention_id=contention_id,
+                owner="agent-b",
+                run_id="run-data-b",
+                epoch=1,
+                decision="parallel-tx",
+                reason="attempt an isolated branch",
+            )
+        record = contention.get_decision(resolve(self.root), contention_id)
+        self.assertEqual(record["status"], "awaiting-decision")
+        self.assertIsNone(record.get("decision"))

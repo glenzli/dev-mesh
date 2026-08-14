@@ -11,6 +11,7 @@ from pathlib import Path
 from . import git_backend as git
 from .constants import (
     CLAIM_INTENTS,
+    CLAIM_PROJECTION_MODES,
     EVIDENCE_REQUIRED_PAUSE_BLOCKERS,
     MAX_CONTENTION_PARTICIPANTS,
     MAX_SEMANTIC_RESOURCES,
@@ -176,6 +177,7 @@ def create_claim(
     task: str,
     paths: list[str],
     intent: str = "local-edit",
+    projection_mode: str = "git-tree",
     semantic_writes: list[str] | None = None,
     sensitive_to: list[str] | None = None,
     validation: str = "",
@@ -188,6 +190,10 @@ def create_claim(
     task = require_text(task, "task", 500)
     if intent not in CLAIM_INTENTS:
         raise ValueError(f"unsupported Claim intent: {intent}")
+    if projection_mode not in CLAIM_PROJECTION_MODES:
+        raise ValueError(f"unsupported Claim projection mode: {projection_mode}")
+    if intent == "read" and projection_mode != "git-tree":
+        raise ValueError("read Claims use the default git-tree projection")
     validation = require_text(validation, "validation plan", 2000) if validation.strip() else ""
     first_release = require_text(first_release, "first release", 2000) if first_release.strip() else ""
     semantic_writes = sorted({require_identifier(item, "semantic write") for item in semantic_writes or []})
@@ -212,16 +218,46 @@ def create_claim(
                 f"overlap exceeds {MAX_CONTENTION_PARTICIPANTS} participants; decompose the scope"
             )
         in_flight = [
-            item for item in conflicts if item.get("status") in {"pending-arbitration", "transaction"}
+            item
+            for item in conflicts
+            if item.get("status")
+            in {"pending-arbitration", "pending-baseline", "completing", "transaction"}
         ]
         if in_flight:
             raise ValueError(f"overlap already has an in-flight arbitration or transaction: {in_flight}")
-        if conflicts and not allow_overlap:
-            raise ValueError(f"claim overlaps active authority: {conflicts}")
+        # ``allow_overlap`` remains accepted for callers from the unpublished
+        # draft, but overlap is now always materialized as a non-authoritative
+        # pending Claim.  Refusing before materialization left weaker callers
+        # without a contention id or an actionable next step.
+        _ = allow_overlap
         status = "pending-arbitration" if conflicts else "active"
         base_revision = git.head(root)
         canonical_branch = git.branch(root)
-        event_name = "claim-requested" if conflicts else "claim-created"
+        workspace_base = None
+        if projection_mode == "workspace-bytes":
+            from .workspace_projection import workspace_bytes_projection
+
+            workspace_base = workspace_bytes_projection(root, normalized_paths)
+        baseline = None
+        if status == "active" and intent != "read":
+            from .work_results import required_baseline
+
+            baseline = required_baseline(
+                root,
+                plane,
+                normalized_paths,
+                projection_mode=projection_mode,
+                workspace_projection=workspace_base,
+            )
+            if baseline is not None:
+                status = "pending-baseline"
+        event_name = (
+            "claim-requested"
+            if conflicts
+            else "claim-baseline-required"
+            if baseline is not None
+            else "claim-created"
+        )
         event = build_event(
             event_name,
             payload={
@@ -230,11 +266,13 @@ def create_claim(
                 "run_id": run_id,
                 "paths": normalized_paths,
                 "intent": intent,
+                "projection_mode": projection_mode,
                 "semantic_resources": sorted(set(semantic_writes) | set(sensitive_to)),
                 "status": status,
                 "conflicts": conflicts,
                 "base_revision": base_revision,
                 "canonical_branch": canonical_branch,
+                "baseline": baseline,
             },
         )
         record = materialized(
@@ -246,6 +284,7 @@ def create_claim(
                 "task": task,
                 "paths": normalized_paths,
                 "intent": intent,
+                "projection_mode": projection_mode,
                 "semantic_writes": semantic_writes,
                 "sensitive_to": sensitive_to,
                 "validation": validation,
@@ -256,6 +295,8 @@ def create_claim(
                 "heartbeat_at": now(),
                 "base_revision": base_revision,
                 "canonical_branch": canonical_branch,
+                "baseline": baseline,
+                "workspace_base": workspace_base if status != "pending-arbitration" else None,
             }
         )
         write_json_exclusive(path, record, base=plane.state_root)
@@ -277,12 +318,11 @@ def activate_pending_claim(
     scope: str,
     owner: str,
     run_id: str,
-    evidence: str,
+    evidence: str = "",
 ) -> dict[str, object]:
     scope = require_slug(scope, "scope")
     owner = require_slug(owner, "owner")
     run_id = require_identifier(run_id, "run id")
-    evidence = require_text(evidence, "activation evidence", 1000)
     with operation(root, "claim-activate") as plane:
         _read_run(plane, run_id, owner)
         path = _claim_path(plane, scope)
@@ -298,6 +338,12 @@ def activate_pending_claim(
         decision = read_json(archived, base=plane.state_root)
         if decision.get("status") != "completed":
             raise ValueError("correlated contention is not completed")
+        if evidence.strip():
+            evidence = require_text(evidence, "activation evidence", 1000)
+        elif decision.get("decision") == "wait":
+            evidence = "overlap and inherited baseline rechecked under the operation lock"
+        else:
+            raise ValueError("activation evidence is required for non-wait decisions")
         conflicts = _claim_conflicts(
             plane,
             paths=[item for item in record.get("paths", []) if isinstance(item, str)],
@@ -307,21 +353,46 @@ def activate_pending_claim(
         conflicts = [item for item in conflicts if item.get("scope") != scope]
         if conflicts:
             raise ValueError(f"Claim still overlaps current authority or intent: {conflicts}")
+        from .work_results import required_baseline
+
+        projection_mode = str(record.get("projection_mode", "git-tree"))
+        workspace_base = None
+        if projection_mode == "workspace-bytes":
+            from .workspace_projection import workspace_bytes_projection
+
+            workspace_base = workspace_bytes_projection(
+                root,
+                [item for item in record.get("paths", []) if isinstance(item, str)],
+            )
+        baseline = (
+            required_baseline(
+                root,
+                plane,
+                [item for item in record.get("paths", []) if isinstance(item, str)],
+                projection_mode=projection_mode,
+                workspace_projection=workspace_base,
+            )
+            if record.get("intent") != "read"
+            else None
+        )
+        next_status = "pending-baseline" if baseline is not None else "active"
         record.update(
             {
-                "status": "active",
+                "status": next_status,
                 "activation_evidence": evidence,
                 "activated_at": now(),
                 "heartbeat_at": now(),
                 "base_revision": git.head(root),
                 "canonical_branch": git.branch(root),
                 "conflicts": [],
+                "baseline": baseline,
+                "workspace_base": workspace_base,
             }
         )
         replace_json(path, record, base=plane.state_root)
         _, event = emit(
             plane,
-            "claim-activated",
+            "claim-baseline-required" if baseline is not None else "claim-activated",
             payload={
                 "scope": scope,
                 "owner": owner,
@@ -332,6 +403,9 @@ def activate_pending_claim(
                 "paths": record.get("paths", []),
                 "base_revision": record["base_revision"],
                 "canonical_branch": record["canonical_branch"],
+                "baseline": baseline,
+                "projection_mode": projection_mode,
+                "status": next_status,
             },
         )
         record["activated_event_id"] = event["event_id"]
@@ -359,9 +433,13 @@ def update_claim(
         record = read_json(path, base=plane.state_root)
         if record.get("owner") != owner or record.get("run_id") != run_id:
             raise ValueError("claim owner or run does not match")
+        if record.get("status") == "completing":
+            raise ValueError("a completing Claim only accepts an exact completion retry")
         authority_changed = paths is not None or semantic_writes is not None or sensitive_to is not None
-        if record.get("status") == "pending-arbitration" and authority_changed:
-            raise ValueError("release and recreate a pending Claim to change its authority declaration")
+        if authority_changed and record.get("status") != "active":
+            raise ValueError("only an active Claim may change its authority declaration")
+        if paths is not None and record.get("projection_mode") == "workspace-bytes":
+            raise ValueError("workspace-bytes Claim paths are immutable; release and re-claim")
         before = {
             key: record.get(key)
             for key in ("task", "paths", "semantic_writes", "sensitive_to", "intent", "status")
@@ -408,6 +486,7 @@ def update_claim(
                 "owner": owner,
                 "run_id": run_id,
                 "paths": record["paths"],
+                "projection_mode": record.get("projection_mode", "git-tree"),
                 "semantic_resources": sorted(
                     set(record.get("semantic_writes", [])) | set(record.get("sensitive_to", []))
                 ),
@@ -618,9 +697,25 @@ def release_claim(root: Path, *, scope: str, owner: str, run_id: str, summary: s
             raise ValueError("canonical branch changed while the Claim was active")
         paths = [item for item in record.get("paths", []) if isinstance(item, str)]
         if record.get("intent") != "read" and record.get("status") in {"active", "paused"}:
-            dirty = git.dirty_paths(root, paths)
+            if record.get("projection_mode", "git-tree") == "workspace-bytes":
+                from .workspace_projection import (
+                    workspace_bytes_changed_paths,
+                    workspace_bytes_projection,
+                )
+
+                workspace_base = record.get("workspace_base")
+                if not isinstance(workspace_base, dict):
+                    raise ValueError("workspace-bytes Claim lacks its accepted starting baseline")
+                dirty = workspace_bytes_changed_paths(
+                    workspace_base, workspace_bytes_projection(root, paths)
+                )
+            else:
+                dirty = git.dirty_paths(root, paths)
             if dirty:
-                raise ValueError("claimed paths are dirty; commit, checkpoint, or hand off first: " + ", ".join(dirty))
+                raise ValueError(
+                    "claimed paths are dirty; complete the Claim into a Work Result first: "
+                    + ", ".join(dirty)
+                )
         released_at = now()
         release_revision = git.head(root)
         emit(
@@ -636,6 +731,7 @@ def release_claim(root: Path, *, scope: str, owner: str, run_id: str, summary: s
                 "base_revision": record.get("base_revision"),
                 "release_revision": release_revision,
                 "canonical_branch": record.get("canonical_branch"),
+                "projection_mode": record.get("projection_mode", "git-tree"),
             },
         )
         record.update(
@@ -655,7 +751,13 @@ def release_claim(root: Path, *, scope: str, owner: str, run_id: str, summary: s
 def _run_blockers(plane: ControlPlane, run_id: str) -> list[dict[str, object]]:
     blockers: list[dict[str, object]] = []
     for claim in _active_claims(plane):
-        if claim.get("run_id") == run_id and claim.get("status") in {"active", "paused", "pending-arbitration"}:
+        if claim.get("run_id") == run_id and claim.get("status") in {
+            "active",
+            "paused",
+            "pending-arbitration",
+            "pending-baseline",
+            "completing",
+        }:
             blockers.append({"kind": "claim", "id": claim.get("scope"), "status": claim.get("status")})
     for path in sorted((plane.state_root / "transactions" / "active").glob("*.json")):
         record = read_json(path, base=plane.state_root)
@@ -816,7 +918,16 @@ def recover_run_authority(
             record = read_json(path, base=plane.state_root)
             current = path.parent == plane.state_root / "claims"
             if current and record.get("owner") == owner and record.get("run_id") == closed_run_id:
-                next_lineage(record, field="recovery_run_lineage")
+                if record.get("status") == "completing":
+                    from .work_results import validate_completion_intent
+
+                    validate_completion_intent(plane, record)
+                else:
+                    if record.get("baseline_activation") is not None:
+                        from .work_results import validate_baseline_activation_intent
+
+                        validate_baseline_activation_intent(plane, record)
+                    next_lineage(record, field="recovery_run_lineage")
             elif record.get("owner") == owner and record.get("run_id") == recovery_run_id:
                 proves_lineage(
                     record,
@@ -976,14 +1087,40 @@ def recover_run_authority(
             record = read_json(path, base=plane.state_root)
             current = path.parent == plane.state_root / "claims"
             if current and record.get("owner") == owner and record.get("run_id") == closed_run_id:
-                record.update({"run_id": recovery_run_id, "authority_recovered_at": now()})
-                bind_lineage(
-                    record,
-                    field="recovery_run_lineage",
-                    previous_field="previous_run_id",
-                )
-                replace_json(path, record, base=plane.state_root)
-                rebound.append({"kind": "claim", "id": record.get("scope")})
+                if record.get("status") == "completing":
+                    from .work_results import _finish_completion, validate_completion_intent
+
+                    result, terminal_event = validate_completion_intent(plane, record)
+                    _finish_completion(plane, path, record, result, terminal_event)
+                    rebound.append(
+                        {"kind": "claim-completion", "id": record.get("scope")}
+                    )
+                else:
+                    baseline_finished = False
+                    if record.get("baseline_activation") is not None:
+                        from .work_results import (
+                            _finish_baseline_activation,
+                            validate_baseline_activation_intent,
+                        )
+
+                        intent, event = validate_baseline_activation_intent(plane, record)
+                        record = _finish_baseline_activation(
+                            plane, path, record, intent, event
+                        )
+                        baseline_finished = True
+                    record.update({"run_id": recovery_run_id, "authority_recovered_at": now()})
+                    bind_lineage(
+                        record,
+                        field="recovery_run_lineage",
+                        previous_field="previous_run_id",
+                    )
+                    replace_json(path, record, base=plane.state_root)
+                    rebound.append(
+                        {
+                            "kind": "claim-baseline" if baseline_finished else "claim",
+                            "id": record.get("scope"),
+                        }
+                    )
             elif (
                 record.get("owner") == owner
                 and record.get("run_id") == recovery_run_id

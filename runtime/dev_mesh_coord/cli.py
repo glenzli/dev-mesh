@@ -1,4 +1,4 @@
-"""Thin JSON CLI for the 20260812.1 producer, transaction, and cutover tools."""
+"""Thin JSON CLI for the 20260814.1 producer, transaction, and cutover tools."""
 
 from __future__ import annotations
 
@@ -6,12 +6,15 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from . import canonical_git, contention, cross_project, interactions, lifecycle, transactions, work
+from . import canonical_git, contention, cross_project, interactions, lifecycle, transactions, work, work_results
 from .cli_output import project
 from .control_plane import initialize
 from .cutover import apply as apply_cutover
 from .cutover import build_plan, verify as verify_cutover, write_plan
 from .errors import error_json
+from .version_cutover import apply as apply_version_cutover
+from .version_cutover import build_plan as build_version_cutover_plan
+from .version_cutover import verify as verify_version_cutover
 
 
 def _json(value: object) -> None:
@@ -55,11 +58,17 @@ def parser() -> argparse.ArgumentParser:
     claim.add_argument("--task", required=True)
     claim.add_argument("--path", action="append", required=True)
     claim.add_argument("--intent", default="local-edit")
+    claim.add_argument(
+        "--projection-mode",
+        default="git-tree",
+        choices=("git-tree", "workspace-bytes"),
+        help="workspace-bytes is an explicit non-Git baseline for bounded ignored files",
+    )
     claim.add_argument("--semantic-write", action="append", default=[])
     claim.add_argument("--sensitive-to", action="append", default=[])
     claim.add_argument("--validation", default="")
     claim.add_argument("--first-release", default="")
-    claim.add_argument("--allow-overlap", action="store_true")
+    claim.add_argument("--allow-overlap", action="store_true", help=argparse.SUPPRESS)
 
     update = commands.add_parser("claim-update")
     _common_identity(update, scope=True)
@@ -73,7 +82,17 @@ def parser() -> argparse.ArgumentParser:
 
     activate = commands.add_parser("claim-activate")
     _common_identity(activate, scope=True)
-    activate.add_argument("--evidence", required=True)
+    activate.add_argument("--evidence", default="")
+
+    accept_baseline = commands.add_parser("claim-baseline-accept")
+    _common_identity(accept_baseline, scope=True)
+    accept_baseline.add_argument("--baseline-sha256", required=True)
+
+    complete_claim = commands.add_parser("claim-complete")
+    _common_identity(complete_claim, scope=True)
+    complete_claim.add_argument("--result-id", required=True)
+    complete_claim.add_argument("--summary", required=True)
+    complete_claim.add_argument("--validation-evidence", required=True)
 
     pause = commands.add_parser("claim-pause")
     _common_identity(pause, scope=True)
@@ -165,6 +184,14 @@ def parser() -> argparse.ArgumentParser:
         "--outcome", required=True, choices=sorted(cross_project.COLLABORATION_OUTCOMES)
     )
 
+    cross_reconcile_close = commands.add_parser("cross-project-reconcile-close")
+    cross_reconcile_close.add_argument("--collaboration-id", required=True)
+    cross_reconcile_close.add_argument("--owner", required=True)
+    cross_reconcile_close.add_argument("--run-id", required=True)
+    cross_reconcile_close.add_argument(
+        "--outcome", required=True, choices=sorted(cross_project.COLLABORATION_OUTCOMES)
+    )
+
     ack = commands.add_parser("ack")
     ack.add_argument("--message-id", required=True)
     ack.add_argument("--target-owner", required=True)
@@ -202,8 +229,18 @@ def parser() -> argparse.ArgumentParser:
     propose.add_argument("--owner", required=True)
     propose.add_argument("--run-id", required=True)
     propose.add_argument("--epoch", required=True, type=int)
-    propose.add_argument("--decision", required=True, choices=sorted(contention.CONTENTION_DECISIONS))
+    propose.add_argument(
+        "--decision",
+        required=True,
+        choices=sorted(contention.CONTENTION_DECISIONS),
+        help="shared decision; parallel-tx offloads only the pending Claim to a temporary branch",
+    )
     propose.add_argument("--reason", required=True)
+
+    wait = commands.add_parser("contention-wait")
+    _common_identity(wait, scope=True)
+    wait.add_argument("--contention-id", required=True)
+    wait.add_argument("--reason", required=True)
 
     respond = commands.add_parser("contention-respond")
     respond.add_argument("--contention-id", required=True)
@@ -299,6 +336,13 @@ def parser() -> argparse.ArgumentParser:
     direct_commit.add_argument("--summary", required=True)
     direct_commit.add_argument("--validation-evidence", required=True)
 
+    publish_results = commands.add_parser("publish-results")
+    publish_results.add_argument("--result-id", action="append", required=True)
+    publish_results.add_argument("--owner", required=True)
+    publish_results.add_argument("--run-id", required=True)
+    publish_results.add_argument("--summary", required=True)
+    publish_results.add_argument("--validation-evidence", required=True)
+
     direct_reconcile = commands.add_parser("direct-commit-reconcile")
     direct_reconcile.add_argument("--steward", required=True)
     direct_reconcile.add_argument("--steward-run-id", required=True)
@@ -319,6 +363,19 @@ def parser() -> argparse.ArgumentParser:
     cutover_verify = commands.add_parser("cutover-verify")
     cutover_verify.add_argument("--journal", required=True)
     cutover_verify.add_argument("--plan-digest", required=True)
+
+    version_plan = commands.add_parser("version-cutover-plan")
+    version_plan.add_argument("--cutover-id", required=True)
+
+    version_apply = commands.add_parser("version-cutover-apply")
+    version_apply.add_argument("--cutover-id", required=True)
+    version_apply.add_argument("--plan-digest", required=True)
+    version_apply.add_argument("--confirm-agents-stopped", action="store_true")
+    version_apply.add_argument("--confirm-discard-old-authority", action="store_true")
+
+    version_verify = commands.add_parser("version-cutover-verify")
+    version_verify.add_argument("--cutover-id", required=True)
+    version_verify.add_argument("--plan-digest", required=True)
     return result
 
 
@@ -333,13 +390,17 @@ def dispatch(arguments: argparse.Namespace) -> object:
     if command == "join":
         return lifecycle.join_run(root, run_id=arguments.run_id, owner=arguments.owner, task=arguments.task, parent_owner=arguments.parent_owner)
     if command == "claim":
-        return lifecycle.create_claim(root, scope=arguments.scope, owner=arguments.owner, run_id=arguments.run_id, task=arguments.task, paths=arguments.path, intent=arguments.intent, semantic_writes=arguments.semantic_write, sensitive_to=arguments.sensitive_to, validation=arguments.validation, first_release=arguments.first_release, allow_overlap=arguments.allow_overlap)
+        return lifecycle.create_claim(root, scope=arguments.scope, owner=arguments.owner, run_id=arguments.run_id, task=arguments.task, paths=arguments.path, intent=arguments.intent, projection_mode=arguments.projection_mode, semantic_writes=arguments.semantic_write, sensitive_to=arguments.sensitive_to, validation=arguments.validation, first_release=arguments.first_release, allow_overlap=arguments.allow_overlap)
     if command == "claim-update":
         return lifecycle.update_claim(root, scope=arguments.scope, owner=arguments.owner, run_id=arguments.run_id, task=arguments.task, paths=arguments.path, semantic_writes=arguments.semantic_write, sensitive_to=arguments.sensitive_to)
     if command == "heartbeat":
         return lifecycle.heartbeat_claim(root, scope=arguments.scope, owner=arguments.owner, run_id=arguments.run_id)
     if command == "claim-activate":
         return lifecycle.activate_pending_claim(root, scope=arguments.scope, owner=arguments.owner, run_id=arguments.run_id, evidence=arguments.evidence)
+    if command == "claim-baseline-accept":
+        return work_results.accept_baseline(root, scope=arguments.scope, owner=arguments.owner, run_id=arguments.run_id, baseline_sha256=arguments.baseline_sha256)
+    if command == "claim-complete":
+        return work_results.complete_claim(root, result_id=arguments.result_id, scope=arguments.scope, owner=arguments.owner, run_id=arguments.run_id, summary=arguments.summary, validation_evidence=arguments.validation_evidence)
     if command == "claim-pause":
         return lifecycle.pause_claim(root, scope=arguments.scope, owner=arguments.owner, run_id=arguments.run_id, blocker_kind=arguments.blocker_kind, checkpoint=arguments.checkpoint, resume_condition=arguments.resume_condition, operation_name=arguments.operation, resources=arguments.resource, error_kind=arguments.error_kind, retain_paths_reason=arguments.retain_paths_reason)
     if command == "claim-resume":
@@ -360,6 +421,8 @@ def dispatch(arguments: argparse.Namespace) -> object:
         return cross_project.bind_collaboration(root, collaboration_id=arguments.collaboration_id, source_workspace_id=arguments.source_workspace_id, source_owner=arguments.source_owner, source_run_id=arguments.source_run_id, target_owner=arguments.target_owner, target_run_id=arguments.target_run_id, target_task_id=arguments.target_task_id, kind=arguments.kind)
     if command == "cross-project-close":
         return cross_project.close_collaboration(root, collaboration_id=arguments.collaboration_id, actor_role=arguments.actor_role, owner=arguments.owner, run_id=arguments.run_id, source_workspace_id=arguments.source_workspace_id, source_owner=arguments.source_owner, source_run_id=arguments.source_run_id, target_workspace_id=arguments.target_workspace_id, target_owner=arguments.target_owner, target_run_id=arguments.target_run_id, target_task_id=arguments.target_task_id, kind=arguments.kind, outcome=arguments.outcome)
+    if command == "cross-project-reconcile-close":
+        return cross_project.reconcile_closed_collaboration(root, collaboration_id=arguments.collaboration_id, owner=arguments.owner, run_id=arguments.run_id, outcome=arguments.outcome)
     if command == "ack":
         return interactions.acknowledge(root, message_id=arguments.message_id, target_owner=arguments.target_owner, target_run_id=arguments.target_run_id, note=arguments.note)
     if command == "handoff-reject":
@@ -374,6 +437,8 @@ def dispatch(arguments: argparse.Namespace) -> object:
         return contention.acquire(root, contention_id=arguments.contention_id, owner=arguments.owner, run_id=arguments.run_id, expected_epoch=arguments.expected_epoch, lease_seconds=arguments.lease_seconds)
     if command == "contention-propose":
         return contention.propose(root, contention_id=arguments.contention_id, owner=arguments.owner, run_id=arguments.run_id, epoch=arguments.epoch, decision=arguments.decision, reason=arguments.reason)
+    if command == "contention-wait":
+        return contention.select_wait(root, contention_id=arguments.contention_id, scope=arguments.scope, owner=arguments.owner, run_id=arguments.run_id, reason=arguments.reason)
     if command == "contention-respond":
         return contention.respond(root, contention_id=arguments.contention_id, scope=arguments.scope, owner=arguments.owner, run_id=arguments.run_id, revision=arguments.revision, accept=arguments.accept, reason=arguments.reason)
     if command == "contention-enact":
@@ -413,6 +478,15 @@ def dispatch(arguments: argparse.Namespace) -> object:
             summary=arguments.summary,
             validation_evidence=arguments.validation_evidence,
         )
+    if command == "publish-results":
+        return canonical_git.commit_results(
+            root,
+            result_ids=arguments.result_id,
+            owner=arguments.owner,
+            run_id=arguments.run_id,
+            summary=arguments.summary,
+            validation_evidence=arguments.validation_evidence,
+        )
     if command == "direct-commit-reconcile":
         return canonical_git.reconcile(
             root,
@@ -429,6 +503,22 @@ def dispatch(arguments: argparse.Namespace) -> object:
         return apply_cutover(Path(arguments.journal), expected_plan_digest=arguments.plan_digest, confirm_agents_stopped=arguments.confirm_agents_stopped, confirm_no_legacy_writers=arguments.confirm_no_legacy_writers, confirm_retire_active_authority=arguments.confirm_retire_active_authority)
     if command == "cutover-verify":
         return verify_cutover(Path(arguments.journal), expected_plan_digest=arguments.plan_digest)
+    if command == "version-cutover-plan":
+        return build_version_cutover_plan(root, cutover_id=arguments.cutover_id)
+    if command == "version-cutover-apply":
+        return apply_version_cutover(
+            root,
+            cutover_id=arguments.cutover_id,
+            expected_plan_digest=arguments.plan_digest,
+            confirm_agents_stopped=arguments.confirm_agents_stopped,
+            confirm_discard_old_authority=arguments.confirm_discard_old_authority,
+        )
+    if command == "version-cutover-verify":
+        return verify_version_cutover(
+            root,
+            cutover_id=arguments.cutover_id,
+            expected_plan_digest=arguments.plan_digest,
+        )
     raise AssertionError(command)
 
 

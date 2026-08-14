@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://dev-mesh.local/schemas/coordination/20260812.1/event.schema.json",
+  "$id": "https://dev-mesh.local/schemas/coordination/20260814.1/event.schema.json",
   "title": "Dev Mesh coordination event",
   "type": "object",
   "required": [
@@ -14,7 +14,7 @@
     "transaction_id"
   ],
   "properties": {
-    "schema": {"const": 1},
+    "schema": {"const": 2},
     "event_id": {"type": "string", "minLength": 1, "maxLength": 160},
     "event": {
       "enum": [
@@ -24,6 +24,9 @@
         "audit-correction",
         "claim-created",
         "claim-activated",
+        "claim-baseline-accepted",
+        "claim-baseline-required",
+        "claim-completed",
         "claim-paused",
         "claim-released",
         "claim-requested",
@@ -61,7 +64,7 @@
     },
     "at": {"type": "string", "format": "date-time"},
     "protocol": {"const": "dev-mesh.coordination"},
-    "protocol_version": {"const": "20260812.1"},
+    "protocol_version": {"const": "20260814.1"},
     "authority_effect": {
       "enum": ["none", "grant", "retain", "transfer", "release", "terminal"]
     },

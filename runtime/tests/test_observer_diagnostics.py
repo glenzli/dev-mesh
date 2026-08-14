@@ -6,20 +6,27 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
-from dev_mesh_coord import canonical_git, work
+from dev_mesh_coord import canonical_git, contention, work, work_results
 from dev_mesh_coord.constants import (
     AUTHORITY_EFFECTS,
+    EVENT_SCHEMA,
     MAX_EVENT_BYTES,
     PROTOCOL,
     PROTOCOL_VERSION,
 )
 from dev_mesh_coord.control_plane import initialize, resolve
-from dev_mesh_coord.lifecycle import create_claim, join_run, leave_run, release_claim
+from dev_mesh_coord.lifecycle import (
+    activate_pending_claim,
+    create_claim,
+    join_run,
+    leave_run,
+    release_claim,
+)
 from dev_mesh_observer.catalog import Catalog, workspace_id
 from dev_mesh_observer.reports import ACTIVE_STATUSES
 from dev_mesh_observer.source_validation import MAX_SNAPSHOT_BYTES, SNAPSHOT_STATUSES
 
-from helpers import GitWorkspaceTest
+from helpers import GitWorkspaceTest, git
 
 
 OLD = "2026-08-12T00:00:00.000000Z"
@@ -27,6 +34,173 @@ FUTURE_EXPIRED = "2026-08-12T00:01:00.000000Z"
 
 
 class ObserverIntegrityTest(GitWorkspaceTest):
+    def test_contention_participants_are_not_reported_as_non_collaborative(self) -> None:
+        initialize(self.root)
+        join_run(self.root, run_id="run-active", owner="agent-active", task="first edit")
+        join_run(self.root, run_id="run-pending", owner="agent-pending", task="later edit")
+        create_claim(
+            self.root,
+            scope="active-scope",
+            owner="agent-active",
+            run_id="run-active",
+            task="first edit",
+            paths=["app.txt"],
+        )
+        pending = create_claim(
+            self.root,
+            scope="pending-scope",
+            owner="agent-pending",
+            run_id="run-pending",
+            task="later edit",
+            paths=["app.txt"],
+        )
+        contention.select_wait(
+            self.root,
+            contention_id=str(pending["contention_id"]),
+            scope="pending-scope",
+            owner="agent-pending",
+            run_id="run-pending",
+            reason="first edit is short",
+        )
+        release_claim(
+            self.root,
+            scope="active-scope",
+            owner="agent-active",
+            run_id="run-active",
+            summary="first edit done",
+        )
+        leave_run(
+            self.root,
+            run_id="run-active",
+            owner="agent-active",
+            outcome="completed",
+            summary="first edit done",
+        )
+        activate_pending_claim(
+            self.root,
+            scope="pending-scope",
+            owner="agent-pending",
+            run_id="run-pending",
+        )
+        release_claim(
+            self.root,
+            scope="pending-scope",
+            owner="agent-pending",
+            run_id="run-pending",
+            summary="later edit done",
+        )
+        leave_run(
+            self.root,
+            run_id="run-pending",
+            owner="agent-pending",
+            outcome="completed",
+            summary="later edit done",
+        )
+
+        database = Path(self.temporary.name) / "observer.sqlite3"
+        with Catalog(database) as catalog:
+            catalog.collect_workspace(self.root)
+            report = catalog.report(workspace=workspace_id(self.root))
+
+        self.assertEqual(report["non_collaborative_runs"], [])
+        self.assertIn(
+            {
+                "source": "agent-pending",
+                "target": "agent-active",
+                "event": "contention",
+                "count": 1,
+            },
+            report["owner_edges"],
+        )
+
+    def test_completed_dirty_work_is_non_authoritative_and_cutover_ready(self) -> None:
+        initialize(self.root)
+        join_run(self.root, run_id="run-a", owner="agent-a", task="record result")
+        create_claim(
+            self.root,
+            scope="scope-a",
+            owner="agent-a",
+            run_id="run-a",
+            task="record result",
+            paths=["app.txt"],
+        )
+        (self.root / "app.txt").write_text("base\ncompleted dirty\n", encoding="utf-8")
+        work_results.complete_claim(
+            self.root,
+            result_id="result-a",
+            scope="scope-a",
+            owner="agent-a",
+            run_id="run-a",
+            summary="dirty work completed",
+            validation_evidence="focused validation passed",
+        )
+        leave_run(
+            self.root,
+            run_id="run-a",
+            owner="agent-a",
+            outcome="completed",
+            summary="result recorded",
+        )
+        database = Path(self.temporary.name) / "observer.sqlite3"
+        with Catalog(database) as catalog:
+            collected = catalog.collect_workspace(self.root)
+            report = catalog.report(workspace=workspace_id(self.root))
+        self.assertEqual(collected["invalid_count"], 0)
+        self.assertEqual(
+            report["work_results"],
+            {
+                "recorded": 1,
+                "projection_modes": {"git-tree": 1},
+                "completed_events": 1,
+                "awaiting_baseline_acknowledgement": 0,
+                "completion_pending": 0,
+            },
+        )
+        self.assertNotIn("claim", report["active"])
+        self.assertEqual(report["diagnostic_summary"]["total"], 0)
+        self.assertTrue(report["cutover_readiness"]["ready"])
+
+    def test_workspace_bytes_result_is_reported_without_git_publication(self) -> None:
+        (self.root / ".gitignore").write_text("local/\n", encoding="utf-8")
+        git(self.root, "add", ".gitignore")
+        git(self.root, "commit", "-m", "ignore local data")
+        initialize(self.root)
+        join_run(self.root, run_id="run-data", owner="agent-data", task="write local data")
+        create_claim(
+            self.root,
+            scope="local-data",
+            owner="agent-data",
+            run_id="run-data",
+            task="write ignored local data",
+            paths=["local/state.json"],
+            projection_mode="workspace-bytes",
+        )
+        (self.root / "local").mkdir()
+        (self.root / "local/state.json").write_text('{"ready":true}\n', encoding="utf-8")
+        work_results.complete_claim(
+            self.root,
+            result_id="local-data-result",
+            scope="local-data",
+            owner="agent-data",
+            run_id="run-data",
+            summary="wrote ignored local data",
+            validation_evidence="JSON decoded successfully",
+        )
+        leave_run(
+            self.root,
+            run_id="run-data",
+            owner="agent-data",
+            outcome="completed",
+            summary="local data recorded",
+        )
+        database = Path(self.temporary.name) / "observer.sqlite3"
+        with Catalog(database) as catalog:
+            catalog.collect_workspace(self.root)
+            report = catalog.report(workspace=workspace_id(self.root))
+        self.assertEqual(report["work_results"]["projection_modes"], {"workspace-bytes": 1})
+        self.assertEqual(report["diagnostic_summary"]["total"], 0)
+        self.assertTrue(report["cutover_readiness"]["ready"])
+
     def test_real_direct_commit_producer_converges_in_observer(self) -> None:
         initialize(self.root)
         join_run(self.root, run_id="run-a", owner="agent-a", task="direct commit")
@@ -225,7 +399,7 @@ class ObserverIntegrityTest(GitWorkspaceTest):
         )
         self.assertGreater(oversized_snapshot_path.stat().st_size, MAX_SNAPSHOT_BYTES)
         malformed_event = {
-            "schema": 1,
+            "schema": EVENT_SCHEMA,
             "protocol": PROTOCOL,
             "protocol_version": PROTOCOL_VERSION,
             "event_id": "bad-time",
@@ -240,7 +414,7 @@ class ObserverIntegrityTest(GitWorkspaceTest):
             json.dumps(malformed_event) + "\n", encoding="utf-8"
         )
         oversized = {
-            "schema": 1,
+            "schema": EVENT_SCHEMA,
             "protocol": PROTOCOL,
             "protocol_version": PROTOCOL_VERSION,
             "event_id": "oversized",
@@ -476,7 +650,7 @@ class ObserverDiagnosticProjectionTest(GitWorkspaceTest):
     ) -> None:
         plane = resolve(self.root)
         record = {
-            "schema": 1,
+            "schema": EVENT_SCHEMA,
             "protocol": PROTOCOL,
             "protocol_version": PROTOCOL_VERSION,
             "event_id": event_id,

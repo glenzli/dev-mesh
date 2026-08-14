@@ -15,6 +15,8 @@ from .source_validation import SNAPSHOT_STATUSES
 
 COLLABORATION_EVENTS = {
     "claim-requested",
+    "claim-baseline-required",
+    "claim-baseline-accepted",
     "contention-opened",
     "contention-coordinator-acquired",
     "contention-decision-proposed",
@@ -225,7 +227,9 @@ def build_report(
     active_counts: Counter[str] = Counter()
     status_counts: Counter[str] = Counter()
     lifecycle_status_counts: Counter[str] = Counter()
+    work_result_projection_modes: Counter[str] = Counter()
     run_events: dict[tuple[str, str, str], list[str]] = defaultdict(list)
+    collaborative_run_keys: set[tuple[str, str, str]] = set()
     hot_paths: Counter[str] = Counter()
     owner_edges: Counter[tuple[str, str, str]] = Counter()
     for item in events:
@@ -233,7 +237,10 @@ def build_report(
         owner = record.get("owner")
         run_id = record.get("run_id")
         if isinstance(owner, str) and isinstance(run_id, str):
-            run_events[(str(item["workspace_id"]), owner, run_id)].append(str(item["event"]))
+            run_key = (str(item["workspace_id"]), owner, run_id)
+            run_events[run_key].append(str(item["event"]))
+            if item["event"] in COLLABORATION_EVENTS:
+                collaborative_run_keys.add(run_key)
         if item["event"] == "claim-requested":
             for path in record.get("paths", []) if isinstance(record.get("paths"), list) else []:
                 if isinstance(path, str):
@@ -251,6 +258,43 @@ def build_report(
         lifecycle_status_counts[f"{kind}:{lifecycle}:{status}"] += 1
         if lifecycle in {"active", "current"} and status in ACTIVE_STATUSES.get(kind, set()):
             active_counts[kind] += 1
+        if kind == "work-result":
+            work_result_projection_modes[
+                str(item["record"].get("projection_mode", "git-tree"))
+            ] += 1
+        if kind == "contention":
+            participants = item["record"].get("participants", [])
+            exact_participants = [
+                participant
+                for participant in participants
+                if isinstance(participant, dict)
+                and isinstance(participant.get("owner"), str)
+                and isinstance(participant.get("run_id"), str)
+            ] if isinstance(participants, list) else []
+            workspace_id_value = str(item["workspace_id"])
+            for participant in exact_participants:
+                collaborative_run_keys.add(
+                    (
+                        workspace_id_value,
+                        str(participant["owner"]),
+                        str(participant["run_id"]),
+                    )
+                )
+            trigger_scope = item["record"].get("trigger_scope")
+            trigger = next(
+                (
+                    participant
+                    for participant in exact_participants
+                    if participant.get("scope") == trigger_scope
+                ),
+                None,
+            )
+            if trigger is not None:
+                source = str(trigger["owner"])
+                for participant in exact_participants:
+                    target = str(participant["owner"])
+                    if target != source:
+                        owner_edges[(source, target, "contention")] += 1
 
     closed_run_keys = {
         (
@@ -271,7 +315,7 @@ def build_report(
         }
         for (workspace_id_value, owner, run_id), values in sorted(run_events.items())
         if (workspace_id_value, owner, run_id) in closed_run_keys
-        and not (set(values) & COLLABORATION_EVENTS)
+        and (workspace_id_value, owner, run_id) not in collaborative_run_keys
     ]
     collection_errors = [item for item in workspaces if item.get("last_error")]
     not_observed_workspaces = [item for item in workspaces if item.get("not_observed_since")]
@@ -316,6 +360,15 @@ def build_report(
                 "completed": event_counts["direct-commit-completed"],
                 "needs_attention": status_counts["direct-commit:needs-attention"],
             },
+        },
+        "work_results": {
+            "recorded": status_counts["work-result:recorded"],
+            "projection_modes": dict(sorted(work_result_projection_modes.items())),
+            "completed_events": event_counts["claim-completed"],
+            "awaiting_baseline_acknowledgement": status_counts[
+                "claim:pending-baseline"
+            ],
+            "completion_pending": status_counts["claim:completing"],
         },
         "interaction_counts": {
             key: event_counts[key]

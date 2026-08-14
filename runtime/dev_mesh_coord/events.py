@@ -1,4 +1,4 @@
-"""Immutable schema-1 event production."""
+"""Immutable coordination event production."""
 
 from __future__ import annotations
 

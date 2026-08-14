@@ -111,6 +111,7 @@ function renderMetrics() {
   const values = [
     ["workspaces", t("metrics.workspaces"), visibleProjects().length, "neutral"],
     ["active", t("metrics.active"), activeTotal(operational.active), activeTotal(operational.active) ? "attention" : "neutral"],
+    ["results", t("metrics.results"), operational.work_results?.recorded ?? 0, "good"],
     ["events", t("metrics.events"), eventCount, "neutral"],
     ["diagnostics", t("metrics.diagnostics"), operational.diagnostic_summary.total, diagnosticTone],
     ["control", t("metrics.control"), controlState[0], controlState[1]],
@@ -317,7 +318,8 @@ function renderActive() {
     identity.append(title, meta);
     const status = document.createElement("span");
     status.className = "object-status";
-    status.textContent = item.status || "active";
+    const statusKey = `objectStatus.${item.status || "active"}`;
+    status.textContent = t(statusKey) === statusKey ? (item.status || "active") : t(statusKey);
     row.append(icon, identity, status);
     return row;
   }));

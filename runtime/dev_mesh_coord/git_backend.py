@@ -90,6 +90,26 @@ def dirty_paths(root: Path, paths: list[str] | None = None) -> list[str]:
     return sorted({path for _, path in status_entries(root, paths)})
 
 
+def path_is_tracked(root: Path, path: str) -> bool:
+    completed = subprocess.run(
+        ("git", "-C", str(root), "ls-files", "--error-unmatch", "--", path),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    return completed.returncode == 0
+
+
+def path_is_ignored(root: Path, path: str) -> bool:
+    completed = subprocess.run(
+        ("git", "-C", str(root), "check-ignore", "--quiet", "--no-index", "--", path),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    return completed.returncode == 0
+
+
 def staged_paths(root: Path) -> list[str]:
     return sorted({path for status, path in status_entries(root) if status[0] not in {" ", "?"}})
 

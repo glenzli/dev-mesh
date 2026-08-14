@@ -51,7 +51,8 @@ semantics are needed.
 ## Close once
 
 After the requested cross-project work reaches a terminal result, one exact participant records
-`completed`, `cancelled`, or `failed`. This example closes from the target:
+`completed`, `cancelled`, or `failed`. Close the relation **before** that participant leaves its Run;
+`leave` does not close cross-project evidence automatically. This example closes from the target:
 
 ```bash
 python3 <skill>/scripts/coord.py --root TARGET_ROOT cross-project-close \
@@ -67,6 +68,27 @@ python3 <skill>/scripts/coord.py --root TARGET_ROOT cross-project-close \
 Retry an uncertain phase with exactly the same facts. A retry repairs missing immutable evidence and
 does not append a duplicate event. Normal open/bind/close produces three small events total; do not
 record heartbeats, every chat message, or every wait poll.
+
+Do not decide that a relation is unbound from the source workspace's `opened` record alone. The
+receiver's `bound` evidence lives in the target workspace. Query the multi-workspace Observer or ask
+the target task for its exact correlation state before requesting another bind.
+
+### Reconcile a missed close
+
+If the exact bound target Run already terminated before recording `closed`, do not rejoin it, recover
+it, or bind a replacement Run over the immutable target identity. A new active Run of the **same
+target Owner** may close from the target workspace using the existing bound record:
+
+```bash
+python3 <skill>/scripts/coord.py --root TARGET_ROOT cross-project-reconcile-close \
+  --collaboration-id RELATION_ID \
+  --owner TARGET_OWNER --run-id ACTIVE_SUCCESSOR_RUN \
+  --outcome completed
+```
+
+This operation requires the original bound target Run to be terminal. It preserves both original
+participants and records the active successor separately as `reconciliation.by`. It grants no
+authority and exists only to make the observational lifecycle converge after a missed close.
 
 Supported kinds are `notice`, `request`, `dependency`, `handoff`, `review`, and `integration`.
 Choose the narrowest semantic kind and keep it unchanged through the relation.

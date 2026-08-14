@@ -1,6 +1,6 @@
 # `dev-mesh.cross-project-collaboration@20260813.1`
 
-Status: optional extension to `dev-mesh.coordination@20260812.1`
+Status: archived; superseded by `dev-mesh.cross-project-collaboration@20260814.1`
 
 ## 1. Purpose and compatibility
 

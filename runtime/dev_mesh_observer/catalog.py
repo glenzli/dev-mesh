@@ -24,6 +24,7 @@ MAX_INVALID_RECORDS = 20
 SNAPSHOT_DIRECTORIES = (
     ("run", "current", "runs"),
     ("claim", "current", "claims"),
+    ("claim", "archive", "archive/claims"),
     ("handoff", "current", "handoffs"),
     ("contention", "active", "contentions/active"),
     ("contention", "archive", "contentions/archive"),
@@ -35,6 +36,7 @@ SNAPSHOT_DIRECTORIES = (
     ("cleanup", "archive", "cleanups/archive"),
     ("work", "active", "work/active"),
     ("work", "archive", "work/archive"),
+    ("work-result", "current", "work-results"),
 )
 
 
@@ -92,6 +94,7 @@ def _object_id(kind: str, record: dict[str, object], path: Path) -> str:
         "direct-commit": "direct_commit_id",
         "cleanup": "cleanup_id",
         "work": "work_state_id",
+        "work-result": "result_id",
     }
     value = record.get(fields[kind])
     return str(value) if isinstance(value, str) else path.stem

@@ -1,4 +1,35 @@
-# Legacy retirement into `20260812.1`
+# Protocol cutover
+
+## `20260812.1` to `20260814.1`
+
+This upgrade is a fresh authority start. It archives the complete old coordination tree but does
+not translate Runs, Claims, events, or transactions. User files, index state, branch, HEAD, and
+dirty/untracked bytes must remain exactly unchanged.
+
+With every old Agent stopped, create and review a stable plan:
+
+```bash
+PYTHONPATH=runtime python3 -m dev_mesh_coord --root WORKSPACE --verbose \
+  version-cutover-plan --cutover-id CUTOVER_ID
+```
+
+Review `source_state_sha256`, `authority_inventory`, `git_facts`, and `plan_digest`. Apply the exact
+plan; the second confirmation is required when the old inventory is nonempty:
+
+```bash
+PYTHONPATH=runtime python3 -m dev_mesh_coord --root WORKSPACE version-cutover-apply \
+  --cutover-id CUTOVER_ID --plan-digest REVIEWED_DIGEST \
+  --confirm-agents-stopped --confirm-discard-old-authority
+
+PYTHONPATH=runtime python3 -m dev_mesh_coord --root WORKSPACE version-cutover-verify \
+  --cutover-id CUTOVER_ID --plan-digest REVIEWED_DIGEST
+```
+
+The old state moves to `.dev-mesh/coord/archive/CUTOVER_ID/20260812.1/`. The selected current state
+becomes a new empty `.dev-mesh/coord/20260814.1/` with a non-authoritative cutover baseline. Retry
+the same id and digest after an uncertain result; never invent a second plan for a partial cutover.
+
+## Legacy `.agent-coordination` retirement into `20260812.1`
 
 This is a fresh-start control-plane retirement, not an object migration.
 

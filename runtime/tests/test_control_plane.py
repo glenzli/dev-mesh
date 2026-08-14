@@ -30,14 +30,14 @@ class ControlPlaneTest(GitWorkspaceTest):
         first = initialize(self.root)
         second = initialize(self.root)
         self.assertEqual(first.state_root, second.state_root)
-        self.assertEqual(first.state_root.name, "20260812.1")
+        self.assertEqual(first.state_root.name, "20260814.1")
         current = json.loads((self.root / ".dev-mesh/coord/current.json").read_text())
         protocol = json.loads((first.state_root / "protocol.json").read_text())
         self.assertEqual(current["protocol"], PROTOCOL)
         self.assertEqual(current["version"], PROTOCOL_VERSION)
         self.assertEqual(current["event_schema"], EVENT_SCHEMA)
         self.assertEqual(protocol["version"], PROTOCOL_VERSION)
-        self.assertFalse(any(path.name.startswith("20260812.1-") for path in first.state_root.parent.iterdir()))
+        self.assertFalse(any(path.name.startswith("20260814.1-") for path in first.state_root.parent.iterdir()))
 
         schema = json.loads((Path(__file__).parents[2] / "schemas/event.schema.json").read_text())
         self.assertEqual(set(schema["properties"]["event"]["enum"]), set(AUTHORITY_EFFECTS))
@@ -47,7 +47,7 @@ class ControlPlaneTest(GitWorkspaceTest):
         with self.assertRaisesRegex(ProtocolError, "explicitly retired"):
             initialize(self.root)
 
-    def test_direct_lifecycle_blocks_dirty_release_and_completed_leave(self) -> None:
+    def test_direct_lifecycle_requires_result_before_dirty_release(self) -> None:
         initialize(self.root)
         join_run(self.root, run_id="run-a", owner="agent-a", task="edit app")
         create_claim(
@@ -73,7 +73,7 @@ class ControlPlaneTest(GitWorkspaceTest):
         self.assertEqual(before, after)
 
         (self.root / "app.txt").write_text("dirty\n", encoding="utf-8")
-        with self.assertRaisesRegex(ValueError, "claimed paths are dirty"):
+        with self.assertRaisesRegex(ValueError, "Work Result"):
             release_claim(
                 self.root,
                 scope="app-edit",
