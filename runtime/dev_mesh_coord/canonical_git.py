@@ -43,9 +43,7 @@ def _run_git(
         env=environment,
     )
     if check and completed.returncode != 0:
-        raise RuntimeError(
-            f"Git command failed ({' '.join(arguments)}): {completed.stderr.strip()}"
-        )
+        raise git.GitCommandError(arguments, completed.returncode, completed.stderr)
     return completed
 
 
@@ -216,9 +214,16 @@ def _attention(
     record: dict[str, object],
     error: BaseException | str,
 ) -> dict[str, object]:
+    if isinstance(error, PermissionError):
+        error_kind = "environment"
+    elif isinstance(error, git.GitCommandError):
+        error_kind = "git-effect"
+    else:
+        error_kind = "consistency"
     record.update(
         {
             "status": "needs-attention",
+            "error_kind": error_kind,
             "error": str(error)[:2000],
             "updated_at": now(),
         }
@@ -395,6 +400,7 @@ def _start_commit(
     branch = git.branch(root)
     if not git.index_is_empty(root):
         raise ValueError("canonical Git index must be empty before direct commit")
+    git.assert_canonical_git_writable(root)
     base = git.head(root)
     projection = _expected_projection(root, plane, declared, base)
     direct_commit_id = f"direct-commit-{uuid.uuid4().hex}"

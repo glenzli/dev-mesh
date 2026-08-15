@@ -139,7 +139,7 @@ def _run_git(
         pass_fds=pass_fds,
     )
     if check and completed.returncode != 0:
-        raise RuntimeError(f"Git command failed ({' '.join(arguments)}): {completed.stderr.strip()}")
+        raise git.GitCommandError(arguments, completed.returncode, completed.stderr)
     return completed
 
 
@@ -649,6 +649,7 @@ def publish(
             if branch_head != candidate or git.head(checkout) != candidate or git.dirty_paths(checkout):
                 raise ValueError("transaction branch or checkout changed after validation")
             if current != base:
+                git.assert_canonical_git_writable(root)
                 record.update(
                     {
                         "status": "refreshing",
@@ -722,6 +723,7 @@ def publish(
                 raise ValueError("canonical workspace has overlapping dirty paths: " + ", ".join(overlap))
             if not git.is_ancestor(root, current, candidate):
                 raise ValueError("candidate cannot fast-forward canonical HEAD")
+            git.assert_canonical_git_writable(root)
             record.update(
                 {
                     "status": "publishing",

@@ -62,7 +62,11 @@ SNAPSHOT_STATUSES = {
     },
     ("transaction", "archive"): {"published", "aborted"},
     ("direct-commit", "active"): {"staging", "committing", "needs-attention", "completed"},
-    ("direct-commit", "archive"): {"completed"},
+    # A direct-commit preflight can deliberately retain an attempted-but-never
+    # materialized commit in the archive.  It has no active Git authority, but
+    # remains useful immutable audit evidence; treating it as an unsupported
+    # envelope makes every later collection look unhealthy forever.
+    ("direct-commit", "archive"): {"completed", "needs-attention"},
     ("cleanup", "active"): {
         "planned",
         "removing-worktree",
@@ -278,6 +282,14 @@ def snapshot_record(
         suffix = f"-{object_id}.json"
         prefix = path.name[: -len(suffix)] if path.name.endswith(suffix) else ""
         path_matches = bool(prefix) and (kind == "claim" or prefix.isdigit())
+    elif kind == "direct-commit" and lifecycle == "archive":
+        # Preflight-rejected commits can use a bounded explanatory suffix so
+        # operators can retain multiple audit records without pretending an
+        # active commit exists. The durable id remains the complete leading
+        # component of the file name.
+        path_matches = path.name == f"{object_id}.json" or (
+            path.name.startswith(f"{object_id}-") and path.name.endswith(".json")
+        )
     else:
         path_matches = path.name == f"{object_id}.json"
     if not path_matches:

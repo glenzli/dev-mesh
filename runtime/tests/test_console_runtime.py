@@ -10,7 +10,8 @@ from pathlib import Path
 from dev_mesh_console.registry import RootRegistry
 from dev_mesh_console.server import ConsoleServer, require_loopback_host
 from dev_mesh_console.state import ConsoleState
-from dev_mesh_coord.control_plane import initialize
+from dev_mesh_coord.control_plane import initialize, resolve
+from dev_mesh_coord.lifecycle import join_run
 
 from helpers import GitWorkspaceTest
 
@@ -253,6 +254,77 @@ class ConsoleRuntimeTest(GitWorkspaceTest):
             self.assertEqual(denied.status, 403)
             self.assertEqual(value["error"]["code"], "origin_rejected")
             rejected.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_loopback_reviewed_close_uses_exact_materialized_preview(self) -> None:
+        initialize(self.root)
+        join_run(self.root, run_id="run-review", owner="agent-a", task="finished work")
+        registry = RootRegistry(Path(self.temporary.name) / "roots.json", [self.root])
+        state = ConsoleState(
+            database=Path(self.temporary.name) / "observer.sqlite3",
+            registry=registry,
+            max_depth=0,
+            collect_interval=60,
+        )
+        state.collect()
+        try:
+            server = ConsoleServer("127.0.0.1", 0, state)
+        except PermissionError:
+            state.close()
+            self.skipTest("loopback sockets are unavailable in this sandbox")
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        port = int(server.server_address[1])
+        try:
+            workspace_id = state.dashboard(
+                workspace=None,
+                window_hours=48,
+                event_limit=20,
+            )["projects"][0]["workspace_id"]
+            connection = HTTPConnection("127.0.0.1", port, timeout=5)
+            connection.request(
+                "POST",
+                "/api/actions/run-close/preview",
+                body=json.dumps({"workspace_id": workspace_id, "run_id": "run-review"}),
+                headers={"Content-Type": "application/json"},
+            )
+            response = connection.getresponse()
+            preview = json.loads(response.read())
+            self.assertEqual(response.status, 200)
+            self.assertEqual(preview["owner"], "agent-a")
+            self.assertFalse(preview["authority_preserved"])
+
+            connection.request(
+                "POST",
+                "/api/actions/run-close",
+                body=json.dumps(
+                    {
+                        "workspace_id": workspace_id,
+                        "run_id": "run-review",
+                        "review_token": preview["review_token"],
+                        "reviewer": "local-operator",
+                        "outcome": "completed",
+                        "reason_code": "reviewed-complete",
+                        "evidence": "Reviewed the completed work and missing terminal leave.",
+                    }
+                ),
+                headers={"Content-Type": "application/json"},
+            )
+            closed_response = connection.getresponse()
+            closed = json.loads(closed_response.read())
+            self.assertEqual(closed_response.status, 200)
+            self.assertEqual(closed["run"]["status"], "closed")
+            self.assertTrue(closed["collection"]["refreshed"])
+            connection.close()
+            snapshot = json.loads(
+                (resolve(self.root).state_root / "runs/run-review.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(snapshot["operator_review"]["reviewer"], "local-operator")
         finally:
             server.shutdown()
             server.server_close()

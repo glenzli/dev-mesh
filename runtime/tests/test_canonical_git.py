@@ -12,7 +12,7 @@ import sys
 import time
 from unittest import mock
 
-from dev_mesh_coord import canonical_git, contention, git_effects, transactions
+from dev_mesh_coord import canonical_git, contention, git_backend, git_effects, transactions
 from dev_mesh_coord.control_plane import initialize, resolve
 from dev_mesh_coord.lifecycle import create_claim, join_run
 
@@ -168,6 +168,36 @@ class CanonicalGitTest(GitWorkspaceTest):
             self._commit()
         self.assertEqual(git(self.root, "diff", "--cached", "--name-only"), "")
         self.assertEqual(git(self.root, "diff", "--name-only"), "other.txt")
+
+    def test_git_permission_preflight_fails_before_durable_intent(self) -> None:
+        (self.root / "app.txt").write_text("base\nblocked\n", encoding="utf-8")
+        with mock.patch.object(
+            canonical_git.git,
+            "assert_canonical_git_writable",
+            side_effect=PermissionError("canonical Git metadata is not writable"),
+        ):
+            with self.assertRaisesRegex(PermissionError, "not writable"):
+                self._commit()
+
+        self.assertEqual(canonical_git.doctor(self.root)["active_direct_commits"], [])
+        self.assertEqual(git(self.root, "diff", "--cached", "--name-only"), "")
+        events = [
+            json.loads(path.read_text(encoding="utf-8"))
+            for path in resolve(self.root).state_root.joinpath("events").glob("*.json")
+        ]
+        self.assertFalse(
+            any(str(event.get("event", "")).startswith("direct-commit-") for event in events)
+        )
+
+    def test_git_failure_keeps_stderr_tail_without_declared_path_noise(self) -> None:
+        error = git_backend.GitCommandError(
+            ("add", *(f"very-long-path-{index}" for index in range(200))),
+            128,
+            "fatal: Unable to create '.git/index.lock': Operation not permitted",
+        )
+        self.assertIn("Git add failed with exit 128", str(error))
+        self.assertIn("Operation not permitted", str(error))
+        self.assertNotIn("very-long-path", str(error))
 
     def test_unresolved_direct_intent_blocks_transaction_publish(self) -> None:
         (self.root / "app.txt").write_text("base\ndirect\n", encoding="utf-8")

@@ -148,6 +148,44 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                 result = self.server.state.collect()
                 self._json({"roots": [str(item) for item in roots], "collection": result})
                 return
+            if target.path == "/api/actions/run-close/preview":
+                if set(value) != {"workspace_id", "run_id"} or not all(
+                    isinstance(value.get(field), str) for field in value
+                ):
+                    raise ValueError("run close preview requires workspace_id and run_id")
+                self._json(
+                    self.server.state.preview_run_close(
+                        workspace_id=str(value["workspace_id"]),
+                        run_id=str(value["run_id"]),
+                    )
+                )
+                return
+            if target.path == "/api/actions/run-close":
+                required = {
+                    "workspace_id",
+                    "run_id",
+                    "review_token",
+                    "reviewer",
+                    "outcome",
+                    "reason_code",
+                    "evidence",
+                }
+                if set(value) != required or not all(
+                    isinstance(value.get(field), str) for field in required
+                ):
+                    raise ValueError("reviewed run close request has missing or unsupported fields")
+                self._json(
+                    self.server.state.close_run_after_review(
+                        workspace_id=str(value["workspace_id"]),
+                        run_id=str(value["run_id"]),
+                        review_token=str(value["review_token"]),
+                        reviewer=str(value["reviewer"]),
+                        outcome=str(value["outcome"]),
+                        reason_code=str(value["reason_code"]),
+                        evidence=str(value["evidence"]),
+                    )
+                )
+                return
         except RuntimeError as error:
             self._error(HTTPStatus.CONFLICT, "collection_busy", str(error))
             return

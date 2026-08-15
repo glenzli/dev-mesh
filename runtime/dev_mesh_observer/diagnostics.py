@@ -317,6 +317,12 @@ def project_diagnostics(
             diagnostics.append(_issue(item, "work.finalization-pending"))
 
         if kind in TERMINAL_EVENTS:
+            # A preflight-rejected direct commit is intentionally archived as
+            # ``needs-attention``: it never acquired Git authority and is kept
+            # only for audit.  It is neither an active commit nor a malformed
+            # terminal archive.
+            if kind == "direct-commit" and lifecycle == "archive" and status == "needs-attention":
+                continue
             identity = (workspace_id, str(item["object_id"]))
             has_terminal_event = identity in terminal_events_by_id[kind]
             terminal_status = status in TERMINAL_STATUSES[kind]

@@ -151,6 +151,61 @@ class TransactionTest(GitWorkspaceTest):
             )
         self.assertEqual(git(self.root, "rev-parse", "HEAD"), canonical_before)
 
+    def test_publish_permission_preflight_retains_ready_transaction(self) -> None:
+        started = transactions.begin(
+            self.root,
+            scope="parallel",
+            owner="agent-b",
+            run_id="run-b",
+            contention_id=self.contention_id,
+            reason="permission preflight",
+        )
+        checkout = Path(str(started["checkout"]))
+        (checkout / "app.txt").write_text("base\npermission\n", encoding="utf-8")
+        transactions.prepare(
+            self.root,
+            transaction_id=str(started["transaction_id"]),
+            owner="agent-b",
+            owner_run_id="run-b",
+            summary="permission candidate",
+        )
+        transactions.validate(
+            self.root,
+            transaction_id=str(started["transaction_id"]),
+            owner="agent-b",
+            owner_run_id="run-b",
+            evidence="candidate validated",
+        )
+        release_claim(
+            self.root,
+            scope="primary",
+            owner="agent-a",
+            run_id="run-a",
+            summary="allow publication preflight",
+        )
+        canonical_before = git(self.root, "rev-parse", "HEAD")
+        with mock.patch.object(
+            transactions.git,
+            "assert_canonical_git_writable",
+            side_effect=PermissionError("canonical Git metadata is not writable"),
+        ):
+            with self.assertRaisesRegex(PermissionError, "not writable"):
+                transactions.publish(
+                    self.root,
+                    transaction_id=str(started["transaction_id"]),
+                    steward="agent-b",
+                    steward_run_id="run-b",
+                )
+
+        record = json.loads(
+            resolve(self.root).state_root.joinpath(
+                "transactions", "active", f"{started['transaction_id']}.json"
+            ).read_text(encoding="utf-8")
+        )
+        self.assertEqual(record["status"], "ready")
+        self.assertEqual(git(self.root, "rev-parse", "HEAD"), canonical_before)
+        self.assertEqual(git(self.root, "diff", "--cached", "--name-only"), "")
+
     def test_prepare_requires_exact_caller_run_not_only_owner_slug(self) -> None:
         started = transactions.begin(
             self.root,

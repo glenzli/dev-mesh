@@ -7,10 +7,13 @@ from dev_mesh_coord import contention, interactions, work
 from dev_mesh_coord.control_plane import initialize, resolve
 from dev_mesh_coord.lifecycle import (
     append_audit_correction,
+    close_run_after_review,
     create_claim,
+    heartbeat_claim,
     join_run,
     leave_run,
     pause_claim,
+    preview_reviewed_run_close,
     recover_run_authority,
     release_claim,
     resume_claim,
@@ -61,6 +64,104 @@ class AuthorityRecoveryTest(GitWorkspaceTest):
                 outcome="completed",
                 summary="must reconcile direct commit first",
             )
+
+    def test_reviewed_close_rechecks_exact_run_and_records_operator_evidence(self) -> None:
+        join_run(self.root, run_id="run-review", owner="agent-a", task="finished work")
+        preview = preview_reviewed_run_close(self.root, run_id="run-review")
+        self.assertEqual(preview["allowed_outcomes"], ["abandoned", "completed", "failed"])
+        self.assertFalse(preview["authority_preserved"])
+
+        closed = close_run_after_review(
+            self.root,
+            run_id="run-review",
+            review_token=str(preview["review_token"]),
+            reviewer="local-operator",
+            outcome="completed",
+            reason_code="reviewed-complete",
+            evidence="Reviewed validation and confirmed the Agent omitted its terminal leave.",
+        )
+
+        self.assertEqual(closed["status"], "closed")
+        self.assertEqual(closed["operator_review"]["reviewer"], "local-operator")
+        repeated = close_run_after_review(
+            self.root,
+            run_id="run-review",
+            review_token=str(preview["review_token"]),
+            reviewer="local-operator",
+            outcome="completed",
+            reason_code="reviewed-complete",
+            evidence="Reviewed validation and confirmed the Agent omitted its terminal leave.",
+        )
+        self.assertEqual(repeated["left_event_id"], closed["left_event_id"])
+        events = [
+            json.loads(path.read_text(encoding="utf-8"))
+            for path in (resolve(self.root).state_root / "events").glob("*.json")
+        ]
+        terminal = [item for item in events if item["event"] == "agent-left"]
+        self.assertEqual(len(terminal), 1)
+        self.assertEqual(terminal[0]["closure_kind"], "operator-reviewed")
+
+    def test_reviewed_close_preserves_authority_and_rejects_stale_preview(self) -> None:
+        join_run(self.root, run_id="run-review", owner="agent-a", task="interrupted work")
+        clean_preview = preview_reviewed_run_close(self.root, run_id="run-review")
+        create_claim(
+            self.root,
+            scope="primary",
+            owner="agent-a",
+            run_id="run-review",
+            task="interrupted work",
+            paths=["app.txt"],
+        )
+        with self.assertRaisesRegex(ValueError, "changed after review"):
+            close_run_after_review(
+                self.root,
+                run_id="run-review",
+                review_token=str(clean_preview["review_token"]),
+                reviewer="local-operator",
+                outcome="abandoned",
+                reason_code="reviewed-abandoned",
+                evidence="The owner task is no longer running.",
+            )
+
+        preview = preview_reviewed_run_close(self.root, run_id="run-review")
+        self.assertEqual(preview["allowed_outcomes"], ["failed", "abandoned"])
+        self.assertTrue(preview["authority_preserved"])
+        heartbeat_claim(self.root, scope="primary", owner="agent-a", run_id="run-review")
+        with self.assertRaisesRegex(ValueError, "changed after review"):
+            close_run_after_review(
+                self.root,
+                run_id="run-review",
+                review_token=str(preview["review_token"]),
+                reviewer="local-operator",
+                outcome="abandoned",
+                reason_code="reviewed-abandoned",
+                evidence="A new heartbeat must invalidate the review.",
+            )
+        preview = preview_reviewed_run_close(self.root, run_id="run-review")
+        with self.assertRaisesRegex(ValueError, "cannot be closed as completed"):
+            close_run_after_review(
+                self.root,
+                run_id="run-review",
+                review_token=str(preview["review_token"]),
+                reviewer="local-operator",
+                outcome="completed",
+                reason_code="reviewed-complete",
+                evidence="Unsafe completed close must fail.",
+            )
+        closed = close_run_after_review(
+            self.root,
+            run_id="run-review",
+            review_token=str(preview["review_token"]),
+            reviewer="local-operator",
+            outcome="abandoned",
+            reason_code="reviewed-abandoned",
+            evidence="The task stopped; preserve its Claim for same-owner recovery.",
+        )
+        self.assertTrue(closed["operator_review"]["authority_preserved"])
+        claim = json.loads(
+            (resolve(self.root).state_root / "claims/primary.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(claim["status"], "active")
 
     def test_authority_recovery_preserves_direct_commit_actor_for_reconcile(self) -> None:
         join_run(self.root, run_id="run-old", owner="agent-a", task="direct commit")

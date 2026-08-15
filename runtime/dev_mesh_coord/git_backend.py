@@ -2,10 +2,34 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
+import tempfile
 from pathlib import Path
 
 from .constants import MAX_CLAIM_PATHS
+
+
+MAX_GIT_ERROR_DETAIL = 1600
+
+
+class GitCommandError(RuntimeError):
+    """Bounded Git failure that keeps the actionable stderr instead of argv noise."""
+
+    def __init__(
+        self, arguments: tuple[str, ...], returncode: int, stderr: str
+    ) -> None:
+        self.operation = arguments[0] if arguments else "unknown"
+        self.returncode = returncode
+        detail = stderr.strip()
+        self.stderr_tail = detail[-MAX_GIT_ERROR_DETAIL:]
+        omitted = max(0, len(detail) - len(self.stderr_tail))
+        suffix = self.stderr_tail or "no stderr"
+        if omitted:
+            suffix = f"{omitted} stderr characters omitted; tail: {suffix}"
+        super().__init__(
+            f"Git {self.operation} failed with exit {returncode}: {suffix}"
+        )
 
 
 def run(
@@ -29,8 +53,39 @@ def run(
             if isinstance(completed.stderr, bytes)
             else completed.stderr
         )
-        raise RuntimeError(f"Git command failed ({' '.join(arguments)}): {stderr.strip()}")
+        raise GitCommandError(arguments, completed.returncode, stderr)
     return completed.stdout
+
+
+def assert_canonical_git_writable(root: Path) -> None:
+    """Fail before durable publication intent if Git metadata cannot be mutated."""
+
+    raw_index = Path(str(run(root, "rev-parse", "--git-path", "index")).strip())
+    index = raw_index if raw_index.is_absolute() else root / raw_index
+    probe_path: Path | None = None
+    descriptor: int | None = None
+    try:
+        descriptor, probe = tempfile.mkstemp(
+            prefix=".dev-mesh-index-write-probe-",
+            dir=index.parent,
+        )
+        probe_path = Path(probe)
+    except OSError as error:
+        raise PermissionError(
+            "canonical Git metadata is not writable; rerun the managed "
+            "publication with Git write permission"
+        ) from error
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        if probe_path is not None:
+            try:
+                probe_path.unlink()
+            except OSError as error:
+                raise PermissionError(
+                    "canonical Git metadata probe could not be removed; inspect "
+                    "the repository before publication"
+                ) from error
 
 
 def repository_root(root: Path) -> Path:

@@ -749,6 +749,20 @@ def release_claim(root: Path, *, scope: str, owner: str, run_id: str, summary: s
 
 
 def _run_blockers(plane: ControlPlane, run_id: str) -> list[dict[str, object]]:
+    def blocker(kind: str, identifier: object, status: object, record: dict[str, object]) -> dict[str, object]:
+        encoded = json.dumps(
+            record,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return {
+            "kind": kind,
+            "id": identifier,
+            "status": status,
+            "snapshot_sha256": hashlib.sha256(encoded).hexdigest(),
+        }
+
     blockers: list[dict[str, object]] = []
     for claim in _active_claims(plane):
         if claim.get("run_id") == run_id and claim.get("status") in {
@@ -758,41 +772,165 @@ def _run_blockers(plane: ControlPlane, run_id: str) -> list[dict[str, object]]:
             "pending-baseline",
             "completing",
         }:
-            blockers.append({"kind": "claim", "id": claim.get("scope"), "status": claim.get("status")})
+            blockers.append(blocker("claim", claim.get("scope"), claim.get("status"), claim))
     for path in sorted((plane.state_root / "transactions" / "active").glob("*.json")):
         record = read_json(path, base=plane.state_root)
         if record.get("run_id") == run_id:
-            blockers.append({"kind": "transaction", "id": record.get("transaction_id"), "status": record.get("status")})
+            blockers.append(blocker("transaction", record.get("transaction_id"), record.get("status"), record))
     for path in sorted((plane.state_root / "direct-commits" / "active").glob("*.json")):
         record = read_json(path, base=plane.state_root)
         if record.get("run_id") == run_id:
-            blockers.append(
-                {
-                    "kind": "direct-commit",
-                    "id": record.get("direct_commit_id"),
-                    "status": record.get("status"),
-                }
-            )
+            blockers.append(blocker("direct-commit", record.get("direct_commit_id"), record.get("status"), record))
     for path in sorted((plane.state_root / "handoffs").glob("*.json")):
         record = read_json(path, base=plane.state_root)
         if record.get("source_run_id") == run_id and record.get("status") == "offered":
-            blockers.append({"kind": "handoff", "id": record.get("handoff_id"), "status": "offered"})
+            blockers.append(blocker("handoff", record.get("handoff_id"), "offered", record))
     for path in sorted((plane.state_root / "contentions" / "active").glob("*.json")):
         record = read_json(path, base=plane.state_root)
         run_ids = {item for item in record.get("participant_run_ids", []) if isinstance(item, str)}
         if run_id in run_ids:
-            blockers.append({"kind": "contention", "id": record.get("contention_id"), "status": record.get("status")})
+            blockers.append(blocker("contention", record.get("contention_id"), record.get("status"), record))
     for path in sorted((plane.state_root / "work" / "active").glob("*.json")):
         record = read_json(path, base=plane.state_root)
         if record.get("run_id") == run_id:
-            blockers.append(
-                {
-                    "kind": "work",
-                    "id": record.get("work_state_id"),
-                    "status": record.get("status"),
-                }
-            )
+            blockers.append(blocker("work", record.get("work_state_id"), record.get("status"), record))
     return blockers
+
+
+def _reviewed_close_facts(
+    plane: ControlPlane,
+    *,
+    run_id: str,
+    record: dict[str, object],
+) -> dict[str, object]:
+    """Bind an operator review to one exact Run snapshot and authority set."""
+
+    blockers = _run_blockers(plane, run_id)
+    record_bytes = json.dumps(
+        record,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    blocker_projection = _reference_projection(blockers)
+    token_input = {
+        "run_id": run_id,
+        "run_sha256": hashlib.sha256(record_bytes).hexdigest(),
+        "blockers_sha256": blocker_projection["reference_sha256"],
+    }
+    token_bytes = json.dumps(
+        token_input,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return {
+        "run_id": run_id,
+        "owner": record.get("owner"),
+        "task": record.get("task"),
+        "status": record.get("status"),
+        "joined_at": record.get("joined_at"),
+        "last_activity_at": record.get("heartbeat_at", record.get("joined_at")),
+        "run_sha256": token_input["run_sha256"],
+        "review_token": hashlib.sha256(token_bytes).hexdigest(),
+        "blockers": blocker_projection,
+        "allowed_outcomes": (
+            ["failed", "abandoned"] if blockers else sorted(RUN_OUTCOMES)
+        ),
+        "authority_preserved": bool(blockers),
+    }
+
+
+def preview_reviewed_run_close(root: Path, *, run_id: str) -> dict[str, object]:
+    """Return bounded current facts for a human-reviewed Run closure."""
+
+    run_id = require_identifier(run_id, "run id")
+    with operation(root, "operator-run-close-preview") as plane:
+        record = read_json(_run_path(plane, run_id), base=plane.state_root)
+        if record.get("status") != "active":
+            raise ValueError("only an active Run can be reviewed for closure")
+        return _reviewed_close_facts(plane, run_id=run_id, record=record)
+
+
+def close_run_after_review(
+    root: Path,
+    *,
+    run_id: str,
+    review_token: str,
+    reviewer: str,
+    outcome: str,
+    reason_code: str,
+    evidence: str,
+) -> dict[str, object]:
+    """Close one exact reviewed Run without silently discarding its authority."""
+
+    run_id = require_identifier(run_id, "run id")
+    review_token = require_identifier(review_token, "review token")
+    reviewer = require_slug(reviewer, "reviewer")
+    if outcome not in RUN_OUTCOMES:
+        raise ValueError(f"unsupported run outcome: {outcome}")
+    reason_code = require_identifier(reason_code, "reason code")
+    evidence = require_text(evidence, "review evidence", 2000)
+    with operation(root, "operator-run-close") as plane:
+        path = _run_path(plane, run_id)
+        record = read_json(path, base=plane.state_root)
+        if record.get("status") == "closed":
+            prior = record.get("operator_review")
+            if (
+                isinstance(prior, dict)
+                and prior.get("review_token") == review_token
+                and prior.get("reviewer") == reviewer
+                and prior.get("outcome") == outcome
+                and prior.get("reason_code") == reason_code
+                and prior.get("evidence") == evidence
+            ):
+                return record
+            raise ValueError("run is already closed with different terminal metadata")
+        if record.get("status") != "active":
+            raise ValueError("only an active Run can be closed after review")
+        facts = _reviewed_close_facts(plane, run_id=run_id, record=record)
+        if facts["review_token"] != review_token:
+            raise ValueError("run or authority changed after review; preview again")
+        if outcome not in facts["allowed_outcomes"]:
+            raise ValueError("a Run with active authority cannot be closed as completed")
+        attention = facts["blockers"]
+        owner = str(facts["owner"])
+        operator_review = {
+            "review_token": review_token,
+            "reviewer": reviewer,
+            "outcome": outcome,
+            "reason_code": reason_code,
+            "evidence": evidence,
+            "authority_preserved": facts["authority_preserved"],
+        }
+        payload = {
+            "run_id": run_id,
+            "owner": owner,
+            "outcome": outcome,
+            "summary": evidence,
+            "status": outcome,
+            "reason_code": reason_code,
+            "closure_kind": "operator-reviewed",
+            "operator_review": operator_review,
+            **attention,
+            "left_revision": git.head(root),
+            "canonical_branch": git.branch(root),
+        }
+        _, event = emit(plane, "agent-left", payload=payload)
+        record.update(
+            {
+                "status": "closed",
+                "outcome": outcome,
+                "summary": evidence,
+                "reason_code": reason_code,
+                "attention": attention,
+                "operator_review": operator_review,
+                "left_at": now(),
+                "left_event_id": event["event_id"],
+            }
+        )
+        replace_json(path, record, base=plane.state_root)
+        return record
 
 
 def leave_run(

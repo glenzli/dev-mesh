@@ -239,6 +239,17 @@ long-lived branch merely to make every Agent modification privately reversible.
 Recovery never derives authority from Observer data or immutable events. It uses exact materialized
 intent, Git facts, owner/run lineage, and bounded identity evidence.
 
+An operator may close an anomalous active Run only through a two-step reviewed operation. Preview
+reads the current materialized Run and active authority under the operation lock and returns a
+digest binding both. Confirmation must present that exact digest, a reviewer identity, outcome,
+reason code, and bounded evidence; any intervening heartbeat or authority change invalidates the
+review. The terminal record remains an `agent-left` event with `closure_kind=operator-reviewed` and
+explicit operator evidence. A reviewed Run with no active authority may close as completed, failed,
+or abandoned. A Run that still references authority may close only as failed or abandoned; its
+Claims, transactions, Git intents, and other authority remain intact for same-owner recovery or
+their specific reconciler. Reviewed closure never treats staleness as takeover permission and never
+discards workspace bytes.
+
 ## 8. Events
 
 Event schema `2` adds:

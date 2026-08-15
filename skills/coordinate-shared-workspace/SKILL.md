@@ -145,6 +145,21 @@ python3 <skill>/scripts/coord.py --root ROOT direct-commit \
 This stages only declared changed paths, binds the exact intended tree before advancing the
 canonical branch, and serializes the shared index/branch with transaction publication.
 
+Run the declared validation on the working bytes before publication. A commit is not a prerequisite
+for building or testing, and creating one does not make unvalidated bytes authoritative.
+
+Managed publication requires permission to write the repository's Git metadata. The producer
+preflights that capability before creating a durable direct-commit intent. If the preflight is
+denied, do not repeat the same command in the same restricted sandbox: obtain approved Git-write
+execution, or record the validated dirty Work Result and leave while reporting that publication is
+still pending. A permission failure that returns no `direct_commit_id` created no publication
+authority and must not be described as an unrecoverable transaction.
+
+If a command does return a `direct_commit_id` with `needs-attention`, preserve it and inspect
+`direct-commit-doctor`. Reconcile it under an exact active steward Run with Git-write capability;
+do not bypass it with raw Git. The durable record exists for ambiguous crash windows, not to make
+ordinary task completion depend on a commit.
+
 Pause is only for work that genuinely cannot proceed because of authorization, environment,
 dependency, or an external resource. Record the blocker, checkpoint, and resume condition; never
 use pause to mean complete, awaiting optional commit, handed off, or waiting for a Claim overlap.

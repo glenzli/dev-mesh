@@ -46,6 +46,14 @@ python3 <skill>/scripts/coord.py --root ROOT leave \
 
 Forced termination does not release Claims or other authority.
 
+For a genuinely stopped task that cannot execute its own leave, the loopback Console offers an
+operator-reviewed close. Review the materialized Run and bounded blocker list, enter the exact Run
+id, and record a reviewer, outcome, reason, and evidence. The confirmation is bound to the preview
+digest; if a heartbeat or authority object changes, preview again. A Run without authority may be
+closed as completed. A Run with authority may only be failed or abandoned, and the authority is
+preserved for same-owner `run-recover-authority` or its object-specific reconciler. The Console
+action is not a stale-lock takeover or a bulk-delete mechanism.
+
 ## Reconcile durable intents
 
 These operations are idempotent and fact-checked:

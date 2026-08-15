@@ -18,9 +18,9 @@
       </div>
       <div class="topbar-actions">
         <span id="connection-status" class="status-pill is-loading" data-i18n="status.loading">载入中</span>
-        <button id="add-root" class="button secondary" type="button" data-i18n="actions.addRoot">添加工作区</button>
-        <button id="refresh" class="button primary" type="button" data-i18n="actions.refresh">刷新</button>
-        <button id="language" class="icon-button" type="button" aria-label="Language">中 / EN</button>
+        <button id="add-root" class="icon-button action-icon" type="button" aria-label="添加工作区" title="添加工作区">＋</button>
+        <button id="refresh" class="icon-button action-icon" type="button" aria-label="刷新" title="刷新">↻</button>
+        <button id="language" class="icon-button action-icon language-icon" type="button" aria-label="切换语言" title="切换语言">文</button>
         <button id="theme" class="icon-button" type="button" data-i18n-aria="actions.theme" aria-label="切换主题">◐</button>
       </div>
     </header>
@@ -168,6 +168,36 @@
         <div class="dialog-actions">
           <button id="cancel-root" class="button secondary" type="button" data-i18n="actions.cancel">取消</button>
           <button id="save-root" class="button primary" type="submit" data-i18n="actions.addAndCollect">添加并采集</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="run-close-dialog">
+      <form id="run-close-form" method="dialog">
+        <div class="dialog-heading">
+          <div>
+            <span class="eyebrow" data-i18n="recovery.eyebrow">人工审阅</span>
+            <h2 data-i18n="recovery.title">结束异常 Run</h2>
+          </div>
+          <button id="close-run-dialog" class="icon-button" aria-label="Close" type="button">×</button>
+        </div>
+        <p data-i18n="recovery.help">操作会重新核对 Run 与权限状态，并写入不可变的审阅证据。</p>
+        <div id="run-close-facts" class="review-facts"></div>
+        <div id="run-close-warning" class="review-warning" hidden></div>
+        <label for="run-close-outcome" data-i18n="recovery.outcome">结束结果</label>
+        <select id="run-close-outcome" required></select>
+        <label for="run-close-reviewer" data-i18n="recovery.reviewer">审阅者标识</label>
+        <input id="run-close-reviewer" type="text" value="local-operator" autocomplete="off" required>
+        <label for="run-close-reason" data-i18n="recovery.reason">原因代码</label>
+        <input id="run-close-reason" type="text" value="operator-reviewed" autocomplete="off" required>
+        <label for="run-close-evidence" data-i18n="recovery.evidence">审阅证据</label>
+        <textarea id="run-close-evidence" rows="3" maxlength="2000" required></textarea>
+        <label for="run-close-confirm" data-i18n="recovery.confirm">输入完整 Run ID 确认</label>
+        <input id="run-close-confirm" type="text" autocomplete="off" required>
+        <div id="run-close-error" class="inline-error" hidden></div>
+        <div class="dialog-actions">
+          <button id="cancel-run-close" class="button secondary" type="button" data-i18n="actions.cancel">取消</button>
+          <button id="confirm-run-close" class="button danger" type="submit" data-i18n="recovery.close">确认结束</button>
         </div>
       </form>
     </dialog>

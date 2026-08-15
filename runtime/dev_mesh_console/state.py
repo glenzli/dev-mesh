@@ -9,6 +9,7 @@ from dev_mesh_coord.storage import now
 from dev_mesh_observer.catalog import Catalog
 from dev_mesh_observer.dashboard import build_dashboard
 
+from .recovery import ReviewedRecovery
 from .registry import RootRegistry
 
 
@@ -29,6 +30,7 @@ class ConsoleState:
         self.registry = registry
         self.max_depth = max_depth
         self.collect_interval = collect_interval
+        self.recovery = ReviewedRecovery(database=self.database, registry=self.registry)
         self._collect_lock = threading.Lock()
         self._status_lock = threading.RLock()
         self._stop = threading.Event()
@@ -104,6 +106,37 @@ class ConsoleState:
             )
         value["collector"] = self.status()
         return value
+
+    def preview_run_close(self, *, workspace_id: str, run_id: str) -> dict[str, object]:
+        return self.recovery.preview_run_close(workspace_id=workspace_id, run_id=run_id)
+
+    def close_run_after_review(
+        self,
+        *,
+        workspace_id: str,
+        run_id: str,
+        review_token: str,
+        reviewer: str,
+        outcome: str,
+        reason_code: str,
+        evidence: str,
+    ) -> dict[str, object]:
+        result = self.recovery.close_run(
+            workspace_id=workspace_id,
+            run_id=run_id,
+            review_token=review_token,
+            reviewer=reviewer,
+            outcome=outcome,
+            reason_code=reason_code,
+            evidence=evidence,
+        )
+        try:
+            collection = self.collect()
+        except Exception as error:
+            result["collection"] = {"refreshed": False, "error": str(error)}
+        else:
+            result["collection"] = {"refreshed": True, "result": collection}
+        return result
 
     def start(self) -> None:
         if self._thread is not None:

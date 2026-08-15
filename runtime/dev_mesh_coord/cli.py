@@ -125,6 +125,17 @@ def parser() -> argparse.ArgumentParser:
     leave.add_argument("--force-terminal", action="store_true")
     leave.add_argument("--reason-code")
 
+    reviewed_preview = commands.add_parser("run-close-preview")
+    reviewed_preview.add_argument("--run-id", required=True)
+
+    reviewed_close = commands.add_parser("run-close-reviewed")
+    reviewed_close.add_argument("--run-id", required=True)
+    reviewed_close.add_argument("--review-token", required=True)
+    reviewed_close.add_argument("--reviewer", required=True)
+    reviewed_close.add_argument("--outcome", required=True, choices=sorted(lifecycle.RUN_OUTCOMES))
+    reviewed_close.add_argument("--reason-code", required=True)
+    reviewed_close.add_argument("--evidence", required=True)
+
     recover_run = commands.add_parser("run-recover-authority")
     recover_run.add_argument("--closed-run-id", required=True)
     recover_run.add_argument("--owner", required=True)
@@ -411,6 +422,10 @@ def dispatch(arguments: argparse.Namespace) -> object:
         return lifecycle.release_claim(root, scope=arguments.scope, owner=arguments.owner, run_id=arguments.run_id, summary=arguments.summary)
     if command == "leave":
         return lifecycle.leave_run(root, run_id=arguments.run_id, owner=arguments.owner, outcome=arguments.outcome, summary=arguments.summary, force_terminal=arguments.force_terminal, reason_code=arguments.reason_code)
+    if command == "run-close-preview":
+        return lifecycle.preview_reviewed_run_close(root, run_id=arguments.run_id)
+    if command == "run-close-reviewed":
+        return lifecycle.close_run_after_review(root, run_id=arguments.run_id, review_token=arguments.review_token, reviewer=arguments.reviewer, outcome=arguments.outcome, reason_code=arguments.reason_code, evidence=arguments.evidence)
     if command == "run-recover-authority":
         return lifecycle.recover_run_authority(root, closed_run_id=arguments.closed_run_id, owner=arguments.owner, recovery_run_id=arguments.recovery_run_id, evidence=arguments.evidence)
     if command == "send":

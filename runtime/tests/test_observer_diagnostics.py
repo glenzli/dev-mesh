@@ -1362,6 +1362,27 @@ class ObserverDiagnosticProjectionTest(GitWorkspaceTest):
         self.assertEqual(report["cutover_readiness"]["blockers"]["active_direct_commits"], 1)
         self.assertFalse(report["cutover_readiness"]["ready"])
 
+    def test_archived_preflight_rejection_is_retained_without_breaking_collection(self) -> None:
+        initialize(self.root)
+        self._snapshot(
+            "direct-commits/archive/direct-commit-preflight-aborted-before-index-write.json",
+            {
+                "direct_commit_id": "direct-commit-preflight",
+                "scope": "direct-scope",
+                "status": "needs-attention",
+                "error": "git index write was denied before a commit intent existed",
+            },
+        )
+        database = Path(self.temporary.name) / "observer.sqlite3"
+        with Catalog(database) as catalog:
+            collected = catalog.collect_workspace(self.root)
+            report = catalog.report(workspace=workspace_id(self.root))
+        self.assertEqual(collected["invalid_count"], 0)
+        self.assertEqual(report["status_counts"]["direct-commit:needs-attention"], 1)
+        self.assertEqual(report["direct_commit"]["active"], 0)
+        codes = {item["code"] for item in report["diagnostics"]}
+        self.assertNotIn("direct-commit.archive-nonterminal", codes)
+
     def test_finalizing_contention_is_active_visible_and_archived_wait_is_not_orphaned(self) -> None:
         initialize(self.root)
         self._snapshot(

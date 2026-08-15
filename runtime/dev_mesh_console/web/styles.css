@@ -91,7 +91,7 @@ body {
   font-size: 14px;
 }
 
-button, input, select { font: inherit; }
+button, input, select, textarea { font: inherit; }
 button, select { cursor: pointer; }
 
 .topbar {
@@ -143,9 +143,14 @@ button, select { cursor: pointer; }
 }
 .button { padding: 6px 13px; font-weight: 650; }
 .button.primary { color: #fff; border-color: #2b527f; background: #315f95; }
+.button.danger { color: #fff; border-color: color-mix(in srgb, var(--danger) 80%, #000); background: var(--danger); }
 .button.secondary:hover, .icon-button:hover { background: var(--surface-muted); }
 .button:disabled { opacity: .55; cursor: wait; }
 .icon-button { min-width: 36px; padding: 5px 9px; }
+.action-icon { width: 34px; min-width: 34px; padding: 4px; font-size: 18px; font-weight: 700; line-height: 1; }
+.language-icon { font-size: 12px; letter-spacing: .03em; }
+.action-icon.is-loading { animation: action-spin 1s linear infinite; }
+@keyframes action-spin { to { transform: rotate(360deg); } }
 
 .status-pill {
   display: inline-flex;
@@ -325,6 +330,11 @@ select, input {
 .severity-warning .severity-badge { color: var(--warning); background: var(--warning-soft); }
 .severity-critical .severity-badge { color: var(--danger); background: var(--danger-soft); }
 .diagnostic-row.is-pending .severity-badge { color: var(--warning); background: var(--warning-soft); }
+.diagnostic-row.is-audit .severity-badge { color: var(--muted); background: var(--surface-muted); }
+.diagnostic-group-heading { padding: 9px 12px 5px; color: var(--muted); font-size: 10px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
+.diagnostic-group-heading.is-action { color: var(--warning); }
+.diagnostic-group-heading.is-pending { color: var(--accent); }
+.diagnostic-action { flex: 0 0 auto; min-height: 28px; padding: 3px 8px; font-size: 10px; }
 .event-dot { flex: 0 0 auto; width: 9px; height: 9px; border: 2px solid var(--mainline); border-radius: 50%; }
 .event-dot.effect-grant { border-color: var(--accent); background: var(--accent); }
 .event-dot.effect-terminal, .event-dot.effect-release { border-color: var(--good); background: var(--good); }
@@ -477,7 +487,12 @@ dialog form { padding: 18px; }
 .dialog-heading h2 { margin: 3px 0 0; font-size: 18px; }
 dialog p { margin: 0 0 16px; color: var(--muted); line-height: 1.5; }
 dialog label { display: block; margin-bottom: 6px; color: var(--muted); font-size: 11px; font-weight: 700; }
-dialog input { width: 100%; padding-right: 10px; }
+dialog input, dialog select, dialog textarea { width: 100%; padding-right: 10px; }
+dialog textarea { resize: vertical; min-height: 72px; padding: 8px 10px; border: 1px solid var(--border-strong); border-radius: 7px; color: var(--text); background: var(--surface); }
+.review-facts { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 5px 10px; margin: 0 0 14px; padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-muted); font-size: 11px; }
+.review-facts b { color: var(--muted); }
+.review-facts span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.review-warning { margin: 0 0 14px; padding: 9px 10px; border: 1px solid color-mix(in srgb, var(--warning) 30%, var(--border)); border-radius: 7px; color: var(--warning); background: var(--warning-soft); font-size: 11px; line-height: 1.45; }
 .root-list { display: flex; gap: 6px; flex-wrap: wrap; margin: 12px 0; }
 .root-chip { max-width: 100%; padding: 4px 7px; overflow: hidden; border-radius: 5px; background: var(--surface-muted); color: var(--muted); font: 10px ui-monospace, monospace; text-overflow: ellipsis; white-space: nowrap; }
 .inline-error { margin: 10px 0; padding: 8px; border-radius: 6px; color: var(--danger); background: var(--danger-soft); font-size: 12px; }
