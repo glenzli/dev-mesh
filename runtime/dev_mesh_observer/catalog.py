@@ -196,12 +196,25 @@ class Catalog:
             # establishing an exact-byte baseline on their next source observation.
             self.connection.execute("ALTER TABLE events ADD COLUMN source_sha256 TEXT")
 
-        snapshot_columns = {
-            str(row[1]) for row in self.connection.execute("PRAGMA table_info(snapshots)")
-        }
-        if snapshot_columns and not {"lifecycle", "source_path"}.issubset(snapshot_columns):
+        snapshot_table = list(self.connection.execute("PRAGMA table_info(snapshots)"))
+        snapshot_columns = {str(row[1]) for row in snapshot_table}
+        snapshot_primary_key = tuple(
+            str(row[1]) for row in sorted(snapshot_table, key=lambda row: int(row[5])) if row[5]
+        )
+        expected_snapshot_primary_key = (
+            "workspace_id",
+            "protocol_version",
+            "kind",
+            "object_id",
+            "lifecycle",
+            "source_path",
+        )
+        if snapshot_columns and (
+            not {"lifecycle", "source_path"}.issubset(snapshot_columns)
+            or snapshot_primary_key != expected_snapshot_primary_key
+        ):
             # Snapshots are a replaceable projection. Rebuild the unpublished shape
-            # instead of pretending old active-only rows were archived evidence.
+            # instead of collapsing distinct archived instances of a reused semantic id.
             self.connection.execute("DROP TABLE snapshots")
         self.connection.execute(
             """
@@ -216,7 +229,7 @@ class Catalog:
                 source_path TEXT NOT NULL,
                 observed_at TEXT NOT NULL,
                 PRIMARY KEY (
-                    workspace_id, protocol_version, kind, object_id, lifecycle
+                    workspace_id, protocol_version, kind, object_id, lifecycle, source_path
                 )
             )
             """

@@ -11,13 +11,14 @@ const state = {
   workspace: new URLSearchParams(location.search).get("workspace") || "",
   window: Number(new URLSearchParams(location.search).get("window") || 48),
   loading: false,
+  flowScrollToLatest: true,
 };
 
 const nodes = Object.fromEntries([
   "connection-status", "refresh", "workspace", "window", "generated-at", "protocol-version",
   "metrics", "insights", "projects", "project-count", "active-details", "active-count", "flow-summary",
   "project-collaboration", "project-collaboration-count",
-  "flow", "flow-scroll", "flow-tooltip", "flow-empty", "diagnostics", "diagnostic-count",
+  "flow", "flow-scroll", "flow-scrollbar", "flow-scrollbar-control", "flow-owner-rail", "flow-tooltip", "flow-empty", "diagnostics", "diagnostic-count",
   "events", "event-count", "language", "theme", "add-root", "root-dialog", "root-form",
   "root-path", "root-list", "dialog-error", "close-dialog", "cancel-root",
 ].map((id) => [id, document.getElementById(id)]));
@@ -384,9 +385,23 @@ function renderEvents() {
 }
 
 function renderGraph() {
-  const result = renderFlow(nodes.flow, nodes["flow-tooltip"], state.dashboard, projectNames());
+  const result = renderFlow(
+    nodes.flow,
+    nodes["flow-owner-rail"],
+    nodes["flow-tooltip"],
+    state.dashboard,
+    projectNames(),
+  );
   nodes["flow-empty"].hidden = result.eventCount !== 0;
   nodes["flow-scroll"].classList.toggle("is-empty", result.eventCount === 0);
+  nodes["flow-scrollbar"].hidden = result.eventCount === 0;
+  nodes["flow-owner-rail"].hidden = result.eventCount === 0;
+  if (state.flowScrollToLatest && result.eventCount) {
+    requestAnimationFrame(() => scrollFlowToLatest());
+    state.flowScrollToLatest = false;
+  } else {
+    updateFlowScrollbar();
+  }
   const pieces = [
     `${formatNumber(result.laneCount)} ${t("flow.owners")}`,
     `${formatNumber(result.runCount)} ${t("flow.runSegments")}`,
@@ -395,6 +410,23 @@ function renderGraph() {
   if (result.workCount) pieces.push(`${formatNumber(result.workCount)} ${t("flow.works")}`);
   if (state.dashboard.selection.events_truncated) pieces.push(t("flow.truncated"));
   nodes["flow-summary"].textContent = pieces.join(" · ");
+}
+
+function updateFlowScrollbar() {
+  const flow = nodes["flow-scroll"];
+  const control = nodes["flow-scrollbar-control"];
+  const maximum = Math.max(0, flow.scrollWidth - flow.clientWidth);
+  control.max = String(maximum);
+  control.value = String(Math.min(maximum, flow.scrollLeft));
+  control.disabled = maximum === 0;
+  const visible = flow.scrollWidth > 0 ? (flow.clientWidth / flow.scrollWidth) * 100 : 100;
+  control.style.setProperty("--flow-scroll-thumb", `${Math.max(12, Math.min(100, visible))}%`);
+}
+
+function scrollFlowToLatest() {
+  const target = Math.max(0, nodes["flow-scroll"].scrollWidth - nodes["flow-scroll"].clientWidth);
+  nodes["flow-scroll"].scrollLeft = target;
+  updateFlowScrollbar();
 }
 
 function render() {
@@ -449,6 +481,7 @@ async function loadDashboard() {
 }
 
 async function collect() {
+  state.flowScrollToLatest = true;
   nodes.refresh.disabled = true;
   nodes.refresh.textContent = t("actions.refreshing");
   try {
@@ -479,11 +512,19 @@ function applyTheme(value) {
 nodes.refresh.addEventListener("click", collect);
 nodes.workspace.addEventListener("change", () => {
   state.workspace = nodes.workspace.value;
+  state.flowScrollToLatest = true;
   loadDashboard();
 });
 nodes.window.addEventListener("change", () => {
   state.window = Number(nodes.window.value);
+  state.flowScrollToLatest = true;
   loadDashboard();
+});
+nodes["flow-scroll"].addEventListener("scroll", () => {
+  updateFlowScrollbar();
+});
+nodes["flow-scrollbar-control"].addEventListener("input", () => {
+  nodes["flow-scroll"].scrollLeft = Number(nodes["flow-scrollbar-control"].value);
 });
 nodes.language.addEventListener("click", () => {
   toggleLanguage();
@@ -510,6 +551,7 @@ nodes["root-form"].addEventListener("submit", async (event) => {
       body: JSON.stringify({ path: nodes["root-path"].value }),
     });
     nodes["root-dialog"].close();
+    state.flowScrollToLatest = true;
     await loadDashboard();
   } catch (error) {
     nodes["dialog-error"].textContent = error.message;

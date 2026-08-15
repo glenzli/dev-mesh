@@ -586,6 +586,55 @@ class ObserverIntegrityTest(GitWorkspaceTest):
         self.assertTrue({"lifecycle", "source_path"}.issubset(snapshot_columns))
         self.assertEqual(snapshots, 0)
 
+    def test_reused_claim_scope_keeps_distinct_archived_instances(self) -> None:
+        initialize(self.root)
+        for suffix in ("one", "two"):
+            run_id = f"run-{suffix}"
+            join_run(self.root, run_id=run_id, owner="agent-a", task=f"edit {suffix}")
+            create_claim(
+                self.root,
+                scope="reused-scope",
+                owner="agent-a",
+                run_id=run_id,
+                task=f"edit {suffix}",
+                paths=["app.txt"],
+            )
+            release_claim(
+                self.root,
+                scope="reused-scope",
+                owner="agent-a",
+                run_id=run_id,
+                summary=f"edit {suffix} done",
+            )
+            leave_run(
+                self.root,
+                run_id=run_id,
+                owner="agent-a",
+                outcome="completed",
+                summary=f"edit {suffix} done",
+            )
+
+        database = Path(self.temporary.name) / "observer.sqlite3"
+        with Catalog(database) as catalog:
+            collected = catalog.collect_workspace(self.root)
+            report = catalog.report(workspace=workspace_id(self.root))
+            archived = catalog.connection.execute(
+                """
+                SELECT source_path FROM snapshots
+                WHERE kind = 'claim' AND object_id = 'reused-scope' AND lifecycle = 'archive'
+                ORDER BY source_path
+                """
+            ).fetchall()
+
+        self.assertEqual(collected["invalid_records"], [])
+        self.assertEqual(len(archived), 2)
+        self.assertNotEqual(archived[0]["source_path"], archived[1]["source_path"])
+        self.assertNotIn(
+            "claim.multiple-terminal-events",
+            {item["code"] for item in report["diagnostics"]},
+        )
+        self.assertTrue(report["cutover_readiness"]["ready"])
+
 
 class ObserverDiagnosticProjectionTest(GitWorkspaceTest):
     def _snapshot(self, relative: str, value: dict[str, object]) -> None:
@@ -831,8 +880,9 @@ class ObserverDiagnosticProjectionTest(GitWorkspaceTest):
         self.assertIn("cleanup.terminal-event-missing", codes)
         self.assertIn("cleanup.needs-attention", codes)
         self.assertIn("work.terminal-event-missing", codes)
-        self.assertIn("run.open-without-claim", codes)
-        self.assertIn("run.stale", codes)
+        self.assertIn("run.unclosed", codes)
+        self.assertNotIn("run.open-without-claim", codes)
+        self.assertNotIn("run.stale", codes)
         self.assertEqual(report["active"]["transaction"], 1)
         self.assertEqual(report["active"]["cleanup"], 1)
         self.assertEqual(

@@ -394,12 +394,42 @@ function marker(defs, name, colorClass) {
   defs.append(value);
 }
 
-export function renderFlow(svg, tooltip, dashboard, projectNames) {
+function renderOwnerRail(ownerRail, layout) {
+  ownerRail.replaceChildren();
+  ownerRail.style.height = `${layout.height}px`;
+  layout.ownerRows.forEach((row) => {
+    const card = document.createElement("div");
+    card.className = "flow-owner-card";
+    if (row.ownerOnly) card.classList.add("owner-only");
+    card.style.top = `${row.y - 26}px`;
+    const badge = document.createElement("span");
+    badge.className = "flow-owner-badge";
+    badge.textContent = "OWNER";
+    const owner = document.createElement("strong");
+    owner.textContent = short(row.owner, 20);
+    const run = document.createElement("span");
+    run.className = "flow-owner-run";
+    run.textContent = row.ownerOnly
+      ? t("flow.noRuns")
+      : row.runs.length === 1
+        ? short(row.runs[0].runId, 25)
+        : `${row.runs.length} ${t("flow.runSegments")}`;
+    const heading = document.createElement("div");
+    heading.className = "flow-owner-heading";
+    heading.append(badge, owner);
+    card.append(heading, run);
+    ownerRail.append(card);
+  });
+}
+
+export function renderFlow(svg, ownerRail, tooltip, dashboard, projectNames) {
   svg.replaceChildren();
+  ownerRail.replaceChildren();
   tooltip.hidden = true;
   const events = dashboard.events;
   if (!events.length) {
-    return { laneCount: 0, runCount: 0, eventCount: 0, workCount: 0 };
+    ownerRail.style.height = "0px";
+    return { laneCount: 0, runCount: 0, eventCount: 0, workCount: 0, width: 0 };
   }
 
   // Owner identity cards end at x=208.  Keep a visible buffer before the
@@ -424,6 +454,7 @@ export function renderFlow(svg, tooltip, dashboard, projectNames) {
   svg.setAttribute("preserveAspectRatio", "xMinYMin meet");
   svg.setAttribute("width", width);
   svg.setAttribute("height", height);
+  renderOwnerRail(ownerRail, layout);
 
   const defs = element("defs");
   marker(defs, "normal", "normal");
@@ -537,41 +568,6 @@ export function renderFlow(svg, tooltip, dashboard, projectNames) {
       guide.classList.add("owner-guide");
       svg.append(guide);
     }
-    const identity = element("rect", {
-      x: 14,
-      y: row.y - 20,
-      width: 194,
-      height: 40,
-      rx: 7,
-    });
-    identity.classList.add("owner-identity-card");
-    if (row.ownerOnly) identity.classList.add("owner-only");
-    const ownerBadge = element("rect", {
-      x: 21,
-      y: row.y - 12,
-      width: 34,
-      height: 17,
-      rx: 8.5,
-    });
-    ownerBadge.classList.add("owner-badge");
-    const ownerBadgeText = element("text", {
-      x: 38,
-      y: row.y - 1,
-      "text-anchor": "middle",
-    });
-    ownerBadgeText.classList.add("owner-badge-text");
-    ownerBadgeText.textContent = "OWNER";
-    const ownerText = element("text", { x: 61, y: row.y - 1 });
-    ownerText.classList.add("lane-owner");
-    ownerText.textContent = short(row.owner, 20);
-    const runText = element("text", { x: 22, y: row.y + 14 });
-    runText.classList.add("lane-run");
-    runText.textContent = row.ownerOnly
-      ? t("flow.noRuns")
-      : row.runs.length === 1
-      ? short(row.runs[0].runId, 25)
-      : `${row.runs.length} ${t("flow.runSegments")}`;
-    svg.append(identity, ownerBadge, ownerBadgeText, ownerText, runText);
   });
 
   lanes.forEach((lane) => {
@@ -835,5 +831,6 @@ export function renderFlow(svg, tooltip, dashboard, projectNames) {
     eventCount: events.length,
     workCount: workNumbers.size,
     relationshipGroupCount: layout.groupCount,
+    width,
   };
 }

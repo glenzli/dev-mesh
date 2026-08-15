@@ -113,9 +113,16 @@
           <strong data-i18n="empty.flowTitle">窗口内没有协作事件</strong>
           <span data-i18n="empty.flowBody">运行 Agent 后，生命周期节点会出现在这里。</span>
         </div>
-        <div id="flow-scroll" class="flow-scroll">
-          <svg id="flow" role="img" aria-label="Dev Mesh collaboration flow"></svg>
-          <div id="flow-tooltip" class="flow-tooltip" hidden></div>
+        <div class="flow-viewport">
+          <div class="flow-scrollbar-corner" aria-hidden="true"></div>
+          <div id="flow-scrollbar" class="flow-scrollbar">
+            <input id="flow-scrollbar-control" class="flow-scrollbar-control" type="range" min="0" max="0" value="0" aria-label="Collaboration flow timeline">
+          </div>
+          <div id="flow-owner-rail" class="flow-owner-rail" aria-hidden="true"></div>
+          <div id="flow-scroll" class="flow-scroll">
+            <svg id="flow" role="img" aria-label="Dev Mesh collaboration flow"></svg>
+            <div id="flow-tooltip" class="flow-tooltip" hidden></div>
+          </div>
         </div>
       </section>
 

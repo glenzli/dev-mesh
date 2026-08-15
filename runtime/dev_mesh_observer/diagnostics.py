@@ -335,13 +335,20 @@ def project_diagnostics(
                     _issue(item, f"{kind}.terminal-event-with-active-snapshot")
                 )
 
-    snapshot_identities = {
+    snapshot_identity_counts = Counter(
         (str(item["workspace_id"]), str(item["kind"]), str(item["object_id"]))
         for item in snapshots
-    }
+    )
+    terminal_snapshot_counts = Counter(
+        (str(item["workspace_id"]), str(item["kind"]), str(item["object_id"]))
+        for item in snapshots
+        if str(item.get("status") or "unspecified")
+        in TERMINAL_STATUSES.get(str(item["kind"]), set())
+    )
     for kind, identities in terminal_events_by_id.items():
         for (workspace_id, object_id), event_counts in identities.items():
-            if (workspace_id, kind, object_id) not in snapshot_identities:
+            snapshot_identity = (workspace_id, kind, object_id)
+            if snapshot_identity not in snapshot_identity_counts:
                 diagnostics.append(
                     {
                         "code": f"{kind}.terminal-event-without-snapshot",
@@ -351,6 +358,12 @@ def project_diagnostics(
                     }
                 )
             terminal_count = sum(event_counts.values())
+            terminal_snapshot_count = terminal_snapshot_counts[snapshot_identity]
+            if terminal_count <= terminal_snapshot_count:
+                # A semantic id (notably a Claim scope) may be reused after its
+                # previous instance is archived. One terminal event per durable
+                # terminal snapshot is therefore expected, even if outcomes differ.
+                continue
             if len(event_counts) > 1:
                 diagnostics.append(
                     {
@@ -371,7 +384,7 @@ def project_diagnostics(
                 )
 
     for (workspace_id, kind, object_id), _event in sorted(open_events_by_id.items()):
-        if (workspace_id, kind, object_id) in snapshot_identities:
+        if (workspace_id, kind, object_id) in snapshot_identity_counts:
             continue
         diagnostics.append(
             {
@@ -385,12 +398,22 @@ def project_diagnostics(
     for key in sorted(active_runs):
         item = run_snapshots[key]
         record = item["record"]
-        if key not in claim_run_keys:
+        has_claim = key in claim_run_keys
+        activity = last_activity_by_run.get(key) or _parse_time(record.get("joined_at"))
+        is_stale = (
+            activity is not None
+            and (now_time - activity).total_seconds() > stale_after_seconds
+        )
+        if not has_claim and is_stale:
+            # No authority is being retained: this is usually a missed final leave,
+            # not blocked collaboration. Keep the wording actionable and low severity.
+            diagnostics.append(_issue(item, "run.unclosed", severity="info"))
+            continue
+        if not has_claim:
             diagnostics.append(_issue(item, "run.open-without-claim", severity="info"))
         if event_names_by_run.get(key) == {"agent-joined"}:
             diagnostics.append(_issue(item, "run.join-only", severity="info"))
-        activity = last_activity_by_run.get(key) or _parse_time(record.get("joined_at"))
-        if activity is not None and (now_time - activity).total_seconds() > stale_after_seconds:
+        if is_stale:
             diagnostics.append(_issue(item, "run.stale", severity="info"))
 
     for pending in pending_acknowledgements or []:
