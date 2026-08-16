@@ -49,6 +49,9 @@ codex plugin add dev-mesh@glenzli-marketplace
 第一条命令只需执行一次；以后可从同一 marketplace 显式安装或更新插件。安装后，
 `coordinate-shared-workspace` 与 `observe-dev-mesh` 会作为同一版本的技能一起提供；不要长期把全局
 技能直接软链到此源码仓库。安装或更新后，请在新任务中使用新版本。
+
+发布版本采用 `MAJOR.MINOR.PATCH+codex.<源码短提交>`：前段表达功能兼容性，构建标识指向所发布
+安装包对应的源码快照，不使用时间戳。
 [`coordinate-shared-workspace`](skills/coordinate-shared-workspace/SKILL.md) 提供协作操作说明。
 普通路径是：
 

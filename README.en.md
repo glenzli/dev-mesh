@@ -57,7 +57,11 @@ codex plugin add dev-mesh@glenzli-marketplace
 The first command is required only once; later install or update plugins explicitly from the same
 marketplace. Installation provides `coordinate-shared-workspace` and `observe-dev-mesh` together at
 one version; do not keep a global skill symlink directly to this source checkout. Use a new task
-after installation or an update. The
+after installation or an update.
+
+Release builds use `MAJOR.MINOR.PATCH+codex.<source-short-sha>`: the leading version expresses
+feature compatibility, while the build identity points to the source snapshot used for the installed
+package rather than a timestamp. The
 [`coordinate-shared-workspace`](skills/coordinate-shared-workspace/SKILL.md) skill owns the
 operational instructions. Its normal path is:
 
