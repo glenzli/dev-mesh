@@ -1,6 +1,6 @@
 {
   "name": "dev-mesh",
-  "version": "0.1.0",
+  "version": "0.1.0+codex.20260816091953",
   "description": "Shared-workspace coordination and local observability for multi-Agent development.",
   "author": {
     "name": "Glen Li",
@@ -32,6 +32,9 @@
       "Inspect current Dev Mesh authority and collaboration diagnostics.",
       "Open the local Dev Mesh Console and explain the active coordination state."
     ],
-    "brandColor": "#2F6F9F"
+    "brandColor": "#2F6F9F",
+    "composerIcon": "./assets/dev-mesh.svg",
+    "logo": "./assets/dev-mesh.svg",
+    "logoDark": "./assets/dev-mesh.svg"
   }
 }

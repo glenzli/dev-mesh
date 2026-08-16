@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">Dev Mesh</title>
+  <desc id="desc">A simple layered network with coordinated work nodes.</desc>
+  <rect x="12" y="12" width="232" height="232" rx="56" fill="#F4F8FC" stroke="#A9BED6" stroke-width="8"/>
+  <g fill="none" stroke="#2F6F9F" stroke-linecap="round" stroke-linejoin="round" stroke-width="10">
+    <path d="M44 72h168M44 128h168M44 184h168"/>
+    <path d="M92 72v56M164 128v56"/>
+  </g>
+  <g fill="none" stroke="#0B8CA4" stroke-linecap="round" stroke-width="10">
+    <path d="M92 128h36M128 128h36"/>
+  </g>
+  <g fill="#F4F8FC" stroke="#2F6F9F" stroke-width="9">
+    <circle cx="44" cy="72" r="13"/>
+    <circle cx="92" cy="72" r="13"/>
+    <circle cx="212" cy="72" r="13"/>
+    <circle cx="44" cy="128" r="13"/>
+    <circle cx="92" cy="128" r="13"/>
+    <circle cx="164" cy="128" r="13"/>
+    <circle cx="212" cy="128" r="13"/>
+    <circle cx="44" cy="184" r="13"/>
+    <circle cx="164" cy="184" r="13"/>
+    <circle cx="212" cy="184" r="13"/>
+  </g>
+  <circle cx="128" cy="128" r="23" fill="#0B8CA4"/>
+  <circle cx="128" cy="128" r="9" fill="#F4F8FC"/>
+</svg>
