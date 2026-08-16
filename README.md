@@ -38,15 +38,17 @@ Dev Mesh 记录通信，但不负责投递。Agent 必须先通过宿主环境�
 
 ## 安装与 Agent 常规路径
 
-Dev Mesh 作为本地 `glenzli-local` marketplace plugin 分发。安装后，
-`coordinate-shared-workspace` 与 `observe-dev-mesh` 会作为同一版本的技能
-一起提供；不要长期把全局技能直接软链到此源码仓库。
+Dev Mesh 通过 [Glenzli Marketplace](https://github.com/glenzli/marketplace) 发布。首次使用时先登记
+marketplace，再安装 Dev Mesh：
 
 ```bash
-codex plugin add dev-mesh@glenzli-local
+codex plugin marketplace add glenzli/marketplace --ref main
+codex plugin add dev-mesh@glenzli-marketplace
 ```
 
-修改 Dev Mesh 源码并提交后，重新执行同一安装命令以刷新本机缓存；请在新任务中使用新版本。
+第一条命令只需执行一次；以后可从同一 marketplace 显式安装或更新插件。安装后，
+`coordinate-shared-workspace` 与 `observe-dev-mesh` 会作为同一版本的技能一起提供；不要长期把全局
+技能直接软链到此源码仓库。安装或更新后，请在新任务中使用新版本。
 [`coordinate-shared-workspace`](skills/coordinate-shared-workspace/SKILL.md) 提供协作操作说明。
 普通路径是：
 

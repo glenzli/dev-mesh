@@ -46,16 +46,18 @@ Dev Mesh. `send`, `ack`, and handoff commands never start or wake another task b
 
 ## Install and routine Agent path
 
-Dev Mesh is distributed as a local `glenzli-local` marketplace plugin. Installation provides
-`coordinate-shared-workspace` and `observe-dev-mesh`
-together at one version; do not keep a global skill symlink directly to this source checkout.
+Dev Mesh is published through the [Glenzli Marketplace](https://github.com/glenzli/marketplace).
+Register the marketplace once, then install Dev Mesh:
 
 ```bash
-codex plugin add dev-mesh@glenzli-local
+codex plugin marketplace add glenzli/marketplace --ref main
+codex plugin add dev-mesh@glenzli-marketplace
 ```
 
-After changing and committing Dev Mesh source, run the same command to refresh the local cache and
-use the new version from a new task. The
+The first command is required only once; later install or update plugins explicitly from the same
+marketplace. Installation provides `coordinate-shared-workspace` and `observe-dev-mesh` together at
+one version; do not keep a global skill symlink directly to this source checkout. Use a new task
+after installation or an update. The
 [`coordinate-shared-workspace`](skills/coordinate-shared-workspace/SKILL.md) skill owns the
 operational instructions. Its normal path is:
 
