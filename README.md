@@ -52,6 +52,18 @@ codex plugin add dev-mesh@glenzli-marketplace
 
 发布版本采用 `MAJOR.MINOR.PATCH+codex.<源码短提交>`：前段表达功能兼容性，构建标识指向所发布
 安装包对应的源码快照，不使用时间戳。
+
+维护者从干净的源码提交构建最小安装包，再显式同步到 plugin collection 的工作树；同步不会提交或
+推送任何仓库：
+
+```bash
+python3 scripts/plugin_dist.py build
+python3 scripts/plugin_dist.py sync \
+  --package dist/dev-mesh --marketplace-root ../marketplace --replace
+```
+
+构建器只复制运行所需的 manifest、assets、skills、runtime、当前 schemas 与 current contracts；
+tests、archive、协调状态及缓存不会进入 `dist`。
 [`coordinate-shared-workspace`](skills/coordinate-shared-workspace/SKILL.md) 提供协作操作说明。
 普通路径是：
 

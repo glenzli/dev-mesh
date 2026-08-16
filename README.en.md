@@ -62,6 +62,17 @@ after installation or an update.
 Release builds use `MAJOR.MINOR.PATCH+codex.<source-short-sha>`: the leading version expresses
 feature compatibility, while the build identity points to the source snapshot used for the installed
 package rather than a timestamp. The
+maintainer builds a minimal package from a clean source commit, then explicitly synchronizes it into
+the plugin collection working tree; synchronization never commits or pushes either repository:
+
+```bash
+python3 scripts/plugin_dist.py build
+python3 scripts/plugin_dist.py sync \
+  --package dist/dev-mesh --marketplace-root ../marketplace --replace
+```
+
+The builder copies only the runtime manifest, assets, skills, runtime, current schemas, and current
+contracts. Tests, archives, coordination state, and caches never enter `dist`. The
 [`coordinate-shared-workspace`](skills/coordinate-shared-workspace/SKILL.md) skill owns the
 operational instructions. Its normal path is:
 
