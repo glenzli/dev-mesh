@@ -44,10 +44,20 @@ Dev Mesh records communication; it does not deliver it. An Agent must first cont
 resume the real target task using the host's task controls, then record that successful action with
 Dev Mesh. `send`, `ack`, and handoff commands never start or wake another task by themselves.
 
-## Routine Agent path
+## Install and routine Agent path
 
-The globally linked [`coordinate-shared-workspace`](skills/coordinate-shared-workspace/SKILL.md)
-skill owns the operational instructions. Its normal path is:
+Dev Mesh is distributed as a local `glenzli-local` marketplace plugin. Installation provides
+`coordinate-shared-workspace` and `observe-dev-mesh`
+together at one version; do not keep a global skill symlink directly to this source checkout.
+
+```bash
+codex plugin add dev-mesh@glenzli-local
+```
+
+After changing and committing Dev Mesh source, run the same command to refresh the local cache and
+use the new version from a new task. The
+[`coordinate-shared-workspace`](skills/coordinate-shared-workspace/SKILL.md) skill owns the
+operational instructions. Its normal path is:
 
 ```text
 inspect -> join Run -> claim bounded work -> edit -> validate
@@ -86,7 +96,7 @@ return to the canonical line visible without opening every event record.
 
 ## Observe locally
 
-The independent [`observe-dev-mesh`](skills/observe-dev-mesh/SKILL.md) skill collects current
+The independent [`observe-dev-mesh`](skills/observe-dev-mesh/SKILL.md) skill in the same plugin collects current
 control planes into an external SQLite catalog and serves the loopback-only Web Console:
 
 ```bash

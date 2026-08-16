@@ -36,10 +36,19 @@ Dev Mesh 记录通信，但不负责投递。Agent 必须先通过宿主环境�
 真实目标任务，再用 Dev Mesh 记录已经成功执行的动作。`send`、`ack` 和 handoff 命令本身不会
 启动或唤醒另一个任务。
 
-## Agent 常规路径
+## 安装与 Agent 常规路径
 
-全局链接的 [`coordinate-shared-workspace`](skills/coordinate-shared-workspace/SKILL.md) 技能
-提供操作说明。普通路径是：
+Dev Mesh 作为本地 `glenzli-local` marketplace plugin 分发。安装后，
+`coordinate-shared-workspace` 与 `observe-dev-mesh` 会作为同一版本的技能
+一起提供；不要长期把全局技能直接软链到此源码仓库。
+
+```bash
+codex plugin add dev-mesh@glenzli-local
+```
+
+修改 Dev Mesh 源码并提交后，重新执行同一安装命令以刷新本机缓存；请在新任务中使用新版本。
+[`coordinate-shared-workspace`](skills/coordinate-shared-workspace/SKILL.md) 提供协作操作说明。
+普通路径是：
 
 ```text
 检查 -> 加入 Run -> Claim 有界工作 -> 编辑 -> 验证
@@ -74,7 +83,7 @@ Agent 路由到对应的争用、事务或恢复步骤。
 
 ## 本地观测
 
-独立的 [`observe-dev-mesh`](skills/observe-dev-mesh/SKILL.md) 技能把当前控制面采集到外部
+同一 plugin 中独立的 [`observe-dev-mesh`](skills/observe-dev-mesh/SKILL.md) 技能把当前控制面采集到外部
 SQLite catalog，并启动仅监听 loopback 的 Web Console：
 
 ```bash

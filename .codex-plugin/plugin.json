@@ -1,0 +1,37 @@
+{
+  "name": "dev-mesh",
+  "version": "0.1.0",
+  "description": "Shared-workspace coordination and local observability for multi-Agent development.",
+  "author": {
+    "name": "Glen Li",
+    "url": "https://github.com/glenzli"
+  },
+  "homepage": "https://github.com/glenzli/dev-mesh",
+  "repository": "https://github.com/glenzli/dev-mesh",
+  "license": "MIT",
+  "keywords": [
+    "multi-agent",
+    "shared-workspace",
+    "coordination",
+    "git",
+    "observability"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Dev Mesh",
+    "shortDescription": "Coordinate shared workspaces and inspect local collaboration.",
+    "longDescription": "Use bounded Runs and Claims to coordinate shared Git workspaces, then inspect authority, contention, work results, and collaboration flows with the local Dev Mesh Console.",
+    "developerName": "Glen Li",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Read",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Coordinate this shared Git workspace before making changes.",
+      "Inspect current Dev Mesh authority and collaboration diagnostics.",
+      "Open the local Dev Mesh Console and explain the active coordination state."
+    ],
+    "brandColor": "#2F6F9F"
+  }
+}
