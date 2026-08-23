@@ -65,7 +65,7 @@ class CliOutputTest(GitWorkspaceTest):
             for index in range(MAX_COMPACT_ITEMS * 2 + 5)
         ]
         status = {
-            "protocol": "20260814.1",
+            "protocol": "20260823.1",
             "runs": runs,
             "claims": claims,
             "blockers": {"run-1": [{"kind": "claim", "id": "scope-1"}]},
@@ -187,6 +187,7 @@ class CliOutputTest(GitWorkspaceTest):
             "inspect_declared_paths_then_accept_exact_baseline",
         )
         self.assertEqual(compact["accept_baseline_sha256"], "accepted-digest")
+        self.assertNotIn("related_result_ids", compact["baseline"])
 
         changed = project(
             "claim-baseline-accept",
@@ -205,6 +206,71 @@ class CliOutputTest(GitWorkspaceTest):
         self.assertEqual(
             changed["next_action"], "review_changed_baseline_then_retry_accept"
         )
+
+    def test_reused_and_unchanged_claims_keep_the_routine_path_short(self) -> None:
+        reused = project(
+            "claim",
+            {
+                "scope": "existing",
+                "requested_scope": "duplicate",
+                "owner": "agent-a",
+                "run_id": "run-a",
+                "status": "active",
+                "claim_reused": True,
+            },
+            verbose=False,
+        )
+        self.assertTrue(reused["claim_reused"])
+        self.assertEqual(reused["scope"], "existing")
+        self.assertEqual(reused["next_action"], "edit_and_validate_declared_scope")
+
+        finished = project(
+            "claim-finish",
+            {
+                "scope": "existing",
+                "owner": "agent-a",
+                "run_id": "run-a",
+                "status": "released",
+                "completion_kind": "released-unchanged",
+                "work_result_created": False,
+            },
+            verbose=False,
+        )
+        self.assertEqual(
+            finished["next_action"],
+            "leave_when_no_owned_authority_remains",
+        )
+        self.assertFalse(finished["work_result_created"])
+
+    def test_version_cutover_projection_exposes_controlled_retention(self) -> None:
+        compact = project(
+            "version-cutover-plan",
+            {
+                "cutover_id": "upgrade-20260823",
+                "source_version": "20260814.1",
+                "target_version": "20260823.1",
+                "source_disposition": "discard-after-analysis-retention",
+                "plan_digest": "plan-digest",
+                "analysis_retention": {
+                    "policy": "bounded-event-envelope-v1",
+                    "path": "coord/analysis/upgrade-20260823/20260814.1.json",
+                    "record_sha256": "retention-digest",
+                    "total_event_count": 240,
+                    "retained_event_count": 240,
+                    "omitted_event_count": 0,
+                    "events_truncated": False,
+                },
+            },
+            verbose=False,
+        )
+
+        self.assertEqual(compact["source_version"], "20260814.1")
+        self.assertEqual(compact["target_version"], "20260823.1")
+        self.assertEqual(
+            compact["analysis_retention"]["record_sha256"],
+            "retention-digest",
+        )
+        self.assertNotIn("events", compact["analysis_retention"])
 
     def test_send_output_states_that_delivery_is_external(self) -> None:
         compact = project(

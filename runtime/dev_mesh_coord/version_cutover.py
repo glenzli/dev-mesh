@@ -5,9 +5,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 from pathlib import Path
 
 from . import git_backend as git
+from .analysis_retention import RETENTION_POLICY, build_analysis_retention
 from .constants import EVENT_SCHEMA, PROTOCOL, PROTOCOL_VERSION, STATE_DIRECTORIES
 from .cutover import git_facts, tree_digest
 from .errors import ProtocolError
@@ -21,8 +23,8 @@ from .storage import (
 )
 
 
-SOURCE_VERSION = "20260812.1"
-SOURCE_EVENT_SCHEMA = 1
+SOURCE_VERSION = "20260814.1"
+SOURCE_EVENT_SCHEMA = 2
 
 
 def _canonical(value: dict[str, object]) -> bytes:
@@ -35,13 +37,26 @@ def _digest(value: dict[str, object]) -> str:
     return hashlib.sha256(_canonical(value)).hexdigest()
 
 
-def _paths(root: Path, cutover_id: str) -> tuple[Path, Path, Path, Path]:
+def _paths(
+    root: Path, cutover_id: str
+) -> tuple[Path, Path, Path, Path, Path, Path, Path]:
     coord = root / ".dev-mesh" / "coord"
     source = coord / SOURCE_VERSION
     target = coord / PROTOCOL_VERSION
-    archive = coord / "archive" / cutover_id / SOURCE_VERSION
+    retention = coord / "analysis" / cutover_id / f"{SOURCE_VERSION}.json"
+    discard_staging = coord / "cutovers" / f".{cutover_id}.{SOURCE_VERSION}.discarding"
+    prior_archives = coord / "archive"
+    prior_archives_staging = coord / "cutovers" / f".{cutover_id}.prior-archives.discarding"
     journal = coord / "cutovers" / f"{cutover_id}.json"
-    return source, target, archive, journal
+    return (
+        source,
+        target,
+        retention,
+        discard_staging,
+        prior_archives,
+        prior_archives_staging,
+        journal,
+    )
 
 
 def _exact_root(root: Path) -> Path:
@@ -60,12 +75,18 @@ def _assert_owned_paths(root: Path, *, cutover_id: str) -> None:
     ensure_regular_directory(root / ".dev-mesh", "Dev Mesh namespace")
     ensure_regular_directory(coord, "coordination namespace")
     for parent in (
+        coord / "analysis",
+        coord / "analysis" / cutover_id,
         coord / "archive",
-        coord / "archive" / cutover_id,
         coord / "cutovers",
     ):
-        if parent.exists():
+        if parent.exists() or parent.is_symlink():
             ensure_regular_directory(parent, "version cutover state")
+    discard_staging = coord / "cutovers" / f".{cutover_id}.{SOURCE_VERSION}.discarding"
+    prior_archives_staging = coord / "cutovers" / f".{cutover_id}.prior-archives.discarding"
+    for staging in (discard_staging, prior_archives_staging):
+        if staging.exists() or staging.is_symlink():
+            ensure_regular_directory(staging, "retired source staging")
 
 
 def _authority_inventory(state: Path) -> dict[str, int]:
@@ -110,15 +131,46 @@ def _raw_current(root: Path) -> dict[str, object]:
 def build_plan(root: Path, *, cutover_id: str) -> dict[str, object]:
     cutover_id = _cutover_id(cutover_id)
     root = _exact_root(root)
-    source, target, archive, journal = _paths(root, cutover_id)
+    (
+        source,
+        target,
+        retention,
+        discard_staging,
+        prior_archives,
+        prior_archives_staging,
+        journal,
+    ) = _paths(root, cutover_id)
     with advisory_lock(root / ".dev-mesh.bootstrap.lock"):
         _assert_owned_paths(root, cutover_id=cutover_id)
         current = _raw_current(root)
         if current.get("version") != SOURCE_VERSION or current.get("event_schema") != SOURCE_EVENT_SCHEMA:
             raise ProtocolError("unsupported_protocol", "version cutover requires the exact retired source version")
-        if target.exists() or archive.exists() or journal.exists():
+        if (
+            target.exists()
+            or retention.exists()
+            or discard_staging.exists()
+            or prior_archives_staging.exists()
+            or journal.exists()
+        ):
             raise ProtocolError("already_exists", "version cutover id or target already exists")
         source_digest = tree_digest(source)
+        planned_at = now()
+        retained = build_analysis_retention(
+            source,
+            source_version=SOURCE_VERSION,
+            source_event_schema=SOURCE_EVENT_SCHEMA,
+            source_state_sha256=source_digest,
+            recorded_at=planned_at,
+        )
+        retention_summary = {
+            "policy": RETENTION_POLICY,
+            "path": retention.relative_to(root / ".dev-mesh").as_posix(),
+            "record_sha256": _digest(retained),
+            "total_event_count": retained["total_event_count"],
+            "retained_event_count": retained["retained_event_count"],
+            "omitted_event_count": retained["omitted_event_count"],
+            "events_truncated": retained["events_truncated"],
+        }
         plan: dict[str, object] = {
             "schema": 1,
             "kind": "dev-mesh.coordination.version-cutover",
@@ -131,8 +183,19 @@ def build_plan(root: Path, *, cutover_id: str) -> dict[str, object]:
             "workspace_root": str(root),
             "source_state_sha256": source_digest,
             "authority_inventory": _authority_inventory(source),
+            "source_disposition": "discard-after-analysis-retention",
+            "analysis_retention": retention_summary,
+            "prior_archives": {
+                "present": prior_archives.is_dir() and not prior_archives.is_symlink(),
+                "tree_sha256": (
+                    tree_digest(prior_archives)
+                    if prior_archives.is_dir() and not prior_archives.is_symlink()
+                    else None
+                ),
+                "disposition": "discard",
+            },
             "git_facts": git_facts(root),
-            "planned_at": now(),
+            "planned_at": planned_at,
         }
         plan["plan_digest"] = _digest(plan)
         journal.parent.mkdir(parents=True, exist_ok=True)
@@ -141,7 +204,15 @@ def build_plan(root: Path, *, cutover_id: str) -> dict[str, object]:
 
 
 def _load_plan(root: Path, cutover_id: str, expected_digest: str) -> tuple[Path, dict[str, object]]:
-    _source, _target, _archive, journal = _paths(root, cutover_id)
+    (
+        _source,
+        _target,
+        _retention,
+        _discard_staging,
+        _prior_archives,
+        _prior_archives_staging,
+        journal,
+    ) = _paths(root, cutover_id)
     record = read_json(journal, base=root / ".dev-mesh")
     state = record.pop("state", None)
     transitions = {key: record.pop(key) for key in list(record) if key.endswith("_at") and key != "planned_at"}
@@ -164,34 +235,102 @@ def apply(
     cutover_id: str,
     expected_plan_digest: str,
     confirm_agents_stopped: bool,
-    confirm_discard_old_authority: bool,
+    confirm_discard_old_state: bool,
 ) -> dict[str, object]:
     if not confirm_agents_stopped:
         raise ProtocolError("cutover_confirmation_required", "confirm that all old writers stopped")
     cutover_id = _cutover_id(cutover_id)
     root = _exact_root(root)
-    source, target, archive, journal_path = _paths(root, cutover_id)
+    (
+        source,
+        target,
+        retention,
+        discard_staging,
+        prior_archives,
+        prior_archives_staging,
+        _journal_path,
+    ) = _paths(root, cutover_id)
     with advisory_lock(root / ".dev-mesh.bootstrap.lock"):
         _assert_owned_paths(root, cutover_id=cutover_id)
         journal, record = _load_plan(root, cutover_id, expected_plan_digest)
-        inventory = record.get("authority_inventory")
-        active_total = sum(inventory.values()) if isinstance(inventory, dict) else 0
-        if active_total and not confirm_discard_old_authority:
+        if not confirm_discard_old_state:
             raise ProtocolError(
                 "cutover_confirmation_required",
-                "retired state contains authority; explicit discard confirmation is required",
+                "explicit old-state discard confirmation is required",
             )
         if git_facts(root) != record.get("git_facts"):
             raise ProtocolError("cutover_facts_changed", "Git or dirty baseline changed after review")
         expected_source_digest = str(record["source_state_sha256"])
+        retained_source: Path | None = None
         if source.exists():
-            if tree_digest(source) != expected_source_digest:
+            retained_source = source
+        elif discard_staging.exists():
+            retained_source = discard_staging
+        if retained_source is not None:
+            if tree_digest(retained_source) != expected_source_digest:
                 raise ProtocolError("cutover_facts_changed", "retired state changed after review")
-            archive.parent.mkdir(parents=True, exist_ok=True)
-            os.replace(source, archive)
-        elif not archive.exists() or tree_digest(archive) != expected_source_digest:
-            raise ProtocolError("cutover_facts_changed", "retired state is neither live nor exactly archived")
-        record = _transition(root, journal, record, "source-archived")
+            retained = build_analysis_retention(
+                retained_source,
+                source_version=SOURCE_VERSION,
+                source_event_schema=SOURCE_EVENT_SCHEMA,
+                source_state_sha256=expected_source_digest,
+                recorded_at=str(record["planned_at"]),
+            )
+            retention_summary = record.get("analysis_retention")
+            if (
+                not isinstance(retention_summary, dict)
+                or _digest(retained) != retention_summary.get("record_sha256")
+            ):
+                raise ProtocolError("cutover_facts_changed", "analysis retention facts changed")
+            retention.parent.mkdir(parents=True, exist_ok=True)
+            if retention.exists():
+                if read_json(retention, base=root / ".dev-mesh") != retained:
+                    raise ProtocolError("cutover_facts_changed", "analysis retention record changed")
+            else:
+                replace_json(retention, retained, base=root / ".dev-mesh")
+            if source.exists():
+                os.replace(source, discard_staging)
+            record = _transition(root, journal, record, "source-retained")
+        else:
+            if record.get("state") not in {"ready-to-discard", "completed"}:
+                raise ProtocolError(
+                    "cutover_facts_changed",
+                    "retired state disappeared before its controlled discard point",
+                )
+            retention_summary = record.get("analysis_retention")
+            if (
+                not isinstance(retention_summary, dict)
+                or not retention.is_file()
+                or retention.is_symlink()
+                or _digest(read_json(retention, base=root / ".dev-mesh"))
+                != retention_summary.get("record_sha256")
+            ):
+                raise ProtocolError("cutover_facts_changed", "analysis retention record changed")
+
+        prior_archive_facts = record.get("prior_archives")
+        if not isinstance(prior_archive_facts, dict):
+            raise ProtocolError("cutover_facts_changed", "prior archive facts are malformed")
+        prior_archive_source: Path | None = None
+        if prior_archives.exists() or prior_archives.is_symlink():
+            if prior_archives.is_symlink() or not prior_archives.is_dir():
+                raise ProtocolError("cutover_facts_changed", "prior archive root is unsafe")
+            prior_archive_source = prior_archives
+        elif prior_archives_staging.exists() or prior_archives_staging.is_symlink():
+            if prior_archives_staging.is_symlink() or not prior_archives_staging.is_dir():
+                raise ProtocolError("cutover_facts_changed", "prior archive staging is unsafe")
+            prior_archive_source = prior_archives_staging
+        if prior_archive_source is not None:
+            if not prior_archive_facts.get("present"):
+                raise ProtocolError("cutover_facts_changed", "unreviewed prior archives appeared")
+            if tree_digest(prior_archive_source) != prior_archive_facts.get("tree_sha256"):
+                raise ProtocolError("cutover_facts_changed", "prior archive tree changed")
+            if prior_archives.exists():
+                os.replace(prior_archives, prior_archives_staging)
+        elif prior_archive_facts.get("present") and record.get("state") not in {
+            "ready-to-discard",
+            "completed",
+        }:
+            raise ProtocolError("cutover_facts_changed", "prior archives disappeared early")
 
         activated_at = str(record.get("target_created_at") or now())
         if "target_created_at" not in record:
@@ -222,6 +361,9 @@ def apply(
             "cutover_id": cutover_id,
             "source_version": SOURCE_VERSION,
             "source_state_sha256": expected_source_digest,
+            "source_disposition": "discarded-after-analysis-retention",
+            "analysis_retention": record["analysis_retention"],
+            "prior_archives_disposition": "discarded",
             "git_facts": record["git_facts"],
             "recorded_at": activated_at,
         }
@@ -243,11 +385,25 @@ def apply(
         }
         replace_json(root / ".dev-mesh" / "coord" / "current.json", current, base=root / ".dev-mesh")
         record = _transition(root, journal, record, "current-switched")
+        record = _transition(root, journal, record, "ready-to-discard")
+        if discard_staging.exists():
+            if discard_staging.is_symlink() or not discard_staging.is_dir():
+                raise ProtocolError("cutover_facts_changed", "retired source staging is unsafe")
+            if tree_digest(discard_staging) != expected_source_digest:
+                raise ProtocolError("cutover_facts_changed", "retired source staging changed")
+            shutil.rmtree(discard_staging)
+        if prior_archives_staging.exists():
+            if prior_archives_staging.is_symlink() or not prior_archives_staging.is_dir():
+                raise ProtocolError("cutover_facts_changed", "prior archive staging is unsafe")
+            if tree_digest(prior_archives_staging) != record["prior_archives"].get("tree_sha256"):
+                raise ProtocolError("cutover_facts_changed", "prior archive staging changed")
+            shutil.rmtree(prior_archives_staging)
         record = _transition(root, journal, record, "completed")
         return {
             "status": "completed",
             "cutover_id": cutover_id,
-            "source_archive": str(archive),
+            "source_disposition": "discarded",
+            "analysis_retention": str(retention),
             "target_state": str(target),
             "baseline": baseline,
             "plan_digest": expected_plan_digest,
@@ -258,7 +414,15 @@ def verify(root: Path, *, cutover_id: str, expected_plan_digest: str) -> dict[st
     cutover_id = _cutover_id(cutover_id)
     root = _exact_root(root)
     _assert_owned_paths(root, cutover_id=cutover_id)
-    source, target, archive, _journal = _paths(root, cutover_id)
+    (
+        source,
+        target,
+        retention,
+        discard_staging,
+        prior_archives,
+        prior_archives_staging,
+        _journal,
+    ) = _paths(root, cutover_id)
     _path, record = _load_plan(root, cutover_id, expected_plan_digest)
     current = _raw_current(root)
     activated_at = record.get("target_created_at")
@@ -278,19 +442,31 @@ def verify(root: Path, *, cutover_id: str, expected_plan_digest: str) -> dict[st
         "cutover_id": cutover_id,
         "source_version": SOURCE_VERSION,
         "source_state_sha256": record.get("source_state_sha256"),
+        "source_disposition": "discarded-after-analysis-retention",
+        "analysis_retention": record.get("analysis_retention"),
+        "prior_archives_disposition": "discarded",
         "git_facts": record.get("git_facts"),
         "recorded_at": activated_at,
     }
     protocol_path = target / "protocol.json"
     baseline_path = target / "cutover-baseline.json"
+    retention_summary = record.get("analysis_retention")
     verified = (
         record.get("state") == "completed"
         and isinstance(activated_at, str)
         and not source.exists()
         and not source.is_symlink()
-        and archive.is_dir()
-        and not archive.is_symlink()
-        and tree_digest(archive) == record.get("source_state_sha256")
+        and not discard_staging.exists()
+        and not discard_staging.is_symlink()
+        and not prior_archives.exists()
+        and not prior_archives.is_symlink()
+        and not prior_archives_staging.exists()
+        and not prior_archives_staging.is_symlink()
+        and isinstance(retention_summary, dict)
+        and retention.is_file()
+        and not retention.is_symlink()
+        and _digest(read_json(retention, base=root / ".dev-mesh"))
+        == retention_summary.get("record_sha256")
         and target.is_dir()
         and not target.is_symlink()
         and all(

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://dev-mesh.local/schemas/coordination/20260814.1/event.schema.json",
+  "$id": "https://dev-mesh.local/schemas/coordination/20260823.1/event.schema.json",
   "title": "Dev Mesh coordination event",
   "type": "object",
   "required": [
@@ -64,7 +64,7 @@
     },
     "at": {"type": "string", "format": "date-time"},
     "protocol": {"const": "dev-mesh.coordination"},
-    "protocol_version": {"const": "20260814.1"},
+    "protocol_version": {"const": "20260823.1"},
     "authority_effect": {
       "enum": ["none", "grant", "retain", "transfer", "release", "terminal"]
     },

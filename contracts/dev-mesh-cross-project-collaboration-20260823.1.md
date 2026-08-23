@@ -1,6 +1,6 @@
-# `dev-mesh.cross-project-collaboration@20260814.1`
+# `dev-mesh.cross-project-collaboration@20260823.1`
 
-Status: optional extension to `dev-mesh.coordination@20260814.1`
+Status: optional extension to `dev-mesh.coordination@20260823.1`
 
 ## 1. Purpose and compatibility
 
@@ -8,7 +8,7 @@ This contract records an explicit collaboration that crosses Dev Mesh workspaces
 Agent task requesting work from a task in another project. It provides correlation and observation;
 it grants no Claim, Git, handoff, or transaction authority.
 
-The extension does not replace or revise `dev-mesh.coordination@20260814.1`. It uses that
+The extension does not replace or revise `dev-mesh.coordination@20260823.1`. It uses that
 protocol's existing `message-sent` event as a carrier and adds one `cross_project` payload. The base
 event schema permits additional fields, so an older producer or Observer can ignore this extension
 without migrating or resetting `.dev-mesh/` state.
@@ -77,7 +77,7 @@ additional payload has this form:
 {
   "cross_project": {
     "protocol": "dev-mesh.cross-project-collaboration",
-    "protocol_version": "20260814.1",
+    "protocol_version": "20260823.1",
     "collaboration_id": "echo-infer-review-20260813",
     "phase": "bound",
     "kind": "review",
@@ -155,4 +155,3 @@ not proof that the target remains unbound; multi-workspace observation or target
 required before requesting another bind. If a target misses normal closure, target-side
 same-owner reconciliation closes the diagnostic relation without reviving or replacing the
 completed participant Run.
-

@@ -72,6 +72,20 @@ _FIELDS = (
     "plan_digest",
     "cutover_id",
     "verified",
+    "source_version",
+    "target_version",
+    "source_disposition",
+    "policy",
+    "path",
+    "record_sha256",
+    "total_event_count",
+    "retained_event_count",
+    "omitted_event_count",
+    "events_truncated",
+    "claim_reused",
+    "requested_scope",
+    "completion_kind",
+    "work_result_created",
 )
 
 _COLLECTION_KEYS = {
@@ -111,6 +125,9 @@ def _record(value: Mapping[str, object]) -> dict[str, object]:
     cleanup = value.get("cleanup")
     if isinstance(cleanup, Mapping):
         projected["cleanup"] = _record(cleanup)
+    retention = value.get("analysis_retention")
+    if isinstance(retention, Mapping):
+        projected["analysis_retention"] = _record(retention)
     baseline = value.get("baseline")
     if isinstance(baseline, Mapping):
         projected["baseline"] = {
@@ -121,7 +138,6 @@ def _record(value: Mapping[str, object]) -> dict[str, object]:
                 "actual_path_count",
                 "actual_paths_sha256",
                 "actual_path_sample",
-                "related_result_ids",
                 "projection_mode",
                 "workspace_bytes_sha256",
                 "workspace_file_count",
@@ -192,7 +208,7 @@ def _next_action(command: str, value: Mapping[str, object]) -> str | None:
             if status == "completed"
             else "run_direct_commit_reconcile_with_verbose_output"
         )
-    if command == "claim-complete":
+    if command in {"claim-complete", "claim-finish"}:
         return "leave_when_no_owned_authority_remains"
     if command == "publish-results":
         return (

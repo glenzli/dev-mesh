@@ -52,6 +52,48 @@ class ConsoleDashboardTest(GitWorkspaceTest):
             {("run", "run-a"), ("claim", "scope-a")},
         )
         self.assertEqual(dashboard["operational"]["active"], {"run": 1, "claim": 1})
+        self.assertEqual(dashboard["coordination"]["event_count"], 0)
+        self.assertEqual(dashboard["coordination"]["relation_count"], 0)
+        self.assertEqual(dashboard["coordination"]["independent_run_count"], 1)
+        self.assertEqual(project["coordination_count"], 0)
+
+    def test_collaboration_projection_is_not_crowded_out_by_lifecycle_events(self) -> None:
+        join_run(self.root, run_id="run-b", owner="agent-b", task="receive notice")
+        send(
+            self.root,
+            source_owner="agent-a",
+            source_run_id="run-a",
+            target_owner="agent-b",
+            subject="coordinate review",
+            body="Please review the declared interface.",
+            interaction_kind="notice",
+        )
+        for index in range(3):
+            run_id = f"noise-run-{index}"
+            join_run(self.root, run_id=run_id, owner="solo-agent", task="independent work")
+            leave_run(
+                self.root,
+                run_id=run_id,
+                owner="solo-agent",
+                outcome="completed",
+                summary="independent work complete",
+            )
+        with Catalog(self.database) as catalog:
+            catalog.collect_workspace(self.root)
+            dashboard = build_dashboard(
+                catalog.connection,
+                window_hours=48,
+                event_limit=1,
+            )
+
+        self.assertNotEqual(dashboard["events"][0]["event"], "message-sent")
+        self.assertEqual(
+            [event["event"] for event in dashboard["coordination"]["events"]],
+            ["message-sent"],
+        )
+        self.assertEqual(dashboard["coordination"]["relation_count"], 1)
+        self.assertEqual(dashboard["coordination"]["participant_count"], 1)
+        self.assertEqual(dashboard["coordination"]["independent_run_count"], 4)
 
     def test_workspace_filter_is_exact_and_bounds_are_enforced(self) -> None:
         identifier = workspace_id(self.root)
@@ -514,6 +556,11 @@ class ConsoleDashboardTest(GitWorkspaceTest):
                 ("agent-b", "run-b", "scope-b"),
             },
         )
+        self.assertIn(
+            "contention-opened",
+            {event["event"] for event in dashboard["coordination"]["events"]},
+        )
+        self.assertEqual(dashboard["coordination"]["participant_count"], 2)
         proposed = next(
             event
             for event in dashboard["events"]
@@ -645,6 +692,9 @@ class ConsoleDashboardTest(GitWorkspaceTest):
         self.assertEqual(created["transaction_id"], started["transaction_id"])
         self.assertEqual(created["details"]["branch"], started["branch"])
         self.assertEqual(created["details"]["canonical_branch"], "main")
+        # The temporary transaction is part of the same cross-Run contention,
+        # so the Console counts one collaboration relation rather than protocol steps.
+        self.assertEqual(dashboard["coordination"]["relation_count"], 1)
 
 
 if __name__ == "__main__":

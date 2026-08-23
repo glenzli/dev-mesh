@@ -5,18 +5,20 @@
 Dev Mesh 是面向多个 Agent 共享同一个 Git 工作区的当前代协同层。它为短周期工作提供明确
 权限，处理工作重叠，串行化协作式 Git 发布，并留下可在事后检查的有界证据。
 
-系统有意保持本地化和轻量：普通的非重叠修改只经过一个 Run、一个 Claim、一个 Work Result
-和一次干净退出。Git 提交是可选且独立的发布步骤；只有实际发生重叠时，才会进入争用处理、
-临时分支和微事务。
+系统有意保持本地化和轻量：普通的非重叠修改只经过一个 Run 和一个可复用 Claim；只有实际贡献
+源码字节时才产生 Work Result，无修改检查直接释放。Git 提交是可选且独立的发布步骤；只有不同
+Run 实际发生重叠时，才会进入争用处理、临时分支和微事务。
 
 ## 当前代
 
-当前启用的权限合同是 `dev-mesh.coordination@20260814.1`。这是第二代实现，但协议使用不可变
+当前启用的权限合同是 `dev-mesh.coordination@20260823.1`。这是第二代实现，但协议使用不可变
 的 `YYYYMMDD.x` 标识，而不是持续变化的 `v2` 标签。可选且兼容的跨项目证据合同是
-`dev-mesh.cross-project-collaboration@20260814.1`。
+`dev-mesh.cross-project-collaboration@20260823.1`。
 
-工作区权限位于 `.dev-mesh/`。已退役的 `.agent-coordination/` 状态不会迁移或恢复；切换后只
-保留用于阻止旧写入方的 tombstone。退役流程见 [`docs/CUTOVER.md`](docs/CUTOVER.md)。
+工作区权限位于 `.dev-mesh/`。从 `20260814.1` 切换时，旧权限状态和更早的完整 archive 都会
+被丢弃，只在 `.dev-mesh/coord/analysis/` 保留去内容化、有界且无权限含义的事件证据。
+已退役的 `.agent-coordination/` 仍只保留用于阻止旧写入方的 tombstone。退役流程见
+[`docs/CUTOVER.md`](docs/CUTOVER.md)。
 
 ## 协调对象
 
@@ -68,14 +70,15 @@ tests、archive、协调状态及缓存不会进入 `dist`。
 普通路径是：
 
 ```text
-检查 -> 加入 Run -> Claim 有界工作 -> 编辑 -> 验证
-     -> 完成 Work Result -> 释放 Claim -> 离开 Run
+检查 -> 加入 Run -> 创建或复用 Claim -> 编辑 -> 验证
+     -> 按实际贡献完成或直接释放 -> 离开 Run
                                \
                                 -> 可选受管发布
 ```
 
-没有重叠时，不会引入额外协调流程。返回的 `next_action` 发现重叠或恢复需求时，技能才会把
-Agent 路由到对应的争用、事务或恢复步骤。
+同一 Run 已有 Claim 覆盖请求时会直接复用，不生成自争用；没有跨 Run 重叠时，不会引入额外
+协调流程。`claim-finish` 只为实际源码贡献建立 Work Result。返回的 `next_action` 发现不同 Run
+重叠或恢复需求时，技能才会把 Agent 路由到对应的争用、事务或恢复步骤。
 
 最常见的重叠不需要完整协商：后到的 Claim 自动进入待仲裁状态，选择等待后，原 Claim 完成
 即可激活。`parallel-tx` 不是两个 Agent 同时离开主线，而是把待写入方卸载到一个短命分支；
@@ -93,10 +96,8 @@ Agent 路由到对应的争用、事务或恢复步骤。
 
 ![虚拟 Console 项目协作图](docs/assets/console-project-collaboration-demo.png)
 
-泳道视图按 Owner 聚合 Run，并把生命周期事件放在执行线上。无需逐条打开事件，即可看到通知、
-争用决策、等待、临时事务分支、发布以及回到 canonical 执行线的过程。
-
-![虚拟 Console Agent 协作泳道图](docs/assets/console-swimlane-demo.png)
+协作流只投影不同 Run 之间的争用、交接、依赖、事务和恢复。普通 Run/Claim 生命周期不会为了
+填充图表而展开；需要追溯时再从折叠的原始事件区查看。
 
 ## 本地观测
 
@@ -110,8 +111,9 @@ python3 skills/observe-dev-mesh/scripts/console.py \
   --host 127.0.0.1 --port 8765
 ```
 
-Console 展示按项目过滤的权限、争用、事务、诊断、语义协作流和跨项目关系。Catalog 位于被
-观测工作区之外；Observer 对源工作区保持只读。
+Console 默认展示当前权限风险、不同 Run 之间的争用、交接、依赖、恢复和跨项目关系；普通
+生命周期被折叠，原始事件仅在按需审计区展开。Catalog 位于被观测工作区之外；Observer 对源
+工作区保持只读。
 
 在 macOS 上，移动仓库或更换 Python runtime 后，可安装仓库自带的 LaunchAgent，使 Console
 持续运行：

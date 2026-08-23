@@ -12,12 +12,13 @@ const state = {
   window: Number(new URLSearchParams(location.search).get("window") || 48),
   loading: false,
   collecting: false,
+  repairingDiscovery: false,
   flowScrollToLatest: true,
   runClosePreview: null,
 };
 
 const nodes = Object.fromEntries([
-  "connection-status", "refresh", "workspace", "window", "generated-at", "protocol-version",
+  "connection-status", "refresh", "repair-discovery", "workspace", "window", "generated-at", "protocol-version",
   "metrics", "insights", "projects", "project-count", "active-details", "active-count", "flow-summary",
   "project-collaboration", "project-collaboration-count",
   "flow", "flow-scroll", "flow-scrollbar", "flow-scrollbar-control", "flow-owner-rail", "flow-tooltip", "flow-empty", "diagnostics", "diagnostic-count",
@@ -46,10 +47,6 @@ const pendingDiagnosticCodes = new Set([
 ]);
 
 const actionableDiagnosticCodes = new Set([
-  "run.join-only",
-  "run.open-without-claim",
-  "run.unclosed",
-  "run.stale",
   "claim.heartbeat-stale",
   "claim.owner-run-missing",
   "claim.pending-without-contention",
@@ -105,18 +102,22 @@ function div(className, text) {
   return node;
 }
 
-function empty(titleKey, bodyKey) {
+function empty(titleKey, bodyKey, values = null) {
   const node = div("empty-state compact-empty");
   const title = document.createElement("strong");
   title.textContent = t(titleKey);
   const body = document.createElement("span");
-  body.textContent = t(bodyKey);
+  body.textContent = t(bodyKey, values);
   node.append(title, body);
   return node;
 }
 
 function activeTotal(active) {
   return Object.values(active ?? {}).reduce((total, value) => total + Number(value), 0);
+}
+
+function coordinationActiveDetails() {
+  return (state.dashboard?.active_details ?? []).filter((item) => item.kind !== "run");
 }
 
 function visibleProjects() {
@@ -152,6 +153,7 @@ function updateTopbarActions() {
   const labels = [
     ["add-root", "actions.addRoot"],
     ["refresh", state.collecting ? "actions.refreshing" : "actions.refresh"],
+    ["repair-discovery", state.repairingDiscovery ? "actions.discoveryRepairing" : "actions.discoveryRepair"],
     ["language", "actions.language"],
     ["theme", "actions.theme"],
   ];
@@ -164,21 +166,22 @@ function updateTopbarActions() {
   nodes.language.textContent = language() === "zh" ? "EN" : "中";
   nodes.refresh.classList.toggle("is-loading", state.collecting);
   nodes.refresh.setAttribute("aria-busy", String(state.collecting));
+  nodes["repair-discovery"].classList.toggle("is-loading", state.repairingDiscovery);
+  nodes["repair-discovery"].setAttribute("aria-busy", String(state.repairingDiscovery));
 }
 
 function renderMetrics() {
   const dashboard = state.dashboard;
   const operational = dashboard.operational;
-  const eventCount = dashboard.projects.reduce((sum, item) => sum + item.event_count, 0);
   const diagnostics = operational.diagnostics ?? [];
   const grouped = partitionDiagnostics(diagnostics);
   const hasCritical = grouped.action.some((item) => item.severity === "critical") || dashboard.collector.last_error;
   const diagnosticTone = hasCritical ? "danger" : grouped.action.length ? "attention" : "neutral";
   const values = [
     ["workspaces", t("metrics.workspaces"), visibleProjects().length, "neutral"],
-    ["active", t("metrics.active"), activeTotal(operational.active), activeTotal(operational.active) ? "attention" : "neutral"],
-    ["results", t("metrics.results"), operational.work_results?.recorded ?? 0, "good"],
-    ["events", t("metrics.events"), eventCount, "neutral"],
+    ["authority", t("metrics.authority"), coordinationActiveDetails().length, coordinationActiveDetails().length ? "attention" : "neutral"],
+    ["conflicts", t("metrics.conflicts"), operational.contention?.active ?? 0, operational.contention?.active ? "danger" : "neutral"],
+    ["collaborations", t("metrics.collaborations"), dashboard.coordination?.relation_count ?? 0, "neutral"],
     ["diagnostics", t("metrics.diagnostics"), grouped.action.length, diagnosticTone],
   ];
   nodes.metrics.replaceChildren(...values.map(([key, label, value, tone]) => {
@@ -262,12 +265,15 @@ function renderInsights() {
       pending.oldest_at ? `${t("insights.oldest")} ${formatCompactAge(pending.oldest_at)}` : "",
     ),
     insightCard(
-      t("insights.protocolOnly"),
-      formatNumber(operational.non_collaborative_runs.length),
+      t("insights.independent"),
+      formatNumber(state.dashboard.coordination?.independent_run_count ?? 0),
       [
-        [operational.event_count, t("insights.totalEvents")],
-        [activeTotal(operational.active), t("insights.currentAuthority")],
+        [state.dashboard.coordination?.participant_count ?? 0, t("insights.participants")],
+        [state.dashboard.coordination?.relation_count ?? 0, t("insights.relations")],
       ],
+      t("insights.independentDetail", {
+        count: formatNumber(state.dashboard.coordination?.total_run_count ?? 0),
+      }),
     ),
   );
 }
@@ -316,8 +322,8 @@ function renderProjectCollaboration() {
 function renderProjects() {
   const projects = visibleProjects()
     .sort((left, right) => {
-    const leftScore = activeTotal(left.active) * 10000 + left.diagnostic_count * 1000 + left.event_count;
-    const rightScore = activeTotal(right.active) * 10000 + right.diagnostic_count * 1000 + right.event_count;
+    const leftScore = activeTotal(left.active) * 10000 + left.diagnostic_count * 1000 + left.coordination_count;
+    const rightScore = activeTotal(right.active) * 10000 + right.diagnostic_count * 1000 + right.coordination_count;
     return rightScore - leftScore || left.name.localeCompare(right.name);
   });
   nodes["project-count"].textContent = formatNumber(projects.length);
@@ -345,7 +351,7 @@ function renderProjects() {
         ? "is-attention"
         : "";
     const factsData = [
-      [project.event_count, t("project.events")],
+      [project.coordination_count, t("project.collaborations")],
       [activeTotal(project.active), t("project.active")],
       [project.diagnostic_count, project.diagnostic_count ? t("project.issues") : t("project.clean")],
     ];
@@ -365,7 +371,7 @@ function renderProjects() {
 }
 
 function renderActive() {
-  const details = state.dashboard.active_details;
+  const details = coordinationActiveDetails();
   nodes["active-count"].textContent = formatNumber(details.length);
   if (!details.length) {
     nodes["active-details"].replaceChildren(empty("empty.activeTitle", "empty.activeBody"));
@@ -524,17 +530,26 @@ function renderEvents() {
 }
 
 function renderGraph() {
+  const coordination = state.dashboard.coordination ?? {events: []};
   const result = renderFlow(
     nodes.flow,
     nodes["flow-owner-rail"],
     nodes["flow-tooltip"],
-    state.dashboard,
+    {...state.dashboard, events: coordination.events ?? []},
     projectNames(),
   );
   nodes["flow-empty"].hidden = result.eventCount !== 0;
   nodes["flow-scroll"].classList.toggle("is-empty", result.eventCount === 0);
   nodes["flow-scrollbar"].hidden = result.eventCount === 0;
   nodes["flow-owner-rail"].hidden = result.eventCount === 0;
+  if (result.eventCount === 0) {
+    const content = empty(
+      "empty.flowTitle",
+      "empty.flowIndependentBody",
+      {count: formatNumber(coordination.independent_run_count ?? 0)},
+    );
+    nodes["flow-empty"].replaceChildren(...content.children);
+  }
   if (state.flowScrollToLatest && result.eventCount) {
     requestAnimationFrame(() => scrollFlowToLatest());
     state.flowScrollToLatest = false;
@@ -542,12 +557,11 @@ function renderGraph() {
     updateFlowScrollbar();
   }
   const pieces = [
-    `${formatNumber(result.laneCount)} ${t("flow.owners")}`,
-    `${formatNumber(result.runCount)} ${t("flow.runSegments")}`,
-    `${formatNumber(result.eventCount)} ${t("flow.events")}`,
+    `${formatNumber(coordination.relation_count ?? 0)} ${t("flow.relations")}`,
+    `${formatNumber(coordination.participant_count ?? 0)} ${t("flow.participants")}`,
+    `${formatNumber(result.eventCount)} ${t("flow.keyEvents")}`,
   ];
-  if (result.workCount) pieces.push(`${formatNumber(result.workCount)} ${t("flow.works")}`);
-  if (state.dashboard.selection.events_truncated) pieces.push(t("flow.truncated"));
+  if (coordination.events_truncated) pieces.push(t("flow.truncated"));
   nodes["flow-summary"].textContent = pieces.join(" · ");
 }
 
@@ -637,6 +651,22 @@ async function collect() {
   }
 }
 
+async function repairDiscovery() {
+  nodes["repair-discovery"].disabled = true;
+  state.repairingDiscovery = true;
+  updateTopbarActions();
+  try {
+    await request("/api/actions/discovery/repair", { method: "POST", body: "{}" });
+    await loadDashboard();
+  } catch (error) {
+    updateStatus("error", "status.error");
+  } finally {
+    nodes["repair-discovery"].disabled = false;
+    state.repairingDiscovery = false;
+    updateTopbarActions();
+  }
+}
+
 async function openRootDialog() {
   nodes["dialog-error"].hidden = true;
   const value = await request("/api/roots");
@@ -652,6 +682,7 @@ function applyTheme(value) {
 }
 
 nodes.refresh.addEventListener("click", collect);
+nodes["repair-discovery"].addEventListener("click", repairDiscovery);
 nodes.workspace.addEventListener("change", () => {
   state.workspace = nodes.workspace.value;
   state.flowScrollToLatest = true;

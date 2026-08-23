@@ -262,6 +262,16 @@ select, input {
   border-bottom: 1px solid var(--border);
 }
 .panel-heading h2 { margin: 2px 0 0; font-size: 17px; letter-spacing: -.02em; }
+.events-panel > summary { cursor: pointer; list-style: none; }
+.events-panel > summary::-webkit-details-marker { display: none; }
+.events-panel > summary::after {
+  content: "+";
+  margin-left: 8px;
+  color: var(--muted);
+  font: 700 18px ui-monospace, monospace;
+}
+.events-panel[open] > summary::after { content: "−"; }
+.events-panel > summary .panel-count { margin-left: auto; }
 .compact-heading { min-height: 52px; }
 .eyebrow { color: var(--accent); font-size: 10px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
 .panel-count { min-width: 28px; padding: 4px 7px; border-radius: 999px; background: var(--surface-muted); color: var(--muted); text-align: center; font: 700 12px ui-monospace, monospace; }

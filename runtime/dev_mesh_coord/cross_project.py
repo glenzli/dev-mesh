@@ -12,7 +12,7 @@ from .storage import read_json, require_identifier, require_slug, write_json_exc
 
 
 EXTENSION_PROTOCOL = "dev-mesh.cross-project-collaboration"
-EXTENSION_VERSION = "20260814.1"
+EXTENSION_VERSION = "20260823.1"
 COLLABORATION_KINDS = {
     "notice",
     "request",

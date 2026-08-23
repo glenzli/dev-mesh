@@ -52,6 +52,21 @@ class ConsoleRuntimeTest(GitWorkspaceTest):
           if (row.height < 96 || layout.timeAxisY + 4 >= row.top) {{
             throw new Error(`timeline ruler collides with lane ${{JSON.stringify({{row, timeAxisY: layout.timeAxisY}})}}`);
           }}
+          const relationLayout = buildFlowLayout([{{
+            event_id: "contention",
+            event: "contention-opened",
+            owner: "agent-a",
+            run_id: "run-a",
+            at: "2026-08-14T08:00:03Z",
+            details: {{contention_participants: [
+              {{owner: "agent-a", run_id: "run-a", scope: "left"}},
+              {{owner: "agent-b", run_id: "run-b", scope: "right"}},
+            ]}},
+          }}]);
+          const referenced = relationLayout.ownerRows.find((item) => item.owner === "agent-b");
+          if (!referenced?.ownerOnly || JSON.stringify(referenced.referencedRunIds) !== JSON.stringify(["run-b"])) {{
+            throw new Error(`referenced participant Run was lost ${{JSON.stringify(relationLayout.ownerRows)}}`);
+          }}
           if (transactionBranchOffset({{event: "transaction-created"}}) !== 15
               || transactionBranchOffset({{event: "transaction-published"}}) !== 15
               || transactionBranchOffset({{event: "claim-created"}}) !== 0) {{
@@ -325,6 +340,53 @@ class ConsoleRuntimeTest(GitWorkspaceTest):
                 )
             )
             self.assertEqual(snapshot["operator_review"]["reviewer"], "local-operator")
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_loopback_discovery_repair_invokes_bound_publisher_once(self) -> None:
+        registry = RootRegistry(Path(self.temporary.name) / "roots.json")
+        calls: list[bool] = []
+        state = ConsoleState(
+            database=Path(self.temporary.name) / "observer.sqlite3",
+            registry=registry,
+            max_depth=0,
+            collect_interval=60,
+            discovery_repair=lambda: calls.append(True) or {"publication": "restored"},
+        )
+        try:
+            server = ConsoleServer("127.0.0.1", 0, state)
+        except PermissionError:
+            state.close()
+            self.skipTest("loopback sockets are unavailable in this sandbox")
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        port = int(server.server_address[1])
+        try:
+            connection = HTTPConnection("127.0.0.1", port, timeout=5)
+            connection.request(
+                "POST",
+                "/api/actions/discovery/repair",
+                body="{}",
+                headers={"Content-Type": "application/json"},
+            )
+            response = connection.getresponse()
+            result = json.loads(response.read())
+            self.assertEqual(response.status, 200)
+            self.assertEqual(result, {"publication": "restored"})
+            self.assertEqual(calls, [True])
+
+            connection.request(
+                "POST",
+                "/api/actions/discovery/repair",
+                body=json.dumps({"unexpected": True}),
+                headers={"Content-Type": "application/json"},
+            )
+            rejected = connection.getresponse()
+            self.assertEqual(rejected.status, 400)
+            self.assertEqual(calls, [True])
+            connection.close()
         finally:
             server.shutdown()
             server.server_close()

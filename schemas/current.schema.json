@@ -1,15 +1,15 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://dev-mesh.local/schemas/coordination/20260814.1/current.schema.json",
+  "$id": "https://dev-mesh.local/schemas/coordination/20260823.1/current.schema.json",
   "title": "Dev Mesh current coordination selector",
   "type": "object",
   "required": ["schema", "protocol", "version", "event_schema", "state", "activated_at"],
   "properties": {
     "schema": {"const": 1},
     "protocol": {"const": "dev-mesh.coordination"},
-    "version": {"const": "20260814.1"},
+    "version": {"const": "20260823.1"},
     "event_schema": {"const": 2},
-    "state": {"const": "20260814.1"},
+    "state": {"const": "20260823.1"},
     "activated_at": {"type": "string", "format": "date-time"}
   },
   "additionalProperties": false

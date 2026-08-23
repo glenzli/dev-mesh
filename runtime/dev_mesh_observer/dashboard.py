@@ -17,6 +17,10 @@ from dev_mesh_coord.cross_project import (
 )
 from dev_mesh_coord.storage import now
 
+from .collaboration_semantics import (
+    COORDINATION_CANDIDATE_EVENTS,
+    project_coordination_events,
+)
 from .reports import ACTIVE_STATUSES, build_report
 
 
@@ -41,6 +45,8 @@ DETAIL_FIELDS = (
     "disposition",
     "blocker_kind",
     "work_state_id",
+    "blocked_by_owner",
+    "alternate_scope",
     "direct_commit_id",
     "result_id",
     "baseline_sha256",
@@ -370,6 +376,9 @@ def _project_event(row: sqlite3.Row) -> dict[str, object]:
         for field in DETAIL_FIELDS
         if record.get(field) is not None
     }
+    cross_project = _cross_project_envelope(record)
+    if cross_project is not None:
+        details["cross_project_phase"] = cross_project["phase"]
     return {
         "event_id": str(row["event_id"]),
         "at": str(row["at"]),
@@ -445,7 +454,34 @@ def build_dashboard(
             (*timeline_arguments, event_limit),
         )
     )
-    events = [_project_event(row) for row in reversed(event_rows)]
+    candidate_names = sorted(COORDINATION_CANDIDATE_EVENTS)
+    candidate_placeholders = ", ".join("?" for _item in candidate_names)
+    coordination_rows = list(
+        connection.execute(
+            f"""
+            SELECT workspace_id, event_id, at, event, authority_effect, owner, run_id,
+                   scope, transaction_id, contention_id, handoff_id, record_json
+            FROM events
+            WHERE {timeline_where} AND event IN ({candidate_placeholders})
+            ORDER BY at DESC, event_id DESC
+            LIMIT ?
+            """,
+            (*timeline_arguments, *candidate_names, event_limit),
+        )
+    )
+    projected_events: dict[tuple[str, str], dict[str, object]] = {}
+
+    def project_rows(rows: list[sqlite3.Row]) -> list[dict[str, object]]:
+        result = []
+        for row in reversed(rows):
+            key = (str(row["workspace_id"]), str(row["event_id"]))
+            event = projected_events.setdefault(key, _project_event(row))
+            result.append(event)
+        return result
+
+    events = project_rows(event_rows)
+    coordination_candidates = project_rows(coordination_rows)
+    all_events = list(projected_events.values())
 
     event_counts_by_workspace: Counter[str] = Counter()
     event_kinds_by_workspace: dict[str, Counter[str]] = defaultdict(Counter)
@@ -467,22 +503,23 @@ def build_dashboard(
     active_details: list[dict[str, object]] = []
     displayed_contentions = {
         (str(event["workspace_id"]), str(event["contention_id"]))
-        for event in events
+        for event in all_events
         if event.get("contention_id")
     }
     displayed_transactions = {
         (str(event["workspace_id"]), str(event["transaction_id"]))
-        for event in events
+        for event in all_events
         if event.get("transaction_id")
     }
     displayed_handoffs = {
         (str(event["workspace_id"]), str(event["handoff_id"]))
-        for event in events
+        for event in all_events
         if event.get("handoff_id")
     }
     contention_participants: dict[tuple[str, str], list[dict[str, str]]] = {}
     transaction_details: dict[tuple[str, str], dict[str, object]] = {}
     handoff_participants: dict[tuple[str, str], dict[str, str]] = {}
+    work_details: dict[tuple[str, str], dict[str, object]] = {}
     snapshot_arguments: list[object] = [PROTOCOL_VERSION]
     snapshot_where = "protocol_version = ?"
     if workspace is not None:
@@ -540,6 +577,19 @@ def build_dashboard(
                     )
                     if isinstance(record.get(field), str)
                 }
+        if kind == "work":
+            work_state_id = record.get("work_state_id")
+            if isinstance(work_state_id, str):
+                work_details[(identifier, work_state_id)] = {
+                    field: record[field]
+                    for field in (
+                        "blocked_by_owner",
+                        "alternate_scope",
+                        "contention_id",
+                        "disposition",
+                    )
+                    if record.get(field) is not None
+                }
         if not _active_snapshot(record, kind, lifecycle):
             continue
         active_counts_by_workspace[identifier][kind] += 1
@@ -554,7 +604,7 @@ def build_dashboard(
             }
         active_details.append(active_detail)
 
-    for event in events:
+    for event in all_events:
         contention_id = event.get("contention_id")
         if contention_id:
             participants = contention_participants.get(
@@ -578,12 +628,19 @@ def build_dashboard(
             )
             for field, value in participants.items():
                 event["details"].setdefault(field, value)
+        work_state_id = event["details"].get("work_state_id")
+        if isinstance(work_state_id, str):
+            for field, value in work_details.get(
+                (str(event["workspace_id"]), work_state_id),
+                {},
+            ).items():
+                event["details"].setdefault(field, value)
 
     # Messages are addressed to an owner, not an arbitrary Run. Once an acknowledgement
     # supplies the exact receiving Run, project that identity onto both ends of the visible
     # exchange so the Console can draw a factual Run-to-Run relationship.
     message_participants: dict[tuple[str, str], dict[str, str]] = {}
-    for event in events:
+    for event in all_events:
         message_id = event["details"].get("message_id")
         if not isinstance(message_id, str):
             continue
@@ -601,7 +658,7 @@ def build_dashboard(
                 participants.setdefault("target_owner", str(event["owner"]))
                 participants.setdefault("target_run_id", str(event["run_id"]))
 
-    for event in events:
+    for event in all_events:
         message_id = event["details"].get("message_id")
         if not isinstance(message_id, str):
             continue
@@ -610,6 +667,41 @@ def build_dashboard(
             {},
         ).items():
             event["details"].setdefault(field, value)
+
+    coordination = project_coordination_events(coordination_candidates)
+    run_rows = list(
+        connection.execute(
+            f"""
+            SELECT DISTINCT workspace_id, owner, run_id
+            FROM events
+            WHERE {timeline_where}
+              AND owner IS NOT NULL AND run_id IS NOT NULL
+            """,
+            tuple(timeline_arguments),
+        )
+    )
+    observed_run_identities = {
+        (str(row["workspace_id"]), str(row["owner"]), str(row["run_id"]))
+        for row in run_rows
+    }
+    collaboration_run_identities = {
+        (
+            str(item["workspace_id"]),
+            str(item["owner"]),
+            str(item["run_id"]),
+        )
+        for item in coordination["participant_identities"]
+        if isinstance(item, dict)
+    }
+    coordination.update(
+        {
+            "total_run_count": len(observed_run_identities),
+            "independent_run_count": len(
+                observed_run_identities - collaboration_run_identities
+            ),
+            "events_truncated": len(coordination_rows) == event_limit,
+        }
+    )
 
     operational = build_report(
         connection,
@@ -622,6 +714,12 @@ def build_dashboard(
             diagnostics_by_workspace[str(item["workspace_id"])] += 1
 
     projects = []
+    coordination_counts_by_workspace = Counter(
+        {
+            str(identifier): int(count)
+            for identifier, count in coordination["relation_counts_by_workspace"].items()
+        }
+    )
     workspace_names: dict[str, str] = {}
     for row in workspace_rows:
         identifier = str(row["workspace_id"])
@@ -636,6 +734,10 @@ def build_dashboard(
             "not_observed_since": row["not_observed_since"],
             "event_count": event_counts_by_workspace[identifier],
             "event_counts": dict(sorted(event_kinds_by_workspace[identifier].items())),
+            "coordination_event_count": int(
+                coordination["event_counts_by_workspace"].get(identifier, 0)
+            ),
+            "coordination_count": coordination_counts_by_workspace[identifier],
             "active": dict(sorted(active_counts_by_workspace[identifier].items())),
             "diagnostic_count": diagnostics_by_workspace[identifier],
         }
@@ -663,6 +765,7 @@ def build_dashboard(
         "operational": operational,
         "projects": projects,
         "project_collaboration": project_collaboration,
+        "coordination": coordination,
         "events": events,
         "active_details": active_details,
     }

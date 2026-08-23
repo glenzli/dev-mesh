@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable
 from pathlib import Path
 
 from dev_mesh_coord.storage import now
@@ -21,6 +22,7 @@ class ConsoleState:
         registry: RootRegistry,
         max_depth: int,
         collect_interval: float,
+        discovery_repair: Callable[[], dict[str, object]] | None = None,
     ):
         if max_depth < 0 or max_depth > 12:
             raise ValueError("max depth must be between 0 and 12")
@@ -30,6 +32,7 @@ class ConsoleState:
         self.registry = registry
         self.max_depth = max_depth
         self.collect_interval = collect_interval
+        self._discovery_repair = discovery_repair
         self.recovery = ReviewedRecovery(database=self.database, registry=self.registry)
         self._collect_lock = threading.Lock()
         self._status_lock = threading.RLock()
@@ -137,6 +140,14 @@ class ConsoleState:
         else:
             result["collection"] = {"refreshed": True, "result": collection}
         return result
+
+    def repair_discovery(self) -> dict[str, object]:
+        if self._discovery_repair is None:
+            raise ValueError("Infra Discovery publication is disabled")
+        return self._discovery_repair()
+
+    def set_discovery_repair(self, repair: Callable[[], dict[str, object]]) -> None:
+        self._discovery_repair = repair
 
     def start(self) -> None:
         if self._thread is not None:

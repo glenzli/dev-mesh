@@ -1,11 +1,11 @@
 # Dev Mesh Architecture
 
 Dev Mesh coordinates short-lived Agent work inside one shared Git workspace. The activated
-coordination contract is `dev-mesh.coordination@20260814.1`; protocol versions use `YYYYMMDD.x` and
+coordination contract is `dev-mesh.coordination@20260823.1`; protocol versions use `YYYYMMDD.x` and
 are immutable after activation.
 
 Cross-project task correlation is the separate optional
-`dev-mesh.cross-project-collaboration@20260814.1` extension. It reuses the base event carrier and
+`dev-mesh.cross-project-collaboration@20260823.1` extension. It reuses the base event carrier and
 does not change workspace authority or require a control-plane migration.
 
 ## Runtime boundaries
@@ -32,8 +32,8 @@ does not change workspace authority or require a control-plane migration.
 └── coord/
     ├── current.json
     ├── cutovers/
-    ├── archive/<cutover-id>/20260812.1/
-    └── 20260814.1/
+    ├── analysis/<cutover-id>/20260814.1.json
+    └── 20260823.1/
         ├── protocol.json
         ├── events/
         ├── runs/
@@ -51,6 +51,10 @@ does not change workspace authority or require a control-plane migration.
 Materialized snapshots are authority. Immutable events are audit evidence. Observer projections are
 diagnostic only. Timeouts and stale timestamps never transfer authority.
 
+Version cutover retains only a bounded, decontented event envelope in `coord/analysis/`. It discards
+the complete retired state and earlier full archives after target activation; the retained record is
+never a producer input and cannot grant or reconstruct authority.
+
 Legacy `.agent-coordination/` state is never migrated into current authority. Cutover atomically
 moves the complete legacy tree to an external archive, initializes empty current state, and leaves
 only `.agent-coordination/TOMBSTONE.json` at the old location to fence legacy writers.
@@ -58,12 +62,18 @@ only `.agent-coordination/TOMBSTONE.json` at the old location to fence legacy wr
 ## Normal lifecycle
 
 ```text
-join Run -> create bounded Claim -> edit -> validate -> Work Result -> release -> leave
+join Run -> create or reuse bounded Claim -> edit -> validate -> contribution-aware finish -> leave
 ```
 
-No overlap means no contention, checkout, or transaction. An overlapping request is pending and has
-no write authority until a bounded contention decision completes. Microtransactions are an advanced
-response to clean, semantically independent overlap; they are not per-Agent workspaces.
+No cross-Run overlap means no contention, checkout, or transaction. A same-Run request covered by an
+existing Claim reuses it without another event. Finish records a Work Result only for contributed
+source bytes; clean inspection releases directly. An overlapping request from another Run is pending
+and has no write authority until a bounded contention decision completes. Microtransactions are an
+advanced response to clean, semantically independent overlap; they are not per-Agent workspaces.
+
+The Console consumes a collaboration projection, not raw event density. Its default flow contains
+only cross-Run contention, interaction, dependency, transaction, and recovery facts. Routine Run and
+Claim events remain available in the collapsed audit view and never justify producer-side ceremony.
 
 All cooperative canonical Git mutations pass through the managed direct-commit or transaction
 publication boundary. Both share a workspace-wide inherited-FD fence, while each transaction keeps
@@ -71,8 +81,8 @@ its own exact materialization and cleanup facts.
 
 ## Navigation
 
-- Normative behavior: `contracts/dev-mesh-coordination-20260814.1.md`
-- Cross-project correlation: `contracts/dev-mesh-cross-project-collaboration-20260814.1.md`
+- Normative behavior: `contracts/dev-mesh-coordination-20260823.1.md`
+- Cross-project correlation: `contracts/dev-mesh-cross-project-collaboration-20260823.1.md`
 - Current/event schemas: `schemas/`
 - Retirement procedure: `docs/CUTOVER.md`
 - Runtime and fault-injection checks: `runtime/tests/`

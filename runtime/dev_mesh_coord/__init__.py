@@ -1,4 +1,4 @@
-"""Implementation of dev-mesh.coordination@20260814.1."""
+"""Implementation of dev-mesh.coordination@20260823.1."""
 
 from .constants import EVENT_SCHEMA, PROTOCOL, PROTOCOL_VERSION
 

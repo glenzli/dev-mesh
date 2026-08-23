@@ -103,17 +103,17 @@ export function buildFlowLayout(
     };
   });
   const ownerReferences = new Map();
-  const noteOwner = (owner, at) => {
+  const noteOwner = (owner, runId, at) => {
     if (!owner || !at) return;
     if (!ownerReferences.has(owner)) ownerReferences.set(owner, []);
-    ownerReferences.get(owner).push(at);
+    ownerReferences.get(owner).push({at, runId});
   };
   events.forEach((event) => {
-    noteOwner(event.owner, event.at);
-    noteOwner(event.details?.source_owner, event.at);
-    noteOwner(event.details?.target_owner, event.at);
+    noteOwner(event.owner, event.run_id, event.at);
+    noteOwner(event.details?.source_owner, event.details?.source_run_id, event.at);
+    noteOwner(event.details?.target_owner, event.details?.target_run_id, event.at);
     (event.details?.contention_participants ?? []).forEach((participant) => {
-      noteOwner(participant.owner, event.at);
+      noteOwner(participant.owner, participant.run_id, event.at);
     });
   });
   const rowsByOwner = new Map();
@@ -126,20 +126,31 @@ export function buildFlowLayout(
   });
   const ownerRows = [...rowsByOwner.entries()].map(([owner, runs]) => {
     const references = ownerReferences.get(owner) ?? [];
+    const referenceTimes = references.map((reference) => reference.at);
     const slotCount = runs.length ? assignRunSlots(runs) : 1;
     const first = runs.length
       ? runs.reduce((value, run) => run.first < value ? run.first : value, runs[0].first)
-      : references.reduce((value, at) => at < value ? at : value, references[0]);
+      : referenceTimes.reduce(
+        (value, at) => at < value ? at : value,
+        referenceTimes[0],
+      );
     const recentStart = runs.length
       ? runs.reduce((value, run) => run.first > value ? run.first : value, runs[0].first)
-      : references.reduce((value, at) => at > value ? at : value, references[0]);
+      : referenceTimes.reduce(
+        (value, at) => at > value ? at : value,
+        referenceTimes[0],
+      );
     const last = runs.length
       ? runs.reduce((value, run) => run.last > value ? run.last : value, runs[0].last)
-      : references.reduce((value, at) => at > value ? at : value, references[0]);
+      : referenceTimes.reduce(
+        (value, at) => at > value ? at : value,
+        referenceTimes[0],
+      );
     return {
       owner,
       runs,
       ownerOnly: runs.length === 0,
+      referencedRunIds: [...new Set(references.map((reference) => reference.runId).filter(Boolean))],
       slotCount,
       height: laneHeight + (slotCount - 1) * subLaneGap,
       first,

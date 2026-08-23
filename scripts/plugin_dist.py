@@ -28,8 +28,8 @@ PACKAGE_FILES = (
     "runtime/pyproject.toml",
     "schemas/event.schema.json",
     "schemas/current.schema.json",
-    "contracts/dev-mesh-coordination-20260814.1.md",
-    "contracts/dev-mesh-cross-project-collaboration-20260814.1.md",
+    "contracts/dev-mesh-coordination-20260823.1.md",
+    "contracts/dev-mesh-cross-project-collaboration-20260823.1.md",
     "contracts/dev-mesh-observer-status-20260812.1.md",
 )
 FORBIDDEN_PARTS = frozenset({".dev-mesh", "archive", "tests", "__pycache__"})

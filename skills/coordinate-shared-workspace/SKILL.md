@@ -17,7 +17,7 @@ occurs; do not read the full protocol or immutable event directory during routin
   contention.
 - Cooperating Agents must not run raw canonical `git add`, `git commit`, `git merge`, or ref
   updates. Use `direct-commit` or transaction publication. Read-only Git inspection is allowed.
-- Events are immutable diagnostics. Materialized state under `.dev-mesh/coord/20260814.1/` is
+- Events are immutable diagnostics. Materialized state under `.dev-mesh/coord/20260823.1/` is
   authoritative; Observer data never grants or reconstructs authority.
 - Keep `.dev-mesh/` local unless the user explicitly authorizes committing it.
 
@@ -72,6 +72,11 @@ Use one bounded intent:
 
 Declare semantic resources only when they affect overlap routing. Do not list incidental reads.
 
+If the same Run already owns one Claim that fully covers the requested paths and semantic resources,
+`claim` returns that existing Claim with `claim_reused: true`; use the returned `scope` and do not
+create another lifecycle. If the existing Claim is narrower, extend that exact Claim with
+`claim-update`. Same-Run overlap is scope hygiene, not Agent contention.
+
 The default `--projection-mode git-tree` covers tracked and ordinary untracked source paths. For an
 exact small regular file that is intentionally excluded by Git, opt in explicitly:
 
@@ -107,11 +112,10 @@ python3 <skill>/scripts/coord.py --root ROOT claim-baseline-accept \
 - `preserve_state_and_inspect_verbose_recovery_facts`: stop mutation and load
   [recovery-and-cutover.md](references/recovery-and-cutover.md).
 
-6. Finish editing independently of Git publication. For dirty work, create an immutable,
-non-authoritative Work Result and release the Claim:
+6. Finish editing independently of Git publication. Use the contribution-aware routine finish:
 
 ```bash
-python3 <skill>/scripts/coord.py --root ROOT claim-complete \
+python3 <skill>/scripts/coord.py --root ROOT claim-finish \
   --result-id RESULT --scope SCOPE --owner OWNER --run-id RUN \
   --summary "what changed" \
   --validation-evidence "checks and results"
@@ -120,9 +124,12 @@ python3 <skill>/scripts/coord.py --root ROOT leave \
   --owner OWNER --run-id RUN --outcome completed --summary "completed result"
 ```
 
-`claim-complete` does not create a commit and does not keep the paths locked. A later overlapping
-Claim must inspect and accept the exact inherited dirty baseline before editing. Work Results are
-attribution and validation evidence, not private branches or rollback checkpoints.
+`claim-finish` creates an immutable, non-authoritative Work Result only when the Claim contributed
+source bytes. If the paths are clean or still equal the accepted inherited baseline, it releases the
+Claim without inventing a zero-change result. A later overlapping Claim must inspect and accept the
+exact inherited dirty baseline before editing. Work Results are attribution and validation evidence,
+not private branches, operation receipts, or rollback checkpoints. `claim-complete` remains the
+exact low-level completion primitive for recovery and compatible callers.
 
 An overlap is materialized directly as a non-authoritative `pending-arbitration` Claim; callers do
 not need to predict overlap or add a special flag. A changed inherited baseline is also recoverable:
@@ -163,7 +170,7 @@ ordinary task completion depend on a commit.
 Pause is only for work that genuinely cannot proceed because of authorization, environment,
 dependency, or an external resource. Record the blocker, checkpoint, and resume condition; never
 use pause to mean complete, awaiting optional commit, handed off, or waiting for a Claim overlap.
-Use the contention wait path for overlaps and `claim-complete` for finished dirty work.
+Use the contention wait path for overlaps and `claim-finish` for finished routine work.
 
 7. Clean or cancelled work may release without a Work Result, then leave:
 
@@ -226,6 +233,6 @@ replace `cross-project-open` and receiver `bind` evidence with matching names or
 - Use Observer reports to understand system behavior; never use them to decide write permission.
 
 For exact protocol guarantees, consult
-`contracts/dev-mesh-coordination-20260814.1.md` in the Dev Mesh repository only when changing
+`contracts/dev-mesh-coordination-20260823.1.md` in the Dev Mesh repository only when changing
 the core protocol itself. Cross-project correlation is the separate compatible extension
-`contracts/dev-mesh-cross-project-collaboration-20260814.1.md`.
+`contracts/dev-mesh-cross-project-collaboration-20260823.1.md`.

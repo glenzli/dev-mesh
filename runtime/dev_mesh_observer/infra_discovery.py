@@ -266,6 +266,7 @@ class ObserverFacilityService:
         self._listener: socket.socket | None = None
         self._stop = threading.Event()
         self._serve_thread: threading.Thread | None = None
+        self._publication_lock = threading.RLock()
         self._sequence_lock = threading.Lock()
         self._sequence = 0
         self._started_once = False
@@ -327,6 +328,57 @@ class ObserverFacilityService:
             daemon=True,
         )
         self._serve_thread.start()
+
+    def repair_publication(self) -> dict[str, object]:
+        """Verify this live offer and restore its Discovery manifest if needed.
+
+        This is deliberately operator-triggered rather than a background repair loop.
+        It never rotates the endpoint or generation, so a successful repair only restores
+        discovery of the already-running publisher.
+        """
+        with self._publication_lock:
+            listener = self._listener
+            if listener is None:
+                raise InfraDiscoveryError("Observer publisher is not running")
+            try:
+                info = self.socket_path.lstat()
+                bound_path = listener.getsockname()
+            except OSError as error:
+                raise InfraDiscoveryError("Observer publisher socket is unavailable") from error
+            if (
+                not stat.S_ISSOCK(info.st_mode)
+                or info.st_uid != os.geteuid()
+                or stat.S_IMODE(info.st_mode) != 0o600
+                or bound_path != str(self.socket_path)
+            ):
+                raise InfraDiscoveryError("Observer publisher socket is unsafe")
+
+            expected = self._manifest()
+            current: object | None = None
+            try:
+                manifest_info = self.manifest_path.lstat()
+                payload = self.manifest_path.read_bytes()
+                if (
+                    stat.S_ISREG(manifest_info.st_mode)
+                    and manifest_info.st_uid == os.geteuid()
+                    and stat.S_IMODE(manifest_info.st_mode) == 0o600
+                    and len(payload) <= MANIFEST_LIMIT
+                ):
+                    current = json.loads(payload.decode("utf-8"), object_pairs_hook=_strict_object)
+            except (OSError, UnicodeDecodeError, ValueError, json.JSONDecodeError):
+                current = None
+            if current == expected:
+                status = "current"
+            else:
+                self._write_manifest()
+                status = "restored"
+            return {
+                "kind": SERVICE_KIND,
+                "protocol": PROTOCOL_ID,
+                "protocol_version": PROTOCOL_VERSION,
+                "generation": self.service["generation"],
+                "publication": status,
+            }
 
     def stop(self) -> None:
         self._stop.set()

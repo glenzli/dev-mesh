@@ -5,15 +5,15 @@ contract by date alone: each protocol family versions independently.
 
 ## Current
 
-- `dev-mesh-coordination-20260814.1.md` — active workspace authority and collaboration contract.
-- `dev-mesh-cross-project-collaboration-20260814.1.md` — current optional cross-workspace evidence.
+- `dev-mesh-coordination-20260823.1.md` — active workspace authority and collaboration contract.
+- `dev-mesh-cross-project-collaboration-20260823.1.md` — current optional cross-workspace evidence.
 - `dev-mesh-observer-status-20260812.1.md` — current external Observer facility contract; its older
   date does not make it superseded.
 
 ## Archive
 
-Released contracts that no longer grant writable state live in `archive/`. They are immutable
-review and cutover evidence, not implementation choices. Routine Agents, skills, producers, and
-Observers must not load them. Read them only for an exact historical audit or supported cutover.
+Selected released contracts that no longer grant writable state live in `archive/`. They are
+immutable review evidence, not implementation choices. A deliberately discarded contract may live
+only in Git history. Routine Agents, skills, producers, and Observers must not load either source.
 
 Unreleased drafts are removed rather than archived; Git history is sufficient for them.

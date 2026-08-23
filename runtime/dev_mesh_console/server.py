@@ -141,6 +141,11 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                     raise ValueError("collect request does not accept fields")
                 self._json(self.server.state.collect())
                 return
+            if target.path == "/api/actions/discovery/repair":
+                if value:
+                    raise ValueError("discovery repair request does not accept fields")
+                self._json(self.server.state.repair_discovery())
+                return
             if target.path == "/api/roots":
                 if set(value) != {"path"} or not isinstance(value.get("path"), str):
                     raise ValueError("root request requires exactly one string path")
@@ -187,7 +192,12 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                 )
                 return
         except RuntimeError as error:
-            self._error(HTTPStatus.CONFLICT, "collection_busy", str(error))
+            code = (
+                "discovery_unavailable"
+                if target.path == "/api/actions/discovery/repair"
+                else "collection_busy"
+            )
+            self._error(HTTPStatus.CONFLICT, code, str(error))
             return
         except (ValueError, OSError) as error:
             self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(error))

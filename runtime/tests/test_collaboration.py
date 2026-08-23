@@ -48,6 +48,42 @@ class CollaborationTest(GitWorkspaceTest):
         opened = contention.open_for_claim(self.root, scope="parallel")
         return pending, opened
 
+    def test_same_run_reuses_covering_claim_without_opening_contention(self) -> None:
+        plane = resolve(self.root)
+        before = len(list((plane.state_root / "events").glob("*.json")))
+
+        reused = create_claim(
+            self.root,
+            scope="duplicate-primary",
+            owner="agent-a",
+            run_id="run-a",
+            task="same task asks for the same authority",
+            paths=["app.txt"],
+            semantic_writes=["router"],
+        )
+
+        self.assertTrue(reused["claim_reused"])
+        self.assertEqual(reused["scope"], "primary")
+        self.assertEqual(reused["requested_scope"], "duplicate-primary")
+        self.assertFalse((plane.state_root / "claims/duplicate-primary.json").exists())
+        self.assertEqual(list((plane.state_root / "contentions/active").glob("*.json")), [])
+        self.assertEqual(len(list((plane.state_root / "events").glob("*.json"))), before)
+
+    def test_same_run_must_extend_claim_when_existing_authority_is_too_narrow(self) -> None:
+        with self.assertRaisesRegex(ValueError, "reuse a covering Claim, extend it"):
+            create_claim(
+                self.root,
+                scope="broader-primary",
+                owner="agent-a",
+                run_id="run-a",
+                task="same task needs a broader authority set",
+                paths=["app.txt", "other.txt"],
+                semantic_writes=["router"],
+            )
+        plane = resolve(self.root)
+        self.assertFalse((plane.state_root / "claims/broader-primary.json").exists())
+        self.assertEqual(list((plane.state_root / "contentions/active").glob("*.json")), [])
+
     def test_overlap_is_pending_and_opens_one_idempotent_contention(self) -> None:
         pending, opened = self._overlap()
         self.assertEqual(pending["status"], "pending-arbitration")

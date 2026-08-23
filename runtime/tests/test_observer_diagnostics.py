@@ -113,6 +113,52 @@ class ObserverIntegrityTest(GitWorkspaceTest):
             report["owner_edges"],
         )
 
+    def test_same_run_claim_reuse_remains_non_collaborative(self) -> None:
+        initialize(self.root)
+        join_run(self.root, run_id="run-solo", owner="agent-solo", task="solo edit")
+        create_claim(
+            self.root,
+            scope="solo-primary",
+            owner="agent-solo",
+            run_id="run-solo",
+            task="solo edit",
+            paths=["app.txt"],
+        )
+        reused = create_claim(
+            self.root,
+            scope="solo-duplicate",
+            owner="agent-solo",
+            run_id="run-solo",
+            task="same solo edit",
+            paths=["app.txt"],
+        )
+        self.assertTrue(reused["claim_reused"])
+        release_claim(
+            self.root,
+            scope="solo-primary",
+            owner="agent-solo",
+            run_id="run-solo",
+            summary="solo edit finished cleanly",
+        )
+        leave_run(
+            self.root,
+            run_id="run-solo",
+            owner="agent-solo",
+            outcome="completed",
+            summary="solo edit complete",
+        )
+
+        database = Path(self.temporary.name) / "observer-solo.sqlite3"
+        with Catalog(database) as catalog:
+            catalog.collect_workspace(self.root)
+            report = catalog.report(workspace=workspace_id(self.root))
+
+        self.assertEqual(
+            {item["run_id"] for item in report["non_collaborative_runs"]},
+            {"run-solo"},
+        )
+        self.assertEqual(report["owner_edges"], [])
+
     def test_completed_dirty_work_is_non_authoritative_and_cutover_ready(self) -> None:
         initialize(self.root)
         join_run(self.root, run_id="run-a", owner="agent-a", task="record result")

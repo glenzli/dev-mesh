@@ -92,20 +92,22 @@ Cutover is fresh-start retirement, not object migration. Do not run it during or
 `docs/CUTOVER.md` in the Dev Mesh repository before proceeding and require explicit user
 authorization for every destructive or global step.
 
-For a current `20260812.1` workspace, build the repository-local version plan:
+For a current `20260814.1` workspace, build the repository-local version plan. Review both the
+authority inventory and `analysis_retention`: the latter is the bounded, content-free history that
+will remain after the full old state is discarded.
 
 ```bash
 python3 <skill>/scripts/coord.py --root ROOT --verbose version-cutover-plan \
   --cutover-id CUTOVER_ID
 ```
 
-After every writer is stopped, apply and verify the exact digest. Retiring nonempty old authority
-requires the explicit second confirmation:
+After every writer is stopped, apply and verify the exact digest. Destruction of the complete old
+state always requires the explicit second confirmation:
 
 ```bash
 python3 <skill>/scripts/coord.py --root ROOT version-cutover-apply \
   --cutover-id CUTOVER_ID --plan-digest PLAN_DIGEST \
-  --confirm-agents-stopped --confirm-discard-old-authority
+  --confirm-agents-stopped --confirm-discard-old-state
 
 python3 <skill>/scripts/coord.py --root ROOT version-cutover-verify \
   --cutover-id CUTOVER_ID --plan-digest PLAN_DIGEST
@@ -136,6 +138,8 @@ python3 <skill>/scripts/coord.py --root ROOT cutover-verify \
   --journal EXTERNAL_JOURNAL --plan-digest PLAN_DIGEST
 ```
 
-The exact Git root, protocol id, cutover id, archive destination, tombstone, and journal digest must
-all match. A symlink or path-identity change fails closed. After verification, install/relink the new
-skill and start only new Runs; do not import legacy Claims into the new authority plane.
+Version cutover binds the exact analysis-retention digest and any prior archive digest before
+destruction. Legacy retirement instead binds the external archive destination and tombstone. In
+both cases the exact Git root, protocol id, cutover id, and journal digest must match; a symlink or
+path-identity change fails closed. After verification, install/relink the new skill and start only
+new Runs; do not import retired Claims into the new authority plane.

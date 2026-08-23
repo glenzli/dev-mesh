@@ -410,7 +410,11 @@ function renderOwnerRail(ownerRail, layout) {
     const run = document.createElement("span");
     run.className = "flow-owner-run";
     run.textContent = row.ownerOnly
-      ? t("flow.noRuns")
+      ? row.referencedRunIds.length === 1
+        ? short(row.referencedRunIds[0], 25)
+        : row.referencedRunIds.length
+          ? `${row.referencedRunIds.length} ${t("flow.runSegments")}`
+          : t("flow.ownerTarget")
       : row.runs.length === 1
         ? short(row.runs[0].runId, 25)
         : `${row.runs.length} ${t("flow.runSegments")}`;
@@ -771,17 +775,21 @@ export function renderFlow(svg, ownerRail, tooltip, dashboard, projectNames) {
     const linkedLanes = new Set();
     (event.details?.contention_participants ?? []).forEach((participant) => {
       const targetKey = `${participant.owner}\u0000${participant.run_id}`;
-      if (targetKey === laneKey(event) || linkedLanes.has(targetKey) || !laneKeys.has(targetKey)) {
+      if (targetKey === laneKey(event) || linkedLanes.has(targetKey)) {
         return;
       }
       linkedLanes.add(targetKey);
-      const targetY = lanePositions.get(targetKey);
+      const exactTarget = laneKeys.has(targetKey);
+      const targetRow = ownerRowsByOwner.get(participant.owner);
+      const targetY = exactTarget ? lanePositions.get(targetKey) : targetRow?.y;
+      if (!Number.isFinite(targetY)) return;
       if (targetY === laneY) return;
       const direction = targetY > y ? 1 : -1;
       const cross = element("path", {
         d: `M ${x} ${y + direction * 8} V ${targetY - direction * 8}`,
       });
       cross.classList.add("flow-edge", "conflict", "cross-lane");
+      if (!exactTarget) cross.classList.add("owner-level");
       const anchor = element("rect", {
         x: x - 4,
         y: targetY - 4,
@@ -790,6 +798,7 @@ export function renderFlow(svg, ownerRail, tooltip, dashboard, projectNames) {
         transform: `rotate(45 ${x} ${targetY})`,
       });
       anchor.classList.add("conflict-link-node");
+      if (!exactTarget) anchor.classList.add("owner-level");
       svg.insertBefore(cross, node);
       svg.insertBefore(anchor, node);
     });

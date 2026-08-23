@@ -26,13 +26,13 @@ class PluginPackagingTest(unittest.TestCase):
                 revision="abcdef1234567890abcdef1234567890abcdef12",
                 require_clean=False,
             )
-            self.assertEqual(metadata["version"], "0.1.0+codex.abcdef123456")
+            self.assertEqual(metadata["version"], "0.2.0+codex.abcdef123456")
             self.assertEqual(
                 json.loads((package / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))["version"],
                 metadata["version"],
             )
             self.assertTrue((package / "runtime" / "dev_mesh_coord" / "cli.py").is_file())
-            self.assertTrue((package / "contracts" / "dev-mesh-coordination-20260814.1.md").is_file())
+            self.assertTrue((package / "contracts" / "dev-mesh-coordination-20260823.1.md").is_file())
             self.assertFalse((package / "runtime" / "tests").exists())
             self.assertFalse((package / "contracts" / "archive").exists())
             self.assertFalse((package / ".dev-mesh").exists())

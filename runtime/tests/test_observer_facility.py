@@ -171,6 +171,24 @@ class ObserverFacilityStatusTest(GitWorkspaceTest):
         self.assertEqual(invalid["schema"], ERROR_SCHEMA)
         self.assertEqual(invalid["error"], {"code": "invalid_request"})
 
+    def test_manual_repair_restores_missing_live_registration(self) -> None:
+        self.service = ObserverFacilityService(self._snapshot, runtime_root=self.runtime_root)
+        try:
+            self.service.start()
+        except PermissionError:
+            self.skipTest("Unix sockets are unavailable in this sandbox")
+        expected = json.loads(self.service.manifest_path.read_text(encoding="utf-8"))
+        self.service.manifest_path.unlink()
+
+        restored = self.service.repair_publication()
+        current = self.service.repair_publication()
+
+        self.assertEqual(restored["publication"], "restored")
+        self.assertEqual(current["publication"], "current")
+        self.assertEqual(restored["generation"], expected["service"]["generation"])
+        self.assertEqual(json.loads(self.service.manifest_path.read_text(encoding="utf-8")), expected)
+        self.assertTrue(self.service.socket_path.exists())
+
     def test_restart_rotates_generation_and_endpoint_but_keeps_manifest(self) -> None:
         self.service = ObserverFacilityService(self._snapshot, runtime_root=self.runtime_root)
         try:

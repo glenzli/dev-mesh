@@ -61,6 +61,90 @@ class WorkResultTest(GitWorkspaceTest):
         )
         self.assertEqual(closed["status"], "closed")
 
+    def test_lightweight_finish_releases_unchanged_claim_without_result(self) -> None:
+        result = work_results.complete_claim(
+            self.root,
+            result_id="unused-clean-result",
+            scope="shared-edit",
+            owner="agent-a",
+            run_id="run-a",
+            summary="inspection completed without source changes",
+            validation_evidence="focused inspection passed",
+            release_if_unchanged=True,
+        )
+
+        self.assertEqual(result["status"], "released")
+        self.assertEqual(result["completion_kind"], "released-unchanged")
+        self.assertFalse(result["work_result_created"])
+        plane = resolve(self.root)
+        self.assertFalse((plane.state_root / "work-results/unused-clean-result.json").exists())
+        events = [
+            json.loads(path.read_text())
+            for path in (plane.state_root / "events").glob("*.json")
+        ]
+        self.assertEqual(sum(event["event"] == "claim-released" for event in events), 1)
+        self.assertFalse(any(event["event"] == "claim-completed" for event in events))
+        retried = work_results.complete_claim(
+            self.root,
+            result_id="unused-clean-result",
+            scope="shared-edit",
+            owner="agent-a",
+            run_id="run-a",
+            summary="inspection completed without source changes",
+            validation_evidence="focused inspection passed",
+            release_if_unchanged=True,
+        )
+        self.assertEqual(retried["archive"], result["archive"])
+        with self.assertRaisesRegex(ValueError, "retry differs"):
+            work_results.complete_claim(
+                self.root,
+                result_id="unused-clean-result",
+                scope="shared-edit",
+                owner="agent-a",
+                run_id="run-a",
+                summary="different retry summary",
+                validation_evidence="focused inspection passed",
+                release_if_unchanged=True,
+            )
+
+    def test_lightweight_finish_does_not_reattribute_unchanged_inherited_work(self) -> None:
+        (self.root / "app.txt").write_text("base\nfirst result\n", encoding="utf-8")
+        self._complete()
+        join_run(self.root, run_id="run-b", owner="agent-b", task="inspect inherited work")
+        continued = create_claim(
+            self.root,
+            scope="continued-edit",
+            owner="agent-b",
+            run_id="run-b",
+            task="inspect inherited app work",
+            paths=["app.txt"],
+        )
+        work_results.accept_baseline(
+            self.root,
+            scope="continued-edit",
+            owner="agent-b",
+            run_id="run-b",
+            baseline_sha256=str(continued["baseline"]["baseline_sha256"]),
+        )
+
+        finished = work_results.complete_claim(
+            self.root,
+            result_id="unused-inherited-result",
+            scope="continued-edit",
+            owner="agent-b",
+            run_id="run-b",
+            summary="reviewed inherited work without changing it",
+            validation_evidence="focused review passed",
+            release_if_unchanged=True,
+        )
+
+        self.assertEqual(finished["completion_kind"], "released-unchanged")
+        self.assertFalse(
+            resolve(self.root).state_root.joinpath(
+                "work-results/unused-inherited-result.json"
+            ).exists()
+        )
+
     def test_next_writer_must_accept_exact_dirty_baseline(self) -> None:
         (self.root / "app.txt").write_text("base\ncompleted dirty\n", encoding="utf-8")
         self._complete()

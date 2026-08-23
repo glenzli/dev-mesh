@@ -1,4 +1,4 @@
-# `dev-mesh.coordination@20260814.1`
+# `dev-mesh.coordination@20260823.1`
 
 Status: active
 
@@ -24,7 +24,7 @@ grants authority.
 The one writable state is selected by `.dev-mesh/coord/current.json` and lives at:
 
 ```text
-.dev-mesh/coord/20260814.1/
+.dev-mesh/coord/20260823.1/
 ```
 
 The marker, state protocol record, producer, and event schema must agree on:
@@ -32,9 +32,9 @@ The marker, state protocol record, producer, and event schema must agree on:
 ```json
 {
   "protocol": "dev-mesh.coordination",
-  "version": "20260814.1",
+  "version": "20260823.1",
   "event_schema": 2,
-  "state": "20260814.1"
+  "state": "20260823.1"
 }
 ```
 
@@ -42,8 +42,9 @@ The state contains Runs, Claims, Work Results, interactions, contentions, suspen
 transactions, direct commits, cleanup, checkouts, immutable events, and locks. Work Results live in
 `work-results/`; they are evidence, not authority.
 
-Only the selected version is writable. `20260812.1` is frozen and may exist only in a cutover
-archive. Activated exact versions are immutable; future incompatible semantics publish another
+Only the selected version is writable. Retired `20260814.1` authority is discarded only through a
+reviewed cutover after a bounded, authority-free analysis record is retained. Activated exact versions
+are immutable; future incompatible semantics publish another
 `YYYYMMDD.x` version.
 
 ## 3. Authority model
@@ -70,12 +71,12 @@ The normal no-conflict path is:
 
 ```text
 agent-join
-  -> claim
+  -> claim create or same-Run reuse
   -> edit
   -> validate
-  -> claim-complete
-       -> Work Result
-       -> Claim released
+  -> claim-finish
+       -> changed source: Work Result + Claim released
+       -> unchanged source: Claim released
   -> agent-leave completed
 ```
 
@@ -96,10 +97,16 @@ digest, bounded counts, and validation evidence. It never copies file content in
 The mode is invalid for read Claims, Git publication, and `parallel-tx`; overlapping writers wait,
 handoff, or retain exclusive authority instead.
 
-If another authority overlaps, the Claim becomes `pending-arbitration` with no write authority and
-opens one bounded contention. Callers do not need to predict overlap or opt into pending state.
-One further contender is rejected while that contention is in flight, preventing an unbounded
-queue on one hotspot.
+If the same exact Owner/Run already owns one Claim that covers every requested path and semantic
+resource with the same intent and projection mode, `claim` returns that existing Claim with
+`claim_reused: true`. It creates no Claim, event, or contention. The caller continues with the
+returned canonical scope. A narrower same-Run Claim must be extended explicitly with `claim-update`;
+it never becomes self-contention.
+
+If authority owned by another exact Run overlaps, the Claim becomes `pending-arbitration` with no
+write authority and opens one bounded contention. Callers do not need to predict overlap or opt into
+pending state. One further contender is rejected while that contention is in flight, preventing an
+unbounded queue on one hotspot.
 
 If no authority overlaps but declared writable paths already contain uncommitted Git work or an
 existing `workspace-bytes` file, the Claim becomes `pending-baseline`. Its record contains:
@@ -125,13 +132,20 @@ inherited dirty paths.
 
 ### Completion
 
-`claim-complete` requires an exact active writable Claim, a caller-supplied stable result id, a
-bounded summary, and validation evidence. It does not require a Git commit.
+`claim-finish` is the routine terminal operation. It requires an exact active writable Claim, a
+caller-supplied stable finish id through `--result-id`, a bounded summary, and validation evidence.
+It does not require a Git commit.
 
 For `git-tree`, the producer projects declared paths using a temporary Git index without mutating
 the canonical index. A declared future path that is absent and not yet present in the base tree is
 an empty projection input rather than a Git pathspec failure. For `workspace-bytes`, it compares the
-accepted starting file fingerprints with a fresh exact projection. It records:
+accepted starting file fingerprints with a fresh exact projection.
+
+If the projection contains no changed path, or still equals the exact inherited baseline accepted by
+this Claim, `claim-finish` emits one `claim-released` event and archives the Claim without creating a
+Work Result. Exact retries return that same archived finish and cannot create a later result.
+
+If declared source differs from the Claim's accepted start, `claim-finish` records:
 
 - source Claim, owner, and Run;
 - declared paths and semantic resources;
@@ -143,7 +157,7 @@ accepted starting file fingerprints with a fresh exact projection. It records:
 - actual changed-path count, digest, and bounded sample;
 - summary and validation evidence.
 
-Before emitting the terminal event, the Claim becomes `completing` and embeds the exact Work Result
+Before emitting the changed-source terminal event, the Claim becomes `completing` and embeds the exact Work Result
 and terminal event intent. A retry with the same result id fills a missing result or event and
 archives the Claim. A different result id fails closed. The completed Claim archive and Work Result
 are deterministic, so repeated completion cannot create two results or two terminal events.
@@ -151,9 +165,10 @@ are deterministic, so repeated completion cannot create two results or two termi
 The resulting `claim-completed` event has authority effect `release`. Once the Claim is archived,
 the Run may leave `completed` even while the workspace remains dirty.
 
-A clean writable Claim may still use `claim-release` as cancellation or no-result completion. A dirty
-writable Claim must use `claim-complete`; raw release cannot silently orphan dirty changes. Read
-Claims release directly.
+A clean writable Claim may still use `claim-release` for cancellation. A dirty writable Claim uses
+`claim-finish`; raw release cannot silently orphan dirty changes. `claim-complete` remains the exact
+low-level changed-source completion primitive for compatible recovery callers. Read Claims release
+directly.
 
 ### Pause
 
@@ -258,13 +273,13 @@ Event schema `2` adds:
 - `claim-baseline-accepted` (`grant`);
 - `claim-completed` (`release`).
 
-All `20260812.1` event names retain their authority classification. Event files are bounded to
+All `20260814.1` event names retain their authority classification. Event files are bounded to
 256 KiB and use exact ids. Heartbeats mutate only snapshots and emit no event. Work Result ids in
 events are bounded; full result metadata remains in the result file.
 
 ## 9. Observer semantics
 
-Observer collects only the exact selected `20260814.1` state. It validates schema-2 events,
+Observer collects only the exact selected `20260823.1` state. It validates schema-2 events,
 `pending-baseline` and `completing` Claims, and immutable Work Results. It reports separately:
 
 - active edit authority;
@@ -279,26 +294,36 @@ A Work Result never counts as active authority or blocks cutover readiness. A `p
 
 The external `dev-mesh.observer.status@20260812.1` facility contract remains compatible because its
 bounded aggregate schema does not change. Its implementation queries coordination version
-`20260814.1`; Infra Discovery registration remains `infra.discovery.registration@20260812.1`.
+`20260823.1`; Infra Discovery registration remains `infra.discovery.registration@20260812.1`.
 
 ## 10. Version cutover
 
-The supported cutover source is exact `20260812.1`. A reviewed plan binds:
+The supported cutover source is exact `20260814.1`. A reviewed plan binds:
 
 - source and target versions and event schemas;
 - exact source-state tree digest;
 - active authority inventory;
 - canonical branch, HEAD, index, dirty/untracked paths, and worktree/index diff digests;
-- caller-supplied stable cutover id.
+- caller-supplied stable cutover id;
+- the digest, counts, and path of one bounded analysis-retention record.
 
-Application requires explicit confirmation that old writers stopped. If old authority exists, it
-also requires explicit discard confirmation. The source state is atomically moved under
-`.dev-mesh/coord/archive/<cutover-id>/20260812.1/`; no object is translated into new authority.
+Application requires explicit confirmation that old writers stopped and that the entire old state
+may be discarded. Before destruction, the producer writes one deterministic record under
+`.dev-mesh/coord/analysis/<cutover-id>/20260814.1.json`. It retains at most 4096 recent immutable
+event envelopes plus full event-kind counts. Message bodies, task and reason text, paths, diffs,
+validation evidence, and every authority snapshot are omitted. The record has `authority: none` and
+is never loaded by the producer or normal Observer collection.
 
-The new empty state contains a non-authoritative `cutover-baseline.json` binding the archived state
-digest and unchanged Git facts. The current selector switches only after target initialization.
-Every phase is journaled and retryable. Verification requires the exact archive, target markers,
-baseline, plan digest, and unchanged Git facts.
+Any earlier full tree under `.dev-mesh/coord/archive/` is separately digest-bound by the plan and
+discarded at the same controlled point. It is not copied into the retained analysis record.
+
+After the retained record is digest-verified, the source tree moves to a private discard staging
+directory. No object is translated into new authority. The new empty state contains a
+non-authoritative `cutover-baseline.json` binding the discarded source digest, retained analysis
+record, and unchanged Git facts. The current selector switches only after target initialization;
+the private staging tree is then destroyed. Every phase is journaled and retryable. Verification
+requires source and staging absence, the exact retained record, target markers, baseline, plan
+digest, and unchanged Git facts.
 
 No user source file, index entry, branch, commit, or untracked product file is deleted or rewritten
 by version cutover.
@@ -313,8 +338,8 @@ Activation requires:
 3. crash-window tests for completion event gaps and version-cutover phases;
 4. full runtime suite;
 5. one real stopped-writer cutover preserving exact Git facts;
-6. a canary completing dirty work without commit, leaving successfully, accepting that baseline in
-   another Run, and optionally publishing it;
+6. a canary using contribution-aware finish for both unchanged and changed source, leaving
+   successfully, accepting a dirty baseline in another Run, and optionally publishing it;
 7. Observer and Console verification against the live new state.
 
 ## Stable control-plane failures

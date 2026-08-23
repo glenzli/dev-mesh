@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 PROTOCOL = "dev-mesh.coordination"
-PROTOCOL_VERSION = "20260814.1"
+PROTOCOL_VERSION = "20260823.1"
 EVENT_SCHEMA = 2
 DEV_MESH_DIRECTORY = ".dev-mesh"
 LEGACY_DIRECTORY = ".agent-coordination"

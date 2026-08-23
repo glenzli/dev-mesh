@@ -168,6 +168,42 @@ def _claim_conflicts(
     return conflicts
 
 
+def _claim_covers_request(
+    claim: dict[str, object],
+    *,
+    paths: list[str],
+    intent: str,
+    projection_mode: str,
+    semantic_writes: list[str],
+    sensitive_to: list[str],
+) -> bool:
+    """Return whether one existing same-Run Claim already grants the request."""
+
+    if claim.get("status") not in {
+        "active",
+        "paused",
+        "pending-arbitration",
+        "pending-baseline",
+    }:
+        return False
+    if (
+        claim.get("intent") != intent
+        or claim.get("projection_mode", "git-tree") != projection_mode
+    ):
+        return False
+    existing_paths = [item for item in claim.get("paths", []) if isinstance(item, str)]
+    if not all(
+        any(Path(existing) == Path(requested) or Path(existing) in Path(requested).parents
+            for existing in existing_paths)
+        for requested in paths
+    ):
+        return False
+    return (
+        set(semantic_writes).issubset(claim.get("semantic_writes", []))
+        and set(sensitive_to).issubset(claim.get("sensitive_to", []))
+    )
+
+
 def create_claim(
     root: Path,
     *,
@@ -213,6 +249,48 @@ def create_claim(
             semantic_writes=semantic_writes,
             sensitive_to=sensitive_to,
         )
+        same_run_conflicts = [
+            item
+            for item in conflicts
+            if item.get("owner") == owner and item.get("run_id") == run_id
+        ]
+        if same_run_conflicts:
+            covering = [
+                read_json(
+                    _claim_path(plane, str(item["scope"])),
+                    base=plane.state_root,
+                )
+                for item in same_run_conflicts
+                if isinstance(item.get("scope"), str)
+            ]
+            covering = [
+                item
+                for item in covering
+                if _claim_covers_request(
+                    item,
+                    paths=normalized_paths,
+                    intent=intent,
+                    projection_mode=projection_mode,
+                    semantic_writes=semantic_writes,
+                    sensitive_to=sensitive_to,
+                )
+            ]
+            if len(covering) == 1:
+                return {
+                    **covering[0],
+                    "claim_reused": True,
+                    "requested_scope": scope,
+                }
+            scopes = sorted(
+                str(item["scope"])
+                for item in same_run_conflicts
+                if isinstance(item.get("scope"), str)
+            )
+            raise ValueError(
+                "same Run already owns overlapping Claim(s): "
+                + ", ".join(scopes)
+                + "; reuse a covering Claim, extend it with claim-update, or release and re-claim"
+            )
         if len(conflicts) + 1 > MAX_CONTENTION_PARTICIPANTS:
             raise ValueError(
                 f"overlap exceeds {MAX_CONTENTION_PARTICIPANTS} participants; decompose the scope"
@@ -680,6 +758,49 @@ def append_audit_correction(
         return {**event, "event_path": str(event_path)}
 
 
+def _finish_claim_release(
+    root: Path,
+    plane: ControlPlane,
+    *,
+    path: Path,
+    record: dict[str, object],
+    summary: str,
+) -> dict[str, object]:
+    """Archive one already-validated Claim release under the current operation lock."""
+
+    scope = str(record["scope"])
+    released_at = now()
+    release_revision = git.head(root)
+    emit(
+        plane,
+        "claim-released",
+        payload={
+            "scope": scope,
+            "owner": record.get("owner"),
+            "run_id": record.get("run_id"),
+            "paths": record.get("paths", []),
+            "summary": summary,
+            "status": "released",
+            "base_revision": record.get("base_revision"),
+            "release_revision": release_revision,
+            "canonical_branch": record.get("canonical_branch"),
+            "projection_mode": record.get("projection_mode", "git-tree"),
+        },
+    )
+    record.update(
+        {
+            "status": "released",
+            "released_at": released_at,
+            "summary": summary,
+            "release_revision": release_revision,
+        }
+    )
+    destination = plane.state_root / "archive" / "claims" / f"{time.time_ns()}-{scope}.json"
+    replace_json(path, record, base=plane.state_root)
+    os.replace(path, destination)
+    return {**record, "archive": str(destination)}
+
+
 def release_claim(root: Path, *, scope: str, owner: str, run_id: str, summary: str) -> dict[str, object]:
     scope = require_slug(scope, "scope")
     owner = require_slug(owner, "owner")
@@ -716,36 +837,13 @@ def release_claim(root: Path, *, scope: str, owner: str, run_id: str, summary: s
                     "claimed paths are dirty; complete the Claim into a Work Result first: "
                     + ", ".join(dirty)
                 )
-        released_at = now()
-        release_revision = git.head(root)
-        emit(
+        return _finish_claim_release(
+            root,
             plane,
-            "claim-released",
-            payload={
-                "scope": scope,
-                "owner": owner,
-                "run_id": run_id,
-                "paths": paths,
-                "summary": summary,
-                "status": "released",
-                "base_revision": record.get("base_revision"),
-                "release_revision": release_revision,
-                "canonical_branch": record.get("canonical_branch"),
-                "projection_mode": record.get("projection_mode", "git-tree"),
-            },
+            path=path,
+            record=record,
+            summary=summary,
         )
-        record.update(
-            {
-                "status": "released",
-                "released_at": released_at,
-                "summary": summary,
-                "release_revision": release_revision,
-            }
-        )
-        destination = plane.state_root / "archive" / "claims" / f"{time.time_ns()}-{scope}.json"
-        replace_json(path, record, base=plane.state_root)
-        os.replace(path, destination)
-        return {**record, "archive": str(destination)}
 
 
 def _run_blockers(plane: ControlPlane, run_id: str) -> list[dict[str, object]]:

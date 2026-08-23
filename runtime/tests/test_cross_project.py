@@ -104,10 +104,10 @@ class CrossProjectCollaborationTest(GitWorkspaceTest):
         self.assertLess(max(path.stat().st_size for path in event_paths), 4096)
         for event in [*self._events(self.root), *self._events(self.target)]:
             self.assertEqual(event["event"], "message-sent")
-            self.assertEqual(event["protocol_version"], "20260814.1")
+            self.assertEqual(event["protocol_version"], "20260823.1")
             self.assertEqual(event["authority_effect"], "none")
             extension = event["cross_project"]
-            self.assertEqual(extension["protocol_version"], "20260814.1")
+            self.assertEqual(extension["protocol_version"], "20260823.1")
             self.assertEqual(extension["collaboration_id"], collaboration_id)
             self.assertNotIn("body", event)
             self.assertNotIn("prompt", event)

@@ -1,4 +1,4 @@
-"""Thin JSON CLI for the 20260814.1 producer, transaction, and cutover tools."""
+"""Thin JSON CLI for the 20260823.1 producer, transaction, and cutover tools."""
 
 from __future__ import annotations
 
@@ -93,6 +93,12 @@ def parser() -> argparse.ArgumentParser:
     complete_claim.add_argument("--result-id", required=True)
     complete_claim.add_argument("--summary", required=True)
     complete_claim.add_argument("--validation-evidence", required=True)
+
+    finish_claim = commands.add_parser("claim-finish")
+    _common_identity(finish_claim, scope=True)
+    finish_claim.add_argument("--result-id", required=True)
+    finish_claim.add_argument("--summary", required=True)
+    finish_claim.add_argument("--validation-evidence", required=True)
 
     pause = commands.add_parser("claim-pause")
     _common_identity(pause, scope=True)
@@ -382,7 +388,7 @@ def parser() -> argparse.ArgumentParser:
     version_apply.add_argument("--cutover-id", required=True)
     version_apply.add_argument("--plan-digest", required=True)
     version_apply.add_argument("--confirm-agents-stopped", action="store_true")
-    version_apply.add_argument("--confirm-discard-old-authority", action="store_true")
+    version_apply.add_argument("--confirm-discard-old-state", action="store_true")
 
     version_verify = commands.add_parser("version-cutover-verify")
     version_verify.add_argument("--cutover-id", required=True)
@@ -412,6 +418,17 @@ def dispatch(arguments: argparse.Namespace) -> object:
         return work_results.accept_baseline(root, scope=arguments.scope, owner=arguments.owner, run_id=arguments.run_id, baseline_sha256=arguments.baseline_sha256)
     if command == "claim-complete":
         return work_results.complete_claim(root, result_id=arguments.result_id, scope=arguments.scope, owner=arguments.owner, run_id=arguments.run_id, summary=arguments.summary, validation_evidence=arguments.validation_evidence)
+    if command == "claim-finish":
+        return work_results.complete_claim(
+            root,
+            result_id=arguments.result_id,
+            scope=arguments.scope,
+            owner=arguments.owner,
+            run_id=arguments.run_id,
+            summary=arguments.summary,
+            validation_evidence=arguments.validation_evidence,
+            release_if_unchanged=True,
+        )
     if command == "claim-pause":
         return lifecycle.pause_claim(root, scope=arguments.scope, owner=arguments.owner, run_id=arguments.run_id, blocker_kind=arguments.blocker_kind, checkpoint=arguments.checkpoint, resume_condition=arguments.resume_condition, operation_name=arguments.operation, resources=arguments.resource, error_kind=arguments.error_kind, retain_paths_reason=arguments.retain_paths_reason)
     if command == "claim-resume":
@@ -526,7 +543,7 @@ def dispatch(arguments: argparse.Namespace) -> object:
             cutover_id=arguments.cutover_id,
             expected_plan_digest=arguments.plan_digest,
             confirm_agents_stopped=arguments.confirm_agents_stopped,
-            confirm_discard_old_authority=arguments.confirm_discard_old_authority,
+            confirm_discard_old_state=arguments.confirm_discard_old_state,
         )
     if command == "version-cutover-verify":
         return verify_version_cutover(

@@ -123,7 +123,8 @@ def _tombstone(root: Path) -> dict[str, object] | None:
     if (
         value.get("kind") != "dev-mesh.coordination.legacy-tombstone"
         or value.get("target_protocol") != PROTOCOL
-        or value.get("target_version") not in {"20260812.1", PROTOCOL_VERSION}
+        or value.get("target_version")
+        not in {"20260812.1", "20260814.1", PROTOCOL_VERSION}
     ):
         raise ProtocolError("split_brain", "legacy tombstone targets another protocol")
     return value

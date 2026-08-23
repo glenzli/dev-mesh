@@ -1,10 +1,11 @@
 # Protocol cutover
 
-## `20260812.1` to `20260814.1`
+## `20260814.1` to `20260823.1`
 
-This upgrade is a fresh authority start. It archives the complete old coordination tree but does
-not translate Runs, Claims, events, or transactions. User files, index state, branch, HEAD, and
-dirty/untracked bytes must remain exactly unchanged.
+This upgrade is a fresh authority start. It does not translate Runs, Claims, events, Work Results,
+or transactions. Before discarding the old coordination tree, it retains one bounded,
+authority-free event envelope under `.dev-mesh/coord/analysis/`. User files, index state, branch,
+HEAD, and dirty/untracked bytes must remain exactly unchanged.
 
 With every old Agent stopped, create and review a stable plan:
 
@@ -13,23 +14,29 @@ PYTHONPATH=runtime python3 -m dev_mesh_coord --root WORKSPACE --verbose \
   version-cutover-plan --cutover-id CUTOVER_ID
 ```
 
-Review `source_state_sha256`, `authority_inventory`, `git_facts`, and `plan_digest`. Apply the exact
-plan; the second confirmation is required when the old inventory is nonempty:
+Review `source_state_sha256`, `authority_inventory`, `analysis_retention`, `prior_archives`,
+`git_facts`, and `plan_digest`. Applying always requires the second confirmation because the complete
+old state is destroyed even when it contains no active authority:
 
 ```bash
 PYTHONPATH=runtime python3 -m dev_mesh_coord --root WORKSPACE version-cutover-apply \
   --cutover-id CUTOVER_ID --plan-digest REVIEWED_DIGEST \
-  --confirm-agents-stopped --confirm-discard-old-authority
+  --confirm-agents-stopped --confirm-discard-old-state
 
 PYTHONPATH=runtime python3 -m dev_mesh_coord --root WORKSPACE version-cutover-verify \
   --cutover-id CUTOVER_ID --plan-digest REVIEWED_DIGEST
 ```
 
-The old state moves to `.dev-mesh/coord/archive/CUTOVER_ID/20260812.1/`. The selected current state
-becomes a new empty `.dev-mesh/coord/20260814.1/` with a non-authoritative cutover baseline. Retry
-the same id and digest after an uncertain result; never invent a second plan for a partial cutover.
+The retained record contains at most 4096 recent event envelopes and full event-kind counts. It
+omits message/task/reason text, paths, diffs, validation evidence, and all authority snapshots. The
+complete `20260814.1` state is then discarded, and the selected state becomes a new empty
+`.dev-mesh/coord/20260823.1/` with a non-authoritative cutover baseline. Retry the same id and digest
+after an uncertain result; never invent a second plan for a partial cutover.
 
-## Legacy `.agent-coordination` retirement into `20260812.1`
+Any earlier full tree under `.dev-mesh/coord/archive/` is bound into the reviewed plan and discarded
+at the same controlled point. It is not copied into the retained analysis record.
+
+## Legacy `.agent-coordination` retirement into the current protocol
 
 This is a fresh-start control-plane retirement, not an object migration.
 
@@ -50,7 +57,7 @@ This is a fresh-start control-plane retirement, not an object migration.
 4. Apply with both explicit stop-window confirmations. If the reviewed inventory contains active
    authority objects, separately confirm their retirement.
 5. Verify archive digest, tombstone, exact markers, and empty current authority.
-6. Start a new Observer catalog and prove it collects one schema-1 event.
+6. Start a new Observer catalog and prove it collects one current schema-2 event.
 7. Restart Agents; each creates a new Run and redeclares only current work.
 
 The isolated review commands are:

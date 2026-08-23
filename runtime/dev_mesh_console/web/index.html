@@ -20,6 +20,7 @@
         <span id="connection-status" class="status-pill is-loading" data-i18n="status.loading">载入中</span>
         <button id="add-root" class="icon-button action-icon" type="button" aria-label="添加工作区" title="添加工作区">＋</button>
         <button id="refresh" class="icon-button action-icon" type="button" aria-label="刷新" title="刷新">↻</button>
+        <button id="repair-discovery" class="icon-button action-icon" type="button" aria-label="检查发现发布" title="检查发现发布">⌁</button>
         <button id="language" class="icon-button action-icon language-icon" type="button" aria-label="切换语言" title="切换语言">文</button>
         <button id="theme" class="icon-button" type="button" data-i18n-aria="actions.theme" aria-label="切换主题">◐</button>
       </div>
@@ -46,7 +47,7 @@
         </div>
         <div class="toolbar-meta">
           <span id="generated-at">—</span>
-          <span id="protocol-version">20260814.1</span>
+          <span id="protocol-version">20260823.1</span>
         </div>
       </section>
 
@@ -92,13 +93,13 @@
       <section class="panel flow-panel">
         <div class="panel-heading flow-heading">
           <div>
-            <span class="eyebrow" data-i18n="sections.flowEyebrow">时间与因果</span>
+            <span class="eyebrow" data-i18n="sections.flowEyebrow">跨任务因果</span>
             <h2 data-i18n="sections.flow">协作流</h2>
           </div>
           <div id="flow-summary" class="flow-summary"></div>
         </div>
         <div class="legend" aria-label="Flow legend">
-          <span><i class="legend-line normal"></i><b data-i18n="legend.main">执行主线</b></span>
+          <span><i class="legend-line normal"></i><b data-i18n="legend.main">参与方时间线</b></span>
           <span><i class="legend-line branch"></i><b data-i18n="legend.branch">临时分支</b></span>
           <span><i class="legend-line handoff"></i><b data-i18n="legend.handoff">交接 / 通知</b></span>
           <span><i class="legend-line waiting"></i><b data-i18n="legend.waiting">等待 / 依赖</b></span>
@@ -111,7 +112,7 @@
         </div>
         <div id="flow-empty" class="empty-state" hidden>
           <strong data-i18n="empty.flowTitle">窗口内没有协作事件</strong>
-          <span data-i18n="empty.flowBody">运行 Agent 后，生命周期节点会出现在这里。</span>
+          <span data-i18n="empty.flowIndependentBody">当前只有独立运行，没有跨任务协作。</span>
         </div>
         <div class="flow-viewport">
           <div class="flow-scrollbar-corner" aria-hidden="true"></div>
@@ -138,16 +139,16 @@
           <div id="diagnostics" class="diagnostic-list"></div>
         </article>
 
-        <article class="panel events-panel">
-          <div class="panel-heading">
+        <details class="panel events-panel">
+          <summary class="panel-heading">
             <div>
-              <span class="eyebrow" data-i18n="sections.eventsEyebrow">不可变事件</span>
-              <h2 data-i18n="sections.events">最近活动</h2>
+              <span class="eyebrow" data-i18n="sections.eventsEyebrow">按需审计</span>
+              <h2 data-i18n="sections.events">原始事件</h2>
             </div>
             <span id="event-count" class="panel-count">0</span>
-          </div>
+          </summary>
           <div id="events" class="event-list"></div>
-        </article>
+        </details>
       </section>
     </main>
 

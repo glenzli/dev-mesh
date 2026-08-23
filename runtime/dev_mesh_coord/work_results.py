@@ -432,6 +432,7 @@ def complete_claim(
     run_id: str,
     summary: str,
     validation_evidence: str,
+    release_if_unchanged: bool = False,
 ) -> dict[str, object]:
     result_id = require_identifier(result_id, "result id")
     scope = require_slug(scope, "scope")
@@ -443,6 +444,35 @@ def complete_claim(
         result_path = _result_path(plane, result_id)
         claim_path = _claim_path(plane, scope)
         if not claim_path.exists():
+            if release_if_unchanged and not result_path.exists():
+                matches = [
+                    (path, read_json(path, base=plane.state_root))
+                    for path in sorted(
+                        (plane.state_root / "archive" / "claims").glob(f"*-{scope}.json")
+                    )
+                ]
+                matches = [
+                    (path, record)
+                    for path, record in matches
+                    if record.get("finish_id") == result_id
+                    and record.get("owner") == owner
+                    and record.get("run_id") == run_id
+                ]
+                if len(matches) != 1:
+                    raise FileNotFoundError(claim_path)
+                archive_path, released = matches[0]
+                if (
+                    released.get("summary") != summary
+                    or released.get("finish_validation_evidence") != validation_evidence
+                    or released.get("status") != "released"
+                ):
+                    raise ValueError("unchanged Claim finish retry differs from its archived facts")
+                return {
+                    **released,
+                    "archive": str(archive_path),
+                    "completion_kind": "released-unchanged",
+                    "work_result_created": False,
+                }
             result = read_json(result_path, base=plane.state_root)
             if any(
                 result.get(key) != value
@@ -486,6 +516,37 @@ def complete_claim(
                 raise ValueError("workspace-bytes Claim lacks its accepted starting baseline")
             actual = workspace_bytes_changed_paths(workspace_base, projection)
             projection = {**projection, "actual_paths": actual, **path_projection(actual)}
+        accepted_baseline = claim.get("baseline")
+        unchanged_from_accepted_baseline = (
+            isinstance(accepted_baseline, dict)
+            and isinstance(claim.get("baseline_accepted_at"), str)
+            and projection.get("declared_content_sha256")
+            == accepted_baseline.get("baseline_sha256")
+        )
+        if release_if_unchanged and (
+            projection.get("actual_path_count") == 0
+            or unchanged_from_accepted_baseline
+        ):
+            from .lifecycle import _finish_claim_release
+
+            claim.update(
+                {
+                    "finish_id": result_id,
+                    "finish_validation_evidence": validation_evidence,
+                }
+            )
+            released = _finish_claim_release(
+                root,
+                plane,
+                path=claim_path,
+                record=claim,
+                summary=summary,
+            )
+            return {
+                **released,
+                "completion_kind": "released-unchanged",
+                "work_result_created": False,
+            }
         completed_at = now()
         terminal_event = build_event(
             "claim-completed",

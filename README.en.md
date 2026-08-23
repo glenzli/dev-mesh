@@ -8,18 +8,21 @@ cooperative Git publication, and leaves bounded evidence that can be inspected a
 over.
 
 The system is deliberately local and lightweight: an ordinary non-overlapping change follows one
-Run, one Claim, one Work Result, and a clean exit. Git commit is an optional independent publication
-step. Contention, temporary branches, and microtransactions appear only when work actually overlaps.
+Run and one reusable Claim. A Work Result exists only when source bytes were contributed; unchanged
+inspection releases directly. Git commit is an optional independent publication step. Contention,
+temporary branches, and microtransactions appear only when distinct Runs actually overlap.
 
 ## Current generation
 
-The active authority contract is `dev-mesh.coordination@20260814.1`. This is the second-generation
+The active authority contract is `dev-mesh.coordination@20260823.1`. This is the second-generation
 implementation, but protocol versions use immutable `YYYYMMDD.x` identifiers rather than a mutable
 `v2` label. The optional compatible cross-project evidence contract is
-`dev-mesh.cross-project-collaboration@20260814.1`.
+`dev-mesh.cross-project-collaboration@20260823.1`.
 
-Workspace authority lives under `.dev-mesh/`. Retired `.agent-coordination/` state is not migrated
-or revived; the cutover leaves only a tombstone that fences old writers. See
+Workspace authority lives under `.dev-mesh/`. Cutover from `20260814.1` discards the old authority
+state and earlier full archives, retaining only bounded, decontented, authority-free event evidence
+under `.dev-mesh/coord/analysis/`. Retired `.agent-coordination/` state is not migrated or revived;
+that retirement leaves only a tombstone that fences old writers. See
 [`docs/CUTOVER.md`](docs/CUTOVER.md) for the retirement procedure.
 
 ## What it coordinates
@@ -77,15 +80,16 @@ contracts. Tests, archives, coordination state, and caches never enter `dist`. T
 operational instructions. Its normal path is:
 
 ```text
-inspect -> join Run -> claim bounded work -> edit -> validate
-        -> complete Work Result -> release Claim -> leave Run
+inspect -> join Run -> create or reuse Claim -> edit -> validate
+        -> finish by actual contribution or release -> leave Run
                                   \
                                    -> optional managed publication
 ```
 
-No overlap means no coordinator ceremony beyond that path. When the returned `next_action` reports
-overlap or recovery, the skill routes the Agent to the corresponding contention, transaction, or
-recovery instructions.
+A request already covered by the same Run's Claim reuses that Claim without self-contention. With no
+cross-Run overlap, no additional coordination flow appears. `claim-finish` records a Work Result only
+for actual source contribution. The skill routes an Agent into contention, transaction, or recovery
+only when the returned `next_action` requires it.
 
 The common overlap path does not require a full negotiation: the later Claim becomes pending, it
 selects wait, and it can activate after the original Claim completes. `parallel-tx` does not move
@@ -105,11 +109,9 @@ Owner/Run identity appeared in several workspaces; it is a clue, not proof that 
 
 ![Virtual Console project collaboration graph](docs/assets/console-project-collaboration-demo.en.png)
 
-The swimlane view groups Runs by Owner and places lifecycle events on execution lanes. It makes
-notifications, contention decisions, waiting, temporary transaction branches, publication, and
-return to the canonical line visible without opening every event record.
-
-![Virtual Console Agent collaboration swimlane](docs/assets/console-swimlane-demo.en.png)
+The collaboration flow projects only cross-Run contention, handoff, dependency, transaction, and
+recovery. Routine Run and Claim lifecycle does not expand merely to fill a graph; it remains
+available from the collapsed raw-event audit when needed.
 
 ## Observe locally
 
@@ -123,9 +125,10 @@ python3 skills/observe-dev-mesh/scripts/console.py \
   --host 127.0.0.1 --port 8765
 ```
 
-The Console shows project-filtered authority, contention, transactions, diagnostics, semantic
-collaboration flows, and cross-project relations. Catalog data stays outside observed workspaces;
-the source workspaces remain read-only to the Observer.
+The Console defaults to current authority risk and cross-Run contention, handoff, dependency,
+recovery, and cross-project relations. Routine lifecycle is collapsed and raw events are available
+only in the on-demand audit section. Catalog data stays outside observed workspaces; the source
+workspaces remain read-only to the Observer.
 
 On macOS, install the repository-owned LaunchAgent to keep the Console available after moving the
 checkout or changing its Python runtime:

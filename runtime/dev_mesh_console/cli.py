@@ -76,6 +76,7 @@ def main(argv: list[str] | None = None) -> int:
                 runtime_root=runtime_root,
             )
             facility.start()
+            state.set_discovery_repair(facility.repair_publication)
         print(
             json.dumps(
                 {

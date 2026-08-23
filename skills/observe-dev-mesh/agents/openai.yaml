@@ -1,6 +1,6 @@
 interface:
   display_name: "Dev Mesh Observer"
   short_description: "Inspect Dev Mesh collaboration and diagnostics"
-  default_prompt: "Use $observe-dev-mesh to collect protocol 20260814.1 evidence and open the local Web Console for collaboration flow, Work Results, active authority, contention, and diagnostics."
+  default_prompt: "Use $observe-dev-mesh to collect protocol 20260823.1 evidence and open the local Web Console for collaboration flow, Work Results, active authority, contention, and diagnostics."
 policy:
   allow_implicit_invocation: false

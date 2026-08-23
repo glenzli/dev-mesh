@@ -9,31 +9,13 @@ from collections import Counter, defaultdict
 from dev_mesh_coord.constants import PROTOCOL, PROTOCOL_VERSION
 from dev_mesh_coord.storage import now
 
+from .collaboration_semantics import (
+    has_distinct_participants,
+    is_collaboration_record,
+)
 from .diagnostics import MAX_DIAGNOSTICS, project_diagnostics
 from .source_validation import SNAPSHOT_STATUSES
 
-
-COLLABORATION_EVENTS = {
-    "claim-requested",
-    "claim-baseline-required",
-    "claim-baseline-accepted",
-    "contention-opened",
-    "contention-coordinator-acquired",
-    "contention-decision-proposed",
-    "contention-decision-responded",
-    "contention-completed",
-    "message-sent",
-    "message-acknowledged",
-    "handoff-offered",
-    "handoff-accepted",
-    "handoff-rejected",
-    "handoff-withdrawn",
-    "work-suspended",
-    "transaction-created",
-    "transaction-handed-off",
-    "transaction-published",
-    "transaction-aborted",
-}
 
 ACTIVE_STATUSES = {
     "run": {"active"},
@@ -230,6 +212,12 @@ def build_report(
     work_result_projection_modes: Counter[str] = Counter()
     run_events: dict[tuple[str, str, str], list[str]] = defaultdict(list)
     collaborative_run_keys: set[tuple[str, str, str]] = set()
+    true_contentions = {
+        (str(item["workspace_id"]), str(item["record"].get("contention_id")))
+        for item in snapshots
+        if item["kind"] == "contention"
+        and has_distinct_participants(item["record"])
+    }
     hot_paths: Counter[str] = Counter()
     owner_edges: Counter[tuple[str, str, str]] = Counter()
     for item in events:
@@ -239,7 +227,15 @@ def build_report(
         if isinstance(owner, str) and isinstance(run_id, str):
             run_key = (str(item["workspace_id"]), owner, run_id)
             run_events[run_key].append(str(item["event"]))
-            if item["event"] in COLLABORATION_EVENTS:
+            contention_key = (
+                str(item["workspace_id"]),
+                str(record.get("contention_id")),
+            )
+            if is_collaboration_record(
+                str(item["event"]),
+                record,
+                true_contention=contention_key in true_contentions,
+            ):
                 collaborative_run_keys.add(run_key)
         if item["event"] == "claim-requested":
             for path in record.get("paths", []) if isinstance(record.get("paths"), list) else []:
@@ -247,7 +243,19 @@ def build_report(
                     hot_paths[path] += 1
         source = record.get("source_owner")
         target = record.get("target_owner")
-        if isinstance(source, str) and isinstance(target, str):
+        if (
+            isinstance(source, str)
+            and isinstance(target, str)
+            and is_collaboration_record(
+                str(item["event"]),
+                record,
+                true_contention=(
+                    str(item["workspace_id"]),
+                    str(record.get("contention_id")),
+                )
+                in true_contentions,
+            )
+        ):
             owner_edges[(source, target, str(item["event"]))] += 1
 
     for item in snapshots:
@@ -272,6 +280,8 @@ def build_report(
                 and isinstance(participant.get("run_id"), str)
             ] if isinstance(participants, list) else []
             workspace_id_value = str(item["workspace_id"])
+            if not has_distinct_participants(item["record"]):
+                continue
             for participant in exact_participants:
                 collaborative_run_keys.add(
                     (
