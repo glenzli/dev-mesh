@@ -1,12 +1,14 @@
 ---
 name: observe-dev-mesh
-description: Collect, diagnose, and display Dev Mesh coordination protocol 20260823.1 across local Git workspaces without writing source workspaces. Use when opening the local Web Console, checking active authority and inherited baselines, viewing project-linked collaboration flows and Work Results, measuring contention or transactions, investigating audit gaps and source integrity, or assessing cutover readiness.
+description: Collect, diagnose, and display supported Dev Mesh coordination protocols across local Git workspaces without writing source workspaces. Use when opening the local Web Console, checking active authority and inherited baselines, viewing project-linked collaboration flows and Work Results, measuring contention or transactions, investigating audit gaps and source integrity, or assessing cutover readiness.
 ---
 
 # Observe Dev Mesh
 
-Use the repository-owned read-only Observer. It discovers only the current
-`.dev-mesh/coord/20260823.1` control plane and writes solely to the caller-selected SQLite catalog.
+Use the repository-owned read-only Observer. It discovers only explicitly supported
+`.dev-mesh/coord/<version>` control planes and writes solely to the caller-selected SQLite catalog.
+Source protocols `20260814.1` and `20260823.1` are read-only inputs; producer commands still write
+only the exact current protocol.
 
 ## Open the Web Console
 

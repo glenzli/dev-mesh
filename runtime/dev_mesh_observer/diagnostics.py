@@ -126,6 +126,7 @@ def project_diagnostics(
     integrity_by_workspace: dict[str, int],
     stale_after_seconds: int,
     collection_errors: list[dict[str, object]] | None = None,
+    protocol_migration_issues: list[dict[str, object]] | None = None,
     not_observed_workspaces: list[dict[str, object]] | None = None,
     pending_acknowledgements: list[dict[str, object]] | None = None,
 ) -> tuple[list[dict[str, object]], dict[str, object], dict[str, object]]:
@@ -458,6 +459,16 @@ def project_diagnostics(
                 "object_id": issue["workspace_id"],
             }
         )
+        diagnostics.append(issue_record)
+        derived_diagnostics.append(issue_record)
+    for issue in protocol_migration_issues or []:
+        issue_record = {
+            "code": "observer.protocol-migration-required",
+            "severity": "warning",
+            "workspace_id": issue["workspace_id"],
+            "object_id": issue["workspace_id"],
+            "source_protocol_version": issue.get("source_protocol_version"),
+        }
         diagnostics.append(issue_record)
         derived_diagnostics.append(issue_record)
     for issue in not_observed_workspaces or []:

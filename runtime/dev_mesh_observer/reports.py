@@ -327,7 +327,17 @@ def build_report(
         if (workspace_id_value, owner, run_id) in closed_run_keys
         and (workspace_id_value, owner, run_id) not in collaborative_run_keys
     ]
-    collection_errors = [item for item in workspaces if item.get("last_error")]
+    collection_errors = [
+        item
+        for item in workspaces
+        if item.get("last_error")
+        and item.get("issue_code") != "protocol_migration_required"
+    ]
+    protocol_migration_issues = [
+        item
+        for item in workspaces
+        if item.get("issue_code") == "protocol_migration_required"
+    ]
     not_observed_workspaces = [item for item in workspaces if item.get("not_observed_since")]
     acknowledgement_projection = _acknowledgement_projection(events, snapshots)
     pending_acknowledgements = list(acknowledgement_projection["items"])
@@ -339,6 +349,7 @@ def build_report(
         integrity_by_workspace=integrity_by_workspace,
         stale_after_seconds=stale_after_seconds,
         collection_errors=collection_errors,
+        protocol_migration_issues=protocol_migration_issues,
         not_observed_workspaces=not_observed_workspaces,
         pending_acknowledgements=pending_acknowledgements,
     )

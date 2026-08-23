@@ -130,10 +130,9 @@ def build_package(root: Path, output: Path, *, revision: str, require_clean: boo
     output = output.resolve()
     if require_clean:
         require_clean_source(root)
-    manifest, base_version = manifest_version(root)
+    _manifest, version = manifest_version(root)
     if len(revision) < 7 or any(character not in "0123456789abcdef" for character in revision):
         raise ValueError("release revision must be a lowercase Git hexadecimal identifier")
-    version = f"{base_version}+codex.{revision[:12]}"
     output.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=f".{output.name}.", dir=output.parent))
     try:
@@ -141,11 +140,6 @@ def build_package(root: Path, output: Path, *, revision: str, require_clean: boo
             copy_file(root, relative, staging)
         for relative in TREE_DIRECTORIES:
             copy_tree(root, relative, staging)
-        package_manifest = json.loads((staging / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
-        package_manifest["version"] = version
-        (staging / ".codex-plugin" / "plugin.json").write_text(
-            json.dumps(package_manifest, indent=2) + "\n", encoding="utf-8"
-        )
         assert_minimal_package(staging)
         digest, file_count = tree_digest(staging)
         metadata = {

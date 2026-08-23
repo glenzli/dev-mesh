@@ -9,6 +9,7 @@ export function projectHasSignal(project) {
     || activeTotal(project.active) > 0
     || Number(project.diagnostic_count) > 0
     || Boolean(project.collection_error)
+    || Boolean(project.protocol_notice)
     || Boolean(project.not_observed_since);
 }
 

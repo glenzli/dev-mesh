@@ -11,11 +11,11 @@ from pathlib import Path
 from typing import Iterable
 
 from dev_mesh_coord.constants import PROTOCOL, PROTOCOL_VERSION
-from dev_mesh_coord.control_plane import resolve
 from dev_mesh_coord.errors import ProtocolError
 from dev_mesh_coord.storage import now
 
 from .reports import build_report
+from .source_plane import SourcePlaneError, resolve_source_plane
 from .source_validation import event_record, event_source, snapshot_record
 
 
@@ -46,9 +46,9 @@ def workspace_id(root: Path) -> str:
 
 def discover_with_issues(
     roots: Iterable[Path], *, max_depth: int = 5
-) -> tuple[list[Path], list[dict[str, str]]]:
+) -> tuple[list[Path], list[dict[str, object]]]:
     discovered: set[Path] = set()
-    issues: list[dict[str, str]] = []
+    issues: list[dict[str, object]] = []
     for candidate in roots:
         candidate = candidate.expanduser().resolve()
         if not candidate.is_dir():
@@ -64,18 +64,20 @@ def discover_with_issues(
             marker = path / ".dev-mesh" / "manifest.json"
             if marker.is_file() and not marker.is_symlink():
                 try:
-                    plane = resolve(path)
-                except (ProtocolError, OSError) as error:
+                    plane = resolve_source_plane(path)
+                except (ProtocolError, SourcePlaneError, OSError) as error:
                     issues.append(
                         {
                             "root": str(path.resolve()),
                             "code": getattr(error, "code", "workspace.unavailable"),
                             "message": str(error),
+                            "source_protocol_version": getattr(
+                                error, "source_protocol_version", None
+                            ),
                         }
                     )
                     continue
-                if plane.version == PROTOCOL_VERSION:
-                    discovered.add(path.resolve())
+                discovered.add(path.resolve())
                 directories[:] = []
     return sorted(discovered), issues
 
@@ -132,6 +134,8 @@ class Catalog:
                 last_error TEXT,
                 last_seen_scan TEXT,
                 not_observed_since TEXT,
+                source_protocol_version TEXT,
+                issue_code TEXT,
                 PRIMARY KEY (workspace_id, protocol_version)
             );
             CREATE TABLE IF NOT EXISTS events (
@@ -180,6 +184,12 @@ class Catalog:
             self.connection.execute("ALTER TABLE workspaces ADD COLUMN last_seen_scan TEXT")
         if "not_observed_since" not in workspace_columns:
             self.connection.execute("ALTER TABLE workspaces ADD COLUMN not_observed_since TEXT")
+        if "source_protocol_version" not in workspace_columns:
+            self.connection.execute(
+                "ALTER TABLE workspaces ADD COLUMN source_protocol_version TEXT"
+            )
+        if "issue_code" not in workspace_columns:
+            self.connection.execute("ALTER TABLE workspaces ADD COLUMN issue_code TEXT")
         finding_columns = {
             str(row[1])
             for row in self.connection.execute("PRAGMA table_info(integrity_findings)")
@@ -274,7 +284,7 @@ class Catalog:
         )
 
     def collect_workspace(self, root: Path, *, scan_id: str | None = None) -> dict[str, object]:
-        plane = resolve(root)
+        plane = resolve_source_plane(root)
         identifier = workspace_id(plane.workspace_root)
         inserted = 0
         invalid: list[str] = []
@@ -288,6 +298,27 @@ class Catalog:
                 invalid.append(message)
 
         with self.connection:
+            existing_workspace = self.connection.execute(
+                """
+                SELECT source_protocol_version FROM workspaces
+                WHERE workspace_id = ? AND protocol_version = ?
+                """,
+                (identifier, PROTOCOL_VERSION),
+            ).fetchone()
+            previous_source_version = (
+                str(existing_workspace["source_protocol_version"])
+                if existing_workspace is not None
+                and existing_workspace["source_protocol_version"] is not None
+                else None
+            )
+            if previous_source_version is not None and previous_source_version != plane.version:
+                # A source cutover replaces the observed authority namespace. Do not
+                # reinterpret the retired source as missing or mutated current evidence.
+                for table in ("events", "snapshots", "integrity_findings"):
+                    self.connection.execute(
+                        f"DELETE FROM {table} WHERE workspace_id = ? AND protocol_version = ?",
+                        (identifier, PROTOCOL_VERSION),
+                    )
             # A first-seen invalid source is a current collection condition, not an
             # immutable authority fact. Preserve its row but resolve it unless this
             # scan observes the same violation again.
@@ -361,7 +392,12 @@ class Catalog:
                         record_invalid(f"{path.name}: immutable event source changed")
                     continue
                 try:
-                    record = event_record(path, encoded)
+                    record = event_record(
+                        path,
+                        encoded,
+                        protocol_version=plane.version,
+                        event_schema=plane.event_schema,
+                    )
                 except ProtocolError as error:
                     object_id = "source-" + hashlib.sha256(str(path).encode("utf-8")).hexdigest()[:24]
                     self._record_integrity_finding(
@@ -464,7 +500,13 @@ class Catalog:
                 directory = plane.state_root / relative
                 for path in sorted(directory.glob("*.json")):
                     try:
-                        record = snapshot_record(path, plane.state_root, kind, lifecycle)
+                        record = snapshot_record(
+                            path,
+                            plane.state_root,
+                            kind,
+                            lifecycle,
+                            protocol_version=plane.version,
+                        )
                     except (ProtocolError, OSError) as error:
                         record_invalid(f"{path.relative_to(plane.state_root)}: {error}")
                         continue
@@ -492,14 +534,16 @@ class Catalog:
                 """
                 INSERT INTO workspaces (
                     workspace_id, protocol_version, root, last_collected_at, last_error,
-                    last_seen_scan, not_observed_since
-                ) VALUES (?, ?, ?, ?, ?, ?, NULL)
+                    last_seen_scan, not_observed_since, source_protocol_version, issue_code
+                ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, NULL)
                 ON CONFLICT(workspace_id, protocol_version) DO UPDATE SET
                     root = excluded.root,
                     last_collected_at = excluded.last_collected_at,
                     last_error = excluded.last_error,
                     last_seen_scan = COALESCE(excluded.last_seen_scan, workspaces.last_seen_scan),
-                    not_observed_since = NULL
+                    not_observed_since = NULL,
+                    source_protocol_version = excluded.source_protocol_version,
+                    issue_code = NULL
                 """,
                 (
                     identifier,
@@ -508,11 +552,13 @@ class Catalog:
                     observed_at,
                     "\n".join(invalid) if invalid else None,
                     scan_id,
+                    plane.version,
                 ),
             )
         return {
             "workspace_id": identifier,
             "root": str(plane.workspace_root),
+            "source_protocol_version": plane.version,
             "inserted_events": inserted,
             "snapshots": snapshot_count,
             "invalid_records": invalid,
@@ -528,26 +574,50 @@ class Catalog:
         results = [self.collect_workspace(root, scan_id=scan_id) for root in discovered]
         with self.connection:
             for issue in discovery_issues:
+                issue_root = str(issue["root"])
+                identifier = workspace_id(Path(issue_root))
+                source_protocol_version = issue.get("source_protocol_version")
+                previous = self.connection.execute(
+                    """
+                    SELECT source_protocol_version FROM workspaces
+                    WHERE workspace_id = ? AND protocol_version = ?
+                    """,
+                    (identifier, PROTOCOL_VERSION),
+                ).fetchone()
+                if (
+                    source_protocol_version is not None
+                    and previous is not None
+                    and previous["source_protocol_version"] != source_protocol_version
+                ):
+                    for table in ("events", "snapshots", "integrity_findings"):
+                        self.connection.execute(
+                            f"DELETE FROM {table} WHERE workspace_id = ? AND protocol_version = ?",
+                            (identifier, PROTOCOL_VERSION),
+                        )
                 self.connection.execute(
                     """
                     INSERT INTO workspaces (
                         workspace_id, protocol_version, root, last_collected_at, last_error,
-                        last_seen_scan, not_observed_since
-                    ) VALUES (?, ?, ?, ?, ?, ?, NULL)
+                        last_seen_scan, not_observed_since, source_protocol_version, issue_code
+                    ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)
                     ON CONFLICT(workspace_id, protocol_version) DO UPDATE SET
                         root = excluded.root,
                         last_collected_at = excluded.last_collected_at,
                         last_error = excluded.last_error,
                         last_seen_scan = excluded.last_seen_scan,
-                        not_observed_since = NULL
+                        not_observed_since = NULL,
+                        source_protocol_version = excluded.source_protocol_version,
+                        issue_code = excluded.issue_code
                     """,
                     (
-                        workspace_id(Path(issue["root"])),
+                        identifier,
                         PROTOCOL_VERSION,
-                        issue["root"],
+                        issue_root,
                         scan_at,
                         f"{issue['code']}: {issue['message']}",
                         scan_id,
+                        source_protocol_version,
+                        issue["code"],
                     ),
                 )
             known = list(

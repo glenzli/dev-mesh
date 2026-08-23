@@ -19,6 +19,10 @@ implementation, but protocol versions use immutable `YYYYMMDD.x` identifiers rat
 `v2` label. The optional compatible cross-project evidence contract is
 `dev-mesh.cross-project-collaboration@20260823.1`.
 
+The Observer accepts `20260814.1` and `20260823.1` as read-only sources and records the source
+version explicitly in its local catalog. This does not widen the Producer write contract; an unknown
+version is presented as a compatibility notice rather than a collection failure.
+
 Workspace authority lives under `.dev-mesh/`. Cutover from `20260814.1` discards the old authority
 state and earlier full archives, retaining only bounded, decontented, authority-free event evidence
 under `.dev-mesh/coord/analysis/`. Retired `.agent-coordination/` state is not migrated or revived;
@@ -62,9 +66,9 @@ marketplace. Installation provides `coordinate-shared-workspace` and `observe-de
 one version; do not keep a global skill symlink directly to this source checkout. Use a new task
 after installation or an update.
 
-Release builds use `MAJOR.MINOR.PATCH+codex.<source-short-sha>`: the leading version expresses
-feature compatibility, while the build identity points to the source snapshot used for the installed
-package rather than a timestamp. The
+Release builds use plain `MAJOR.MINOR.PATCH` without build metadata; the version expresses feature
+compatibility only. The complete source commit remains bound separately in the release metadata as
+`source_revision`. The
 maintainer builds a minimal package from a clean source commit, then explicitly synchronizes it into
 the plugin collection working tree; synchronization never commits or pushes either repository:
 

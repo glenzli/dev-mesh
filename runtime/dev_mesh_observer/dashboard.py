@@ -420,7 +420,8 @@ def build_dashboard(
     workspace_rows = list(
         connection.execute(
             """
-            SELECT workspace_id, root, last_collected_at, last_error, not_observed_since
+            SELECT workspace_id, root, last_collected_at, last_error, not_observed_since,
+                   source_protocol_version, issue_code
             FROM workspaces
             WHERE protocol_version = ?
             ORDER BY root
@@ -730,7 +731,17 @@ def build_dashboard(
             "name": workspace_names[identifier],
             "root": root,
             "last_collected_at": row["last_collected_at"],
-            "collection_error": row["last_error"],
+            "collection_error": (
+                row["last_error"]
+                if row["issue_code"] != "protocol_migration_required"
+                else None
+            ),
+            "protocol_notice": (
+                row["last_error"]
+                if row["issue_code"] == "protocol_migration_required"
+                else None
+            ),
+            "source_protocol_version": row["source_protocol_version"],
             "not_observed_since": row["not_observed_since"],
             "event_count": event_counts_by_workspace[identifier],
             "event_counts": dict(sorted(event_kinds_by_workspace[identifier].items())),

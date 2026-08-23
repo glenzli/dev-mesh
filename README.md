@@ -15,6 +15,9 @@ Run 实际发生重叠时，才会进入争用处理、临时分支和微事务�
 的 `YYYYMMDD.x` 标识，而不是持续变化的 `v2` 标签。可选且兼容的跨项目证据合同是
 `dev-mesh.cross-project-collaboration@20260823.1`。
 
+Observer 可只读采集 `20260814.1` 与 `20260823.1` 来源，并把来源版本显式记录在本地目录库；
+这不会放宽 Producer 的写入合同，未知版本只显示为适配提示，不伪装成采集故障。
+
 工作区权限位于 `.dev-mesh/`。从 `20260814.1` 切换时，旧权限状态和更早的完整 archive 都会
 被丢弃，只在 `.dev-mesh/coord/analysis/` 保留去内容化、有界且无权限含义的事件证据。
 已退役的 `.agent-coordination/` 仍只保留用于阻止旧写入方的 tombstone。退役流程见
@@ -52,8 +55,8 @@ codex plugin add dev-mesh@glenzli-marketplace
 `coordinate-shared-workspace` 与 `observe-dev-mesh` 会作为同一版本的技能一起提供；不要长期把全局
 技能直接软链到此源码仓库。安装或更新后，请在新任务中使用新版本。
 
-发布版本采用 `MAJOR.MINOR.PATCH+codex.<源码短提交>`：前段表达功能兼容性，构建标识指向所发布
-安装包对应的源码快照，不使用时间戳。
+发布版本采用纯 `MAJOR.MINOR.PATCH`，不追加构建后缀；版本只表达功能兼容性。安装包对应的
+完整源码提交单独记录在 release metadata 的 `source_revision` 中，不混入插件版本。
 
 维护者从干净的源码提交构建最小安装包，再显式同步到 plugin collection 的工作树；同步不会提交或
 推送任何仓库：

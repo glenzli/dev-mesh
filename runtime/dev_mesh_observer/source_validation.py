@@ -202,7 +202,13 @@ def event_source(path: Path, state_root: Path) -> tuple[bytes, str]:
     return encoded, hashlib.sha256(encoded).hexdigest()
 
 
-def event_record(path: Path, encoded: bytes) -> dict[str, object]:
+def event_record(
+    path: Path,
+    encoded: bytes,
+    *,
+    protocol_version: str = PROTOCOL_VERSION,
+    event_schema: int = EVENT_SCHEMA,
+) -> dict[str, object]:
     try:
         value = json.loads(encoded.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
@@ -212,9 +218,9 @@ def event_record(path: Path, encoded: bytes) -> dict[str, object]:
     record: dict[str, object] = value
     event = record.get("event")
     if (
-        record.get("schema") != EVENT_SCHEMA
+        record.get("schema") != event_schema
         or record.get("protocol") != PROTOCOL
-        or record.get("protocol_version") != PROTOCOL_VERSION
+        or record.get("protocol_version") != protocol_version
         or not isinstance(event, str)
         or event not in AUTHORITY_EFFECTS
         or record.get("authority_effect") != AUTHORITY_EFFECTS[event]
@@ -241,6 +247,8 @@ def snapshot_record(
     state_root: Path,
     kind: str,
     lifecycle: str,
+    *,
+    protocol_version: str = PROTOCOL_VERSION,
 ) -> dict[str, object]:
     ensure_safe_target(state_root, path, may_not_exist=False)
     try:
@@ -267,7 +275,7 @@ def snapshot_record(
     if (
         record.get("schema") != 1
         or record.get("protocol") != PROTOCOL
-        or record.get("protocol_version") != PROTOCOL_VERSION
+        or record.get("protocol_version") != protocol_version
         or record.get("status") not in SNAPSHOT_STATUSES[(kind, lifecycle)]
     ):
         raise ProtocolError("marker_invalid", f"unsupported {kind} snapshot envelope: {path}")
