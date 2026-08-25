@@ -80,6 +80,10 @@ python3 scripts/plugin_dist.py sync \
 
 The builder copies only the runtime manifest, assets, skills, runtime, current schemas, and current
 contracts. Tests, archives, coordination state, and caches never enter `dist`. The
+plugin UI uses [`assets/dev-mesh.png`](assets/dev-mesh.png); the unscaled user-supplied source
+artwork is preserved byte-for-byte at
+[`docs/assets/dev-mesh-icon-original.png`](docs/assets/dev-mesh-icon-original.png) so future
+packaging can start from the original, but it is excluded from the plugin package. The
 [`coordinate-shared-workspace`](skills/coordinate-shared-workspace/SKILL.md) skill owns the
 operational instructions. Its normal path is:
 
@@ -160,6 +164,8 @@ liveness; consumers still connect to the current endpoint.
   cutover coverage.
 - [`skills/`](skills/) — thin Agent-facing launchers and instructions; protocol logic remains in the
   runtime.
+- [`assets/`](assets/) — the packaged plugin icon; source artwork stays in `docs/assets/` and is not
+  distributed with the plugin.
 - [`contracts/`](contracts/) and [`schemas/`](schemas/) — normative public surface.
 - [`DESIGN.md`](DESIGN.md) — architecture boundaries, state layout, and deeper navigation.
 

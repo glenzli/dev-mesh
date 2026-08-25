@@ -118,17 +118,13 @@ button, select { cursor: pointer; }
 
 .brand { gap: 10px; }
 .brand-mark {
-  display: grid;
-  place-items: center;
+  display: block;
   width: 36px;
   height: 36px;
   border: 1px solid var(--border-strong);
   border-radius: 9px;
-  background: var(--surface-muted);
-  color: var(--text);
-  font-size: 12px;
-  font-weight: 800;
-  letter-spacing: .04em;
+  background: #fff;
+  object-fit: cover;
 }
 .brand h1 { margin: 0; font-size: 18px; letter-spacing: -.02em; }
 .brand p { margin: 1px 0 0; color: var(--muted); font-size: 12px; }

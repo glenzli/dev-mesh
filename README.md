@@ -69,6 +69,9 @@ python3 scripts/plugin_dist.py sync \
 
 构建器只复制运行所需的 manifest、assets、skills、runtime、当前 schemas 与 current contracts；
 tests、archive、协调状态及缓存不会进入 `dist`。
+插件展示使用 [`assets/dev-mesh.png`](assets/dev-mesh.png)；用户提供的未缩放原始图稿逐字节保留在
+[`docs/assets/dev-mesh-icon-original.png`](docs/assets/dev-mesh-icon-original.png)，便于后续重新分装而不损失来源，
+但不会进入插件安装包。
 [`coordinate-shared-workspace`](skills/coordinate-shared-workspace/SKILL.md) 提供协作操作说明。
 普通路径是：
 
@@ -139,6 +142,7 @@ python3 scripts/install_console_service.py status
   看板。
 - [`runtime/tests/`](runtime/tests/) — 协议、崩溃窗口、并发、Observer、Console 和切换测试。
 - [`skills/`](skills/) — 面向 Agent 的薄启动器和操作说明；协议逻辑仍由 runtime 持有。
+- [`assets/`](assets/) — 正式插件图标；原始图稿另存于 `docs/assets/`，不随插件分发。
 - [`contracts/`](contracts/) 和 [`schemas/`](schemas/) — 规范性的公共协议表面。
 - [`DESIGN.md`](DESIGN.md) — 架构边界、状态布局和深入导航。
 

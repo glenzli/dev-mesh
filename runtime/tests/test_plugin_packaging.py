@@ -26,7 +26,7 @@ class PluginPackagingTest(unittest.TestCase):
                 revision="abcdef1234567890abcdef1234567890abcdef12",
                 require_clean=False,
             )
-            self.assertEqual(metadata["version"], "0.2.1")
+            self.assertEqual(metadata["version"], "0.2.2")
             self.assertEqual(
                 metadata["source_revision"],
                 "abcdef1234567890abcdef1234567890abcdef12",
@@ -37,6 +37,13 @@ class PluginPackagingTest(unittest.TestCase):
             )
             self.assertTrue((package / "runtime" / "dev_mesh_coord" / "cli.py").is_file())
             self.assertTrue((package / "contracts" / "dev-mesh-coordination-20260823.1.md").is_file())
+            self.assertTrue((package / "assets" / "dev-mesh.png").is_file())
+            self.assertFalse((package / "assets" / "dev-mesh.svg").exists())
+            self.assertFalse((package / "docs" / "assets" / "dev-mesh-icon-original.png").exists())
+            packaged_manifest = json.loads(
+                (package / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(packaged_manifest["interface"]["composerIcon"], "./assets/dev-mesh.png")
             self.assertFalse((package / "runtime" / "tests").exists())
             self.assertFalse((package / "contracts" / "archive").exists())
             self.assertFalse((package / ".dev-mesh").exists())

@@ -17,6 +17,17 @@ from helpers import GitWorkspaceTest
 
 
 class ConsoleRuntimeTest(GitWorkspaceTest):
+    def test_console_brand_uses_packaged_png_icon(self) -> None:
+        web_root = Path(__file__).parents[1] / "dev_mesh_console" / "web"
+        icon = (web_root / "dev-mesh-icon.png").read_bytes()
+        html = (web_root / "index.html").read_text(encoding="utf-8")
+
+        self.assertEqual(icon[:8], b"\x89PNG\r\n\x1a\n")
+        self.assertEqual(int.from_bytes(icon[16:20]), 128)
+        self.assertEqual(int.from_bytes(icon[20:24]), 128)
+        self.assertIn('rel="icon" type="image/png" href="/dev-mesh-icon.png"', html)
+        self.assertIn('class="brand-mark" src="/dev-mesh-icon.png"', html)
+
     def test_tooltip_position_tracks_the_scrolled_viewport(self) -> None:
         node = shutil.which("node")
         if node is None:
