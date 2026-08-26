@@ -7,6 +7,8 @@ its task and intended scope. When scopes overlap, Dev Mesh coordinates waiting, 
 work. Commits run serially through managed Git operations. State remains under
 `.dev-mesh/` in the workspace and does not depend on a remote service.
 
+![Dev Mesh collaboration network](docs/assets/dev-mesh-banner.png)
+
 The plugin provides two skills:
 
 - [`coordinate-shared-workspace`](skills/coordinate-shared-workspace/SKILL.md) — manages Runs,

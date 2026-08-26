@@ -6,6 +6,8 @@ Dev Mesh 用于多个 Agent 在同一个 Git 工作区内并行工作。Agent �
 范围重叠时，Dev Mesh 协调等待、交接或隔离处理；提交通过受管 Git 操作串行执行。
 状态保存在工作区的 `.dev-mesh/` 中，不依赖远程服务。
 
+![Dev Mesh 协作网络](docs/assets/dev-mesh-banner.png)
+
 插件提供两个技能：
 
 - [`coordinate-shared-workspace`](skills/coordinate-shared-workspace/SKILL.md) — 管理 Run、Claim、
