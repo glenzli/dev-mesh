@@ -2,113 +2,52 @@
 
 # Dev Mesh
 
-Dev Mesh 是面向多个 Agent 共享同一个 Git 工作区的当前代协同层。它为短周期工作提供明确
-权限，处理工作重叠，串行化协作式 Git 发布，并留下可在事后检查的有界证据。
+Dev Mesh 用于多个 Agent 在同一个 Git 工作区内并行工作。Agent 在写入前登记任务和修改范围；
+范围重叠时，Dev Mesh 协调等待、交接或隔离处理；提交通过受管 Git 操作串行执行。
+状态保存在工作区的 `.dev-mesh/` 中，不依赖远程服务。
 
-系统有意保持本地化和轻量：普通的非重叠修改只经过一个 Run 和一个可复用 Claim；只有实际贡献
-源码字节时才产生 Work Result，无修改检查直接释放。Git 提交是可选且独立的发布步骤；只有不同
-Run 实际发生重叠时，才会进入争用处理、临时分支和微事务。
+插件提供两个技能：
 
-## 当前代
+- [`coordinate-shared-workspace`](skills/coordinate-shared-workspace/SKILL.md) — 管理 Run、Claim、
+  冲突处理和 Git 提交。
+- [`observe-dev-mesh`](skills/observe-dev-mesh/SKILL.md) — 只读采集多个工作区的状态，并启动本地
+  Console。
 
-当前启用的权限合同是 `dev-mesh.coordination@20260823.1`。这是第二代实现，但协议使用不可变
-的 `YYYYMMDD.x` 标识，而不是持续变化的 `v2` 标签。可选且兼容的跨项目证据合同是
-`dev-mesh.cross-project-collaboration@20260823.1`。
+## 安装
 
-Observer 可只读采集 `20260814.1` 与 `20260823.1` 来源，并把来源版本显式记录在本地目录库；
-这不会放宽 Producer 的写入合同，未知版本只显示为适配提示，不伪装成采集故障。
-
-工作区权限位于 `.dev-mesh/`。从 `20260814.1` 切换时，旧权限状态和更早的完整 archive 都会
-被丢弃，只在 `.dev-mesh/coord/analysis/` 保留去内容化、有界且无权限含义的事件证据。
-已退役的 `.agent-coordination/` 仍只保留用于阻止旧写入方的 tombstone。退役流程见
-[`docs/CUTOVER.md`](docs/CUTOVER.md)。
-
-## 协调对象
-
-- **Run** — 一个 Agent 任务在一个 Git 工作区中的执行身份。
-- **Claim** — 该 Run 可以修改的精确路径和语义资源。
-- **Work Result** — 完成工作的非权限证据；它释放 Claim，但不声称已提交或提供私有回滚点。
-- **Workspace bytes** — 对明确声明的 Git ignored 小文件记录有界内容指纹，使其也能完成
-  Work Result 和 baseline 接力；它不创建分支、不提交数据，也不替代数据库事务。
-- **Contention** — Claim 重叠时，待写入方可以直接等待；只有重分配、交接、独占或分支卸载
-  会进入双方确认。
-- **受管 Git 发布** — 直接提交和事务发布共享一个 canonical Git fence，避免协作 Agent 争用
-  工作区 index 或分支。
-- **Events** — 低频、不可变的生命周期证据；heartbeat 只更新快照，不产生事件流量。
-- **Observer 和 Console** — 只读投影、诊断、协作流和跨项目证据；它们不授予或重建权限。
-
-Dev Mesh 记录通信，但不负责投递。Agent 必须先通过宿主环境的任务控制能力联系、创建或恢复
-真实目标任务，再用 Dev Mesh 记录已经成功执行的动作。`send`、`ack` 和 handoff 命令本身不会
-启动或唤醒另一个任务。
-
-## 安装与 Agent 常规路径
-
-Dev Mesh 通过 [Glenzli Marketplace](https://github.com/glenzli/marketplace) 发布。首次使用时先登记
-marketplace，再安装 Dev Mesh：
+Dev Mesh 通过 [Glenzli Marketplace](https://github.com/glenzli/marketplace) 发布：
 
 ```bash
 codex plugin marketplace add glenzli/marketplace --ref main
 codex plugin add dev-mesh@glenzli-marketplace
 ```
 
-第一条命令只需执行一次；以后可从同一 marketplace 显式安装或更新插件。安装后，
-`coordinate-shared-workspace` 与 `observe-dev-mesh` 会作为同一版本的技能一起提供；不要长期把全局
-技能直接软链到此源码仓库。安装或更新后，请在新任务中使用新版本。
+marketplace 只需登记一次。安装或更新插件后，请在新任务中使用新版本。
 
-发布版本采用纯 `MAJOR.MINOR.PATCH`，不追加构建后缀；版本只表达功能兼容性。安装包对应的
-完整源码提交单独记录在 release metadata 的 `source_revision` 中，不混入插件版本。
+## 工作模型
 
-维护者从干净的源码提交构建最小安装包，再显式同步到 plugin collection 的工作树；同步不会提交或
-推送任何仓库：
+- **Run** — 一个 Agent 任务在当前工作区中的执行身份。
+- **Claim** — 该 Run 计划修改的路径和语义范围。
+- **Work Result** — 工作实际产生修改时记录完成结果，并释放对应 Claim。
+- **Contention** — 不同 Run 的 Claim 发生重叠，需要等待或明确处理。
 
-```bash
-python3 scripts/plugin_dist.py build
-python3 scripts/plugin_dist.py sync \
-  --package dist/dev-mesh --marketplace-root ../marketplace --replace
-```
-
-构建器只复制运行所需的 manifest、assets、skills、runtime、当前 schemas 与 current contracts；
-tests、archive、协调状态及缓存不会进入 `dist`。
-插件展示使用 [`assets/dev-mesh.png`](assets/dev-mesh.png)；用户提供的未缩放原始图稿逐字节保留在
-[`docs/assets/dev-mesh-icon-original.png`](docs/assets/dev-mesh-icon-original.png)，便于后续重新分装而不损失来源，
-但不会进入插件安装包。
-[`coordinate-shared-workspace`](skills/coordinate-shared-workspace/SKILL.md) 提供协作操作说明。
-普通路径是：
+普通修改的路径如下：
 
 ```text
 检查 -> 加入 Run -> 创建或复用 Claim -> 编辑 -> 验证
-     -> 按实际贡献完成或直接释放 -> 离开 Run
-                               \
-                                -> 可选受管发布
+     -> 完成 Claim，或通过 Claim 受管提交 -> 离开 Run
 ```
 
-同一 Run 已有 Claim 覆盖请求时会直接复用，不生成自争用；没有跨 Run 重叠时，不会引入额外
-协调流程。`claim-finish` 只为实际源码贡献建立 Work Result。返回的 `next_action` 发现不同 Run
-重叠或恢复需求时，技能才会把 Agent 路由到对应的争用、事务或恢复步骤。
+没有跨 Run 重叠时，流程只包含一个 Run 和一个 Claim。发生重叠时，后到的 Claim 可以等待；
+交接、独占或短命分支只在需要时使用。具体命令和恢复流程由
+[`coordinate-shared-workspace`](skills/coordinate-shared-workspace/SKILL.md) 说明。
 
-最常见的重叠不需要完整协商：后到的 Claim 自动进入待仲裁状态，选择等待后，原 Claim 完成
-即可激活。`parallel-tx` 不是两个 Agent 同时离开主线，而是把待写入方卸载到一个短命分支；
-只有双方都声明了互不相交的语义写资源时才能选择它。继承 dirty baseline 时，接受动作同时绑定
-内容摘要、canonical revision 和分支；其间任一项变化都会返回新证据，要求 Agent 再确认一次。
+Dev Mesh 可以记录已经完成的任务间通信，但不负责发送消息或唤醒任务。联系其他任务仍需
+使用宿主环境提供的任务控制能力。
 
-## 协同模型一览
+## Console
 
-下面的 Console 示例由真实的项目关系和协作流组件使用虚拟数据渲染，用于说明视觉语义，
-不是生产活动截图。
-
-项目视图区分显式绑定且由接收方确认的跨任务协作，与较弱的同 Run 线索。实线箭头表示已记录
-的协作关系；虚线括号只表示同一个 Owner/Run 身份出现在多个工作区中，它是线索，不是任务间
-发生通信的证明。
-
-![虚拟 Console 项目协作图](docs/assets/console-project-collaboration-demo.png)
-
-协作流只投影不同 Run 之间的争用、交接、依赖、事务和恢复。普通 Run/Claim 生命周期不会为了
-填充图表而展开；需要追溯时再从折叠的原始事件区查看。
-
-## 本地观测
-
-同一 plugin 中独立的 [`observe-dev-mesh`](skills/observe-dev-mesh/SKILL.md) 技能把当前控制面采集到外部
-SQLite catalog，并启动仅监听 loopback 的 Web Console：
+Observer 将工作区状态采集到外部 SQLite catalog，并提供只监听 loopback 的 Web Console：
 
 ```bash
 python3 skills/observe-dev-mesh/scripts/console.py \
@@ -117,38 +56,62 @@ python3 skills/observe-dev-mesh/scripts/console.py \
   --host 127.0.0.1 --port 8765
 ```
 
-Console 默认展示当前权限风险、不同 Run 之间的争用、交接、依赖、恢复和跨项目关系；普通
-生命周期被折叠，原始事件仅在按需审计区展开。Catalog 位于被观测工作区之外；Observer 对源
-工作区保持只读。
+Console 展示当前 Run、Claim、冲突、交接、恢复状态和跨项目关系。常规生命周期默认折叠，
+原始事件可在审计区域按需查看。Observer 对被采集工作区保持只读。
 
-在 macOS 上，移动仓库或更换 Python runtime 后，可安装仓库自带的 LaunchAgent，使 Console
-持续运行：
+下面的示例使用虚拟数据展示项目关系和协作流，不是生产活动截图。
+
+![Dev Mesh Console 项目协作图](docs/assets/console-project-collaboration-demo.png)
+
+macOS 上可安装仓库自带的 LaunchAgent：
 
 ```bash
 python3 scripts/install_console_service.py install
 python3 scripts/install_console_service.py status
 ```
 
-服务默认还会通过 `infra.discovery.registration@20260812.1` 发布经过脱敏的
-`dev-mesh.observer.status@20260812.1` Unix socket offer。Registration 是发现证据，不代表
-服务仍然存活；消费者仍需连接当前 endpoint 进行确认。
+## 协议与状态
+
+- 当前写入合同为 `dev-mesh.coordination@20260823.1`。
+- 可选的跨项目关系合同为
+  `dev-mesh.cross-project-collaboration@20260823.1`。
+- 权限以 `.dev-mesh/coord/20260823.1/` 下的当前状态为准；Events、Observer 和 Console 只用于
+  诊断。
+- Observer 可以读取 `20260814.1` 和 `20260823.1` 来源，未知版本会报告为兼容性问题。
+- 从旧协议切换时不迁移旧权限状态。退役步骤见 [`docs/CUTOVER.md`](docs/CUTOVER.md)。
+
+协议保证和状态布局见 [`DESIGN.md`](DESIGN.md)、[`contracts/`](contracts/) 和
+[`schemas/`](schemas/)。
+
+## 开发与发布
+
+维护者从干净的源码提交构建插件包，再同步到 marketplace 工作树：
+
+```bash
+python3 scripts/plugin_dist.py build
+python3 scripts/plugin_dist.py sync \
+  --package dist/dev-mesh --marketplace-root ../marketplace --replace
+```
+
+`sync` 不会提交或推送仓库。发布版本使用普通的 `MAJOR.MINOR.PATCH`；源码提交记录在
+release metadata 的 `source_revision` 中。
+
+安装包只包含 manifest、运行时、技能、assets、当前 schemas 和 contracts。测试、历史状态和
+缓存不会进入安装包。插件图标位于 [`assets/dev-mesh.png`](assets/dev-mesh.png)，原始图稿保留在
+[`docs/assets/dev-mesh-icon-original.png`](docs/assets/dev-mesh-icon-original.png)。
 
 ## 仓库导航
 
-- [`runtime/dev_mesh_coord/`](runtime/dev_mesh_coord/) — 权限、Work Result、dirty baseline、争用、
-  可恢复 Git effect、受管提交、微事务和跨项目关系生产端。
-- [`runtime/dev_mesh_observer/`](runtime/dev_mesh_observer/) — 有界源验证、catalog、诊断和报告。
-- [`runtime/dev_mesh_console/`](runtime/dev_mesh_console/) — loopback API、采集生命周期和浏览器
-  看板。
-- [`runtime/tests/`](runtime/tests/) — 协议、崩溃窗口、并发、Observer、Console 和切换测试。
-- [`skills/`](skills/) — 面向 Agent 的薄启动器和操作说明；协议逻辑仍由 runtime 持有。
-- [`assets/`](assets/) — 正式插件图标；原始图稿另存于 `docs/assets/`，不随插件分发。
-- [`contracts/`](contracts/) 和 [`schemas/`](schemas/) — 规范性的公共协议表面。
-- [`DESIGN.md`](DESIGN.md) — 架构边界、状态布局和深入导航。
+- [`runtime/dev_mesh_coord/`](runtime/dev_mesh_coord/) — 协调状态与命令实现。
+- [`runtime/dev_mesh_observer/`](runtime/dev_mesh_observer/) — 只读采集和 catalog。
+- [`runtime/dev_mesh_console/`](runtime/dev_mesh_console/) — 本地 API 和 Web Console。
+- [`runtime/tests/`](runtime/tests/) — 协议、并发、恢复、Observer 和 Console 测试。
+- [`skills/`](skills/) — Agent 使用的入口和操作说明。
+- [`contracts/`](contracts/) 与 [`schemas/`](schemas/) — 公共协议和数据结构。
 
 ## 验证
 
-协议或跨边界修改使用完整验证门：
+协议或跨边界修改使用完整验证：
 
 ```bash
 PYTHONPATH=runtime python3 -m unittest discover -s runtime/tests -v
@@ -158,5 +121,4 @@ python3 skills/coordinate-shared-workspace/scripts/coord.py --help
 python3 skills/observe-dev-mesh/scripts/console.py --help
 ```
 
-对于有界的文档或展示修改，先运行能够证明链接、命令或渲染组件正确的聚焦检查，再按风险决定
-是否升级到完整验证门。
+文档和展示修改只需运行与改动相关的检查。
