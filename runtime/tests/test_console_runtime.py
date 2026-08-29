@@ -178,6 +178,123 @@ class ConsoleRuntimeTest(GitWorkspaceTest):
             text=True,
         )
 
+    def test_dashboard_presentation_collapses_independent_work(self) -> None:
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("Node.js is unavailable")
+        module = (
+            Path(__file__).parents[1]
+            / "dev_mesh_console"
+            / "web"
+            / "dashboard_presentation.js"
+        ).as_uri()
+        script = f"""
+          import {{ contentionSummaries, dashboardPresentation }} from {json.dumps(module)};
+          const quietDashboard = {{
+            coordination: {{event_count: 0, independent_run_count: 5, total_run_count: 5}},
+            project_collaboration: {{collaboration_relation_count: 0, inferred_relation_count: 1, relation_count: 1}},
+            projects: [{{workspace_id: "site", name: "site"}}],
+            active_details: [
+              {{kind: "run", workspace_id: "site", run_id: "run-1"}},
+              {{kind: "claim", workspace_id: "site", run_id: "run-1"}},
+            ],
+          }};
+          const selected = dashboardPresentation(quietDashboard, "site");
+          if (!selected.quiet || selected.showProjects || selected.showFlow || selected.showProjectRelations) {{
+            throw new Error(`independent work did not collapse ${{JSON.stringify(selected)}}`);
+          }}
+          if (selected.activeRunCount !== 1 || selected.independentRunCount !== 5) {{
+            throw new Error(`quiet work counts changed ${{JSON.stringify(selected)}}`);
+          }}
+          const overview = dashboardPresentation(quietDashboard);
+          if (!overview.showProjects) throw new Error("all-project overview lost project navigation");
+          const empty = dashboardPresentation({{
+            coordination: {{event_count: 0}},
+            project_collaboration: {{collaboration_relation_count: 0}},
+            projects: [],
+            active_details: [],
+          }});
+          if (empty.quiet || !empty.showProjects) throw new Error("missing projects were presented as healthy quiet work");
+          const openedEvent = {{
+            event: "contention-opened",
+            contention_id: "contention-1",
+            workspace_id: "site",
+            at: "2026-08-29T14:19:16Z",
+            details: {{contention_participants: [
+              {{owner: "agent-a", run_id: "run-a", scope: "src/a.js"}},
+              {{owner: "agent-b", run_id: "run-b", scope: "src/b.js"}},
+            ]}},
+          }};
+          const activeDashboard = {{
+            ...quietDashboard,
+            operational: {{contention: {{hot_paths: [{{path: "src/a.js"}}, {{path: "src/b.js"}}]}}}},
+            coordination: {{event_count: 1, relation_count: 1, events: [openedEvent]}},
+            active_details: [{{kind: "contention", workspace_id: "site", object_id: "contention-1"}}],
+          }};
+          const contention = dashboardPresentation(activeDashboard, "site");
+          if (contention.quiet || !contention.attention || !contention.showWorkbench) {{
+            throw new Error(`active contention was not actionable ${{JSON.stringify(contention)}}`);
+          }}
+          if (contention.showFlow || contention.showProjects || contention.affectedRunCount !== 2 || contention.requestedPathCount !== 2) {{
+            throw new Error(`single conflict event was over-expanded ${{JSON.stringify(contention)}}`);
+          }}
+          if (contention.defaultOpenFlow) throw new Error("single conflict event opened an empty investigation");
+          const activeOutsideWindow = dashboardPresentation({{
+            ...quietDashboard,
+            operational: {{contention: {{hot_paths: []}}}},
+            coordination: {{event_count: 0, relation_count: 0, events: []}},
+            active_details: [{{
+              kind: "contention",
+              workspace_id: "site",
+              object_id: "contention-before-window",
+              details: {{contention_participants: openedEvent.details.contention_participants}},
+            }}],
+          }}, "site");
+          if (!activeOutsideWindow.attention || !activeOutsideWindow.showWorkbench || activeOutsideWindow.affectedRunCount !== 2) {{
+            throw new Error(`active contention outside the event window lost its participants ${{JSON.stringify(activeOutsideWindow)}}`);
+          }}
+          const investigation = dashboardPresentation({{
+            ...activeDashboard,
+            coordination: {{
+              event_count: 2,
+              relation_count: 1,
+              events: [openedEvent, {{...openedEvent, event: "contention-proposed", at: "2026-08-29T14:20:00Z"}}],
+            }},
+          }}, "site");
+          if (!investigation.showFlow || !investigation.defaultOpenFlow) {{
+            throw new Error("active multi-event investigation did not open by default");
+          }}
+          const resolvedDashboard = {{
+            ...activeDashboard,
+            active_details: [],
+            coordination: {{
+              event_count: 2,
+              relation_count: 1,
+              events: [openedEvent, {{
+                ...openedEvent,
+                event: "contention-cancelled",
+                at: "2026-08-29T14:21:11Z",
+                details: {{...openedEvent.details, reason_code: "superseded"}},
+              }}],
+            }},
+          }};
+          const resolved = dashboardPresentation(resolvedDashboard, "site");
+          const summaries = contentionSummaries(resolvedDashboard);
+          if (resolved.attention || !resolved.showWorkbench || !resolved.showFlow) {{
+            throw new Error(`resolved contention state was lost ${{JSON.stringify(resolved)}}`);
+          }}
+          if (resolved.defaultOpenFlow) throw new Error("resolved contention opened its investigation by default");
+          if (summaries.length !== 1 || summaries[0].status !== "cancelled" || summaries[0].reasonCode !== "superseded") {{
+            throw new Error(`terminal contention was not summarized ${{JSON.stringify(summaries)}}`);
+          }}
+        """
+        subprocess.run(
+            [node, "--input-type=module", "--eval", script],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
     def test_root_registry_is_durable_bounded_external_state(self) -> None:
         registry_path = Path(self.temporary.name) / "console-roots.json"
         registry = RootRegistry(registry_path, [self.root])

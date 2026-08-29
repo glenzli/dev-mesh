@@ -63,13 +63,15 @@ python3 skills/observe-dev-mesh/scripts/console.py \
 ```
 
 The Console shows current Runs, Claims, contention, handoffs, recovery state, and cross-project
-relations. Routine lifecycle details are collapsed by default; raw events remain available in the
-audit view. The Observer does not write to collected workspaces.
+relations. Active contention presents the participating Runs, declared scopes, and requested
+paths directly; the collaboration flow opens by default when useful causal history exists. Closed
+contention and raw events remain available on demand. The Observer does not write to collected
+workspaces.
 
-The example below uses virtual data to show project relations and collaboration flow. It is not a
-production activity capture.
+The example below uses virtual data to show the contention workbench and collaboration flow. It is
+not a production activity capture.
 
-![Dev Mesh Console project collaboration graph](docs/assets/console-project-collaboration-demo.en.png)
+![Dev Mesh Console contention workbench](docs/assets/console-contention-workbench.en.png)
 
 On macOS, the repository-owned LaunchAgent can keep the Console running:
 

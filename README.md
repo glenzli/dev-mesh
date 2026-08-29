@@ -58,12 +58,13 @@ python3 skills/observe-dev-mesh/scripts/console.py \
   --host 127.0.0.1 --port 8765
 ```
 
-Console 展示当前 Run、Claim、冲突、交接、恢复状态和跨项目关系。常规生命周期默认折叠，
-原始事件可在审计区域按需查看。Observer 对被采集工作区保持只读。
+Console 展示当前 Run、Claim、冲突、交接、恢复状态和跨项目关系。活动争用直接显示参与 Run、
+声明范围和争用请求路径；存在可用因果关系时协作流默认展开。已结束争用和原始事件按需查看。
+Observer 对被采集工作区保持只读。
 
-下面的示例使用虚拟数据展示项目关系和协作流，不是生产活动截图。
+下面的示例使用虚拟数据展示争用工作台和协作流，不是生产活动截图。
 
-![Dev Mesh Console 项目协作图](docs/assets/console-project-collaboration-demo.png)
+![Dev Mesh Console 争用工作台](docs/assets/console-contention-workbench.png)
 
 macOS 上可安装仓库自带的 LaunchAgent：
 

@@ -56,7 +56,7 @@
 
       <section id="insights" class="insight-grid" aria-label="Coordination insights"></section>
 
-      <section class="panel project-collaboration-panel">
+      <section id="project-collaboration-panel" class="panel project-collaboration-panel">
         <div class="panel-heading compact-heading">
           <div>
             <span class="eyebrow" data-i18n="sections.projectCollaborationEyebrow">跨工作区</span>
@@ -67,8 +67,8 @@
         <div id="project-collaboration" class="project-collaboration"></div>
       </section>
 
-      <section class="dashboard-grid">
-        <article class="panel projects-panel">
+      <section id="work-status-grid" class="dashboard-grid">
+        <article id="projects-panel" class="panel projects-panel">
           <div class="panel-heading">
             <div>
               <span class="eyebrow" data-i18n="sections.projectsEyebrow">项目边界</span>
@@ -82,7 +82,7 @@
         <article class="panel activity-panel">
           <div class="panel-heading">
             <div>
-              <span class="eyebrow" data-i18n="sections.activityEyebrow">当前权限</span>
+              <span class="eyebrow" data-i18n="sections.activityEyebrow">当前工作</span>
               <h2 data-i18n="sections.activity">正在发生</h2>
             </div>
             <span id="active-count" class="panel-count">0</span>
@@ -91,14 +91,14 @@
         </article>
       </section>
 
-      <section class="panel flow-panel">
-        <div class="panel-heading flow-heading">
+      <details id="flow-panel" class="panel flow-panel">
+        <summary class="panel-heading flow-heading">
           <div>
             <span class="eyebrow" data-i18n="sections.flowEyebrow">跨任务因果</span>
             <h2 data-i18n="sections.flow">协作流</h2>
           </div>
           <div id="flow-summary" class="flow-summary"></div>
-        </div>
+        </summary>
         <div class="legend" aria-label="Flow legend">
           <span><i class="legend-line normal"></i><b data-i18n="legend.main">参与方时间线</b></span>
           <span><i class="legend-line branch"></i><b data-i18n="legend.branch">临时分支</b></span>
@@ -126,10 +126,10 @@
             <div id="flow-tooltip" class="flow-tooltip" hidden></div>
           </div>
         </div>
-      </section>
+      </details>
 
-      <section class="dashboard-grid lower-grid">
-        <article class="panel diagnostics-panel">
+      <section id="lower-grid" class="dashboard-grid lower-grid">
+        <article id="diagnostics-panel" class="panel diagnostics-panel">
           <div class="panel-heading">
             <div>
               <span class="eyebrow" data-i18n="sections.diagnosticsEyebrow">待确认与恢复</span>

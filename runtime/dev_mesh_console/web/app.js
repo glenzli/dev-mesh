@@ -1,4 +1,5 @@
 import { applyTranslations, diagnosticLabel, eventLabel, language, t, toggleLanguage } from "/i18n.js";
+import { dashboardPresentation } from "/dashboard_presentation.js";
 import { renderFlow } from "/graph.js";
 import {
   projectHasSignal,
@@ -14,13 +15,15 @@ const state = {
   collecting: false,
   repairingDiscovery: false,
   flowScrollToLatest: true,
+  flowDisclosureTouched: false,
   runClosePreview: null,
 };
 
 const nodes = Object.fromEntries([
   "connection-status", "refresh", "repair-discovery", "workspace", "window", "generated-at", "protocol-version",
   "metrics", "insights", "projects", "project-count", "active-details", "active-count", "flow-summary",
-  "project-collaboration", "project-collaboration-count",
+  "project-collaboration", "project-collaboration-count", "project-collaboration-panel",
+  "projects-panel", "work-status-grid", "flow-panel", "diagnostics-panel", "lower-grid",
   "flow", "flow-scroll", "flow-scrollbar", "flow-scrollbar-control", "flow-owner-rail", "flow-tooltip", "flow-empty", "diagnostics", "diagnostic-count",
   "events", "event-count", "language", "theme", "add-root", "root-dialog", "root-form",
   "root-path", "root-list", "dialog-error", "close-dialog", "cancel-root",
@@ -116,7 +119,7 @@ function activeTotal(active) {
   return Object.values(active ?? {}).reduce((total, value) => total + Number(value), 0);
 }
 
-function coordinationActiveDetails() {
+function activeAuthorityDetails() {
   return (state.dashboard?.active_details ?? []).filter((item) => item.kind !== "run");
 }
 
@@ -170,20 +173,36 @@ function updateTopbarActions() {
   nodes["repair-discovery"].setAttribute("aria-busy", String(state.repairingDiscovery));
 }
 
-function renderMetrics() {
+function renderMetrics(presentation) {
   const dashboard = state.dashboard;
   const operational = dashboard.operational;
   const diagnostics = operational.diagnostics ?? [];
   const grouped = partitionDiagnostics(diagnostics);
   const hasCritical = grouped.action.some((item) => item.severity === "critical") || dashboard.collector.last_error;
   const diagnosticTone = hasCritical ? "danger" : grouped.action.length ? "attention" : "neutral";
-  const values = [
-    ["workspaces", t("metrics.workspaces"), visibleProjects().length, "neutral"],
-    ["authority", t("metrics.authority"), coordinationActiveDetails().length, coordinationActiveDetails().length ? "attention" : "neutral"],
-    ["conflicts", t("metrics.conflicts"), operational.contention?.active ?? 0, operational.contention?.active ? "danger" : "neutral"],
-    ["collaborations", t("metrics.collaborations"), dashboard.coordination?.relation_count ?? 0, "neutral"],
-    ["diagnostics", t("metrics.diagnostics"), grouped.action.length, diagnosticTone],
-  ];
+  const values = presentation.showWorkbench
+    ? [
+        ["contentions", t(presentation.attention ? "metrics.activeContentions" : "metrics.recentContentions"), presentation.attention ? presentation.activeContentionCount : presentation.contentionCount, presentation.attention ? "danger" : "good"],
+        ["affected-runs", t("metrics.affectedRuns"), presentation.affectedRunCount, presentation.attention ? "attention" : "neutral"],
+        ["requested-paths", t("metrics.requestedPaths"), presentation.requestedPathCount, presentation.requestedPathCount ? "attention" : "neutral"],
+        ["diagnostics", t("metrics.diagnostics"), grouped.action.length, diagnosticTone],
+      ]
+    : presentation.quiet
+      ? [
+        ["workspaces", t("metrics.workspaces"), visibleProjects().length, "neutral"],
+        ["runs", t("metrics.activeRuns"), presentation.activeRunCount, presentation.activeRunCount ? "good" : "neutral"],
+        ["independent", t("metrics.independentRuns"), presentation.independentRunCount, "neutral"],
+        ["diagnostics", t("metrics.diagnostics"), grouped.action.length, diagnosticTone],
+      ]
+    : [
+        ["workspaces", t("metrics.workspaces"), visibleProjects().length, "neutral"],
+        ["authority", t("metrics.authority"), activeAuthorityDetails().length, activeAuthorityDetails().length ? "attention" : "neutral"],
+        ["conflicts", t("metrics.conflicts"), operational.contention?.active ?? 0, operational.contention?.active ? "danger" : "neutral"],
+        ["collaborations", t("metrics.collaborations"), dashboard.coordination?.relation_count ?? 0, "neutral"],
+        ["diagnostics", t("metrics.diagnostics"), grouped.action.length, diagnosticTone],
+      ];
+  nodes.metrics.classList.toggle("is-quiet", presentation.quiet);
+  nodes.metrics.classList.toggle("is-workbench", presentation.showWorkbench);
   nodes.metrics.replaceChildren(...values.map(([key, label, value, tone]) => {
     const card = div(`metric-card ${tone}`);
     card.dataset.metric = key;
@@ -219,7 +238,122 @@ function insightCard(title, primary, facts, detail = "") {
   return card;
 }
 
-function renderInsights() {
+function renderQuietSummary(presentation) {
+  const selectedProject = state.dashboard.projects.find((item) => item.workspace_id === state.workspace);
+  const card = div("quiet-summary-card");
+  const mark = div("quiet-summary-mark", "✓");
+  const copy = div("quiet-summary-copy");
+  const eyebrow = document.createElement("span");
+  eyebrow.textContent = t("quiet.eyebrow");
+  const title = document.createElement("strong");
+  title.textContent = t("quiet.title");
+  const body = document.createElement("p");
+  body.textContent = t(selectedProject ? "quiet.bodyScoped" : "quiet.bodyAll", {
+    project: selectedProject?.name ?? "",
+  });
+  copy.append(eyebrow, title, body);
+  card.append(mark, copy);
+  nodes.insights.classList.remove("is-workbench");
+  nodes.insights.classList.add("is-quiet");
+  nodes.insights.replaceChildren(card);
+}
+
+function renderContentionWorkbench(presentation) {
+  const operational = state.dashboard.operational;
+  const workbench = div(`contention-workbench ${presentation.attention ? "is-active" : "is-recent"}`);
+  const heading = div("contention-workbench-heading");
+  const copy = div("contention-workbench-copy");
+  const eyebrow = document.createElement("span");
+  eyebrow.textContent = t(presentation.attention ? "contention.eyebrowActive" : "contention.eyebrowRecent");
+  const title = document.createElement("strong");
+  title.textContent = t(presentation.attention ? "contention.titleActive" : "contention.titleRecent");
+  const body = document.createElement("p");
+  body.textContent = t(presentation.attention ? "contention.bodyActive" : "contention.bodyRecent");
+  copy.append(eyebrow, title, body);
+  const status = document.createElement("span");
+  status.className = "contention-workbench-status";
+  status.textContent = t(presentation.attention ? "contention.status.active" : "contention.status.resolved");
+  heading.append(copy, status);
+
+  const list = div("contention-list");
+  const paths = operational.contention?.hot_paths ?? [];
+  presentation.contentions.forEach((contention, index) => {
+    const card = div("contention-card");
+    const cardHeading = div("contention-card-heading");
+    const identity = div("contention-card-identity");
+    const label = document.createElement("strong");
+    label.textContent = t("contention.itemTitle", {number: formatNumber(index + 1)});
+    const meta = document.createElement("span");
+    meta.textContent = [short(contention.contentionId, 28), formatTime(contention.updatedAt ?? contention.openedAt)].filter(Boolean).join(" · ");
+    identity.append(label, meta);
+    const chip = document.createElement("span");
+    chip.className = `contention-status is-${contention.status}`;
+    chip.textContent = t(`contention.status.${contention.status}`);
+    cardHeading.append(identity, chip);
+
+    const participants = div("contention-participants");
+    contention.participants.forEach((participant) => {
+      const participantCard = div("contention-participant");
+      const owner = document.createElement("strong");
+      owner.textContent = participant.owner || "—";
+      const run = document.createElement("span");
+      run.textContent = `${t("flow.run")} · ${short(participant.run_id, 34)}`;
+      const scope = document.createElement("code");
+      scope.textContent = participant.scope || "—";
+      participantCard.append(owner, run, scope);
+      participants.append(participantCard);
+    });
+
+    card.append(cardHeading);
+    if (contention.participants.length) card.append(participants);
+    if (contention.reasonCode) {
+      card.append(div("contention-reason", `${t("contention.reason")} · ${contention.reasonCode}`));
+    }
+    list.append(card);
+  });
+
+  const pathSection = div("contention-path-section");
+  if (paths.length) {
+    const pathLabel = document.createElement("span");
+    pathLabel.textContent = t("contention.paths");
+    const pathList = div("contention-paths");
+    paths.slice(0, 5).forEach((item) => {
+      const path = document.createElement("code");
+      path.textContent = item.path;
+      pathList.append(path);
+    });
+    if (paths.length > 5) {
+      pathList.append(div("contention-more-paths", t("contention.morePaths", {
+        count: formatNumber(paths.length - 5),
+      })));
+    }
+    pathSection.append(pathLabel, pathList);
+  }
+
+  const next = div("contention-next");
+  const nextLabel = document.createElement("strong");
+  nextLabel.textContent = t("contention.nextLabel");
+  const nextBody = document.createElement("span");
+  nextBody.textContent = t(presentation.attention ? "contention.nextActive" : "contention.nextRecent");
+  next.append(nextLabel, nextBody);
+  workbench.append(heading, list);
+  if (paths.length) workbench.append(pathSection);
+  workbench.append(next);
+  nodes.insights.classList.remove("is-quiet");
+  nodes.insights.classList.add("is-workbench");
+  nodes.insights.replaceChildren(workbench);
+}
+
+function renderInsights(presentation) {
+  if (presentation.showWorkbench) {
+    renderContentionWorkbench(presentation);
+    return;
+  }
+  if (presentation.quiet) {
+    renderQuietSummary(presentation);
+    return;
+  }
+  nodes.insights.classList.remove("is-quiet", "is-workbench");
   const operational = state.dashboard.operational;
   const contention = operational.contention;
   const transactions = operational.transaction_outcomes;
@@ -302,10 +436,17 @@ function renderWorkspaceOptions() {
 function selectWorkspace(workspaceId) {
   state.workspace = state.workspace === workspaceId ? "" : workspaceId;
   nodes.workspace.value = state.workspace;
+  state.flowDisclosureTouched = false;
+  nodes["flow-panel"].open = false;
   loadDashboard();
 }
 
-function renderProjectCollaboration() {
+function renderProjectCollaboration(presentation) {
+  nodes["project-collaboration-panel"].hidden = !presentation.showProjectRelations;
+  if (!presentation.showProjectRelations) {
+    nodes["project-collaboration-count"].textContent = "0";
+    return;
+  }
   const result = renderProjectOverview(
     nodes["project-collaboration"],
     state.dashboard.project_collaboration,
@@ -319,7 +460,11 @@ function renderProjectCollaboration() {
   nodes["project-collaboration-count"].textContent = formatNumber(result.relationCount);
 }
 
-function renderProjects() {
+function renderProjects(presentation) {
+  nodes["work-status-grid"].hidden = presentation.showWorkbench;
+  if (presentation.showWorkbench) return;
+  nodes["projects-panel"].hidden = !presentation.showProjects;
+  nodes["work-status-grid"].classList.toggle("is-activity-only", !presentation.showProjects);
   const projects = visibleProjects()
     .sort((left, right) => {
     const leftScore = activeTotal(left.active) * 10000 + left.diagnostic_count * 1000 + left.coordination_count;
@@ -371,7 +516,7 @@ function renderProjects() {
 }
 
 function renderActive() {
-  const details = coordinationActiveDetails();
+  const details = state.dashboard?.active_details ?? [];
   nodes["active-count"].textContent = formatNumber(details.length);
   if (!details.length) {
     nodes["active-details"].replaceChildren(empty("empty.activeTitle", "empty.activeBody"));
@@ -405,8 +550,10 @@ function renderDiagnostics() {
     pending: formatNumber(groups.pending.length),
     audit: formatNumber(groups.audit.length),
   });
+  nodes["diagnostics-panel"].hidden = values.length === 0;
+  nodes["lower-grid"].classList.toggle("is-audit-only", values.length === 0);
   if (!values.length) {
-    nodes.diagnostics.replaceChildren(empty("empty.diagnosticsTitle", "empty.diagnosticsBody"));
+    nodes.diagnostics.replaceChildren();
     return;
   }
   const names = projectNames();
@@ -529,8 +676,25 @@ function renderEvents() {
   }));
 }
 
-function renderGraph() {
+function renderGraph(presentation) {
+  nodes["flow-panel"].hidden = !presentation.showFlow;
+  if (!presentation.showFlow) {
+    nodes["flow-panel"].open = false;
+    nodes["flow-summary"].textContent = "";
+    return;
+  }
   const coordination = state.dashboard.coordination ?? {events: []};
+  if (!state.flowDisclosureTouched) {
+    nodes["flow-panel"].open = presentation.defaultOpenFlow;
+  }
+  const pieces = [
+    `${formatNumber(coordination.relation_count ?? 0)} ${t("flow.relations")}`,
+    `${formatNumber(coordination.participant_count ?? 0)} ${t("flow.participants")}`,
+    `${formatNumber(coordination.event_count ?? 0)} ${t("flow.keyEvents")}`,
+  ];
+  if (coordination.events_truncated) pieces.push(t("flow.truncated"));
+  nodes["flow-summary"].textContent = pieces.join(" · ");
+  if (!nodes["flow-panel"].open) return;
   const result = renderFlow(
     nodes.flow,
     nodes["flow-owner-rail"],
@@ -556,13 +720,6 @@ function renderGraph() {
   } else {
     updateFlowScrollbar();
   }
-  const pieces = [
-    `${formatNumber(coordination.relation_count ?? 0)} ${t("flow.relations")}`,
-    `${formatNumber(coordination.participant_count ?? 0)} ${t("flow.participants")}`,
-    `${formatNumber(result.eventCount)} ${t("flow.keyEvents")}`,
-  ];
-  if (coordination.events_truncated) pieces.push(t("flow.truncated"));
-  nodes["flow-summary"].textContent = pieces.join(" · ");
 }
 
 function updateFlowScrollbar() {
@@ -586,12 +743,13 @@ function render() {
   applyTranslations();
   updateTopbarActions();
   renderWorkspaceOptions();
-  renderMetrics();
-  renderInsights();
-  renderProjectCollaboration();
-  renderProjects();
+  const presentation = dashboardPresentation(state.dashboard, state.workspace);
+  renderMetrics(presentation);
+  renderInsights(presentation);
+  renderProjectCollaboration(presentation);
+  renderProjects(presentation);
   renderActive();
-  renderGraph();
+  renderGraph(presentation);
   renderDiagnostics();
   renderEvents();
   nodes["generated-at"].textContent = formatTime(state.dashboard.generated_at);
@@ -601,8 +759,8 @@ function render() {
   const needsAttention = groups.action.length > 0 || state.dashboard.collector.last_error;
   const pending = groups.pending.length > 0 && !needsAttention;
   updateStatus(
-    needsAttention || pending ? "degraded" : "ready",
-    needsAttention ? "status.review" : pending ? "status.pending" : "status.ready",
+    presentation.attention || needsAttention || pending ? "degraded" : "ready",
+    presentation.attention ? "status.coordination" : needsAttention ? "status.review" : pending ? "status.pending" : "status.ready",
   );
 }
 
@@ -686,12 +844,24 @@ nodes["repair-discovery"].addEventListener("click", repairDiscovery);
 nodes.workspace.addEventListener("change", () => {
   state.workspace = nodes.workspace.value;
   state.flowScrollToLatest = true;
+  state.flowDisclosureTouched = false;
+  nodes["flow-panel"].open = false;
   loadDashboard();
 });
 nodes.window.addEventListener("change", () => {
   state.window = Number(nodes.window.value);
   state.flowScrollToLatest = true;
+  state.flowDisclosureTouched = false;
+  nodes["flow-panel"].open = false;
   loadDashboard();
+});
+nodes["flow-panel"].addEventListener("toggle", () => {
+  if (nodes["flow-panel"].open && state.dashboard) {
+    renderGraph(dashboardPresentation(state.dashboard, state.workspace));
+  }
+});
+nodes["flow-panel"].querySelector("summary").addEventListener("click", () => {
+  state.flowDisclosureTouched = true;
 });
 nodes["flow-scroll"].addEventListener("scroll", () => {
   updateFlowScrollbar();

@@ -556,6 +556,19 @@ class ConsoleDashboardTest(GitWorkspaceTest):
                 ("agent-b", "run-b", "scope-b"),
             },
         )
+        active_contention = next(
+            item for item in dashboard["active_details"] if item["kind"] == "contention"
+        )
+        self.assertEqual(
+            {
+                (item["owner"], item["run_id"], item["scope"])
+                for item in active_contention["details"]["contention_participants"]
+            },
+            {
+                ("agent-primary", "run-primary", "scope-primary"),
+                ("agent-b", "run-b", "scope-b"),
+            },
+        )
         self.assertIn(
             "contention-opened",
             {event["event"] for event in dashboard["coordination"]["events"]},

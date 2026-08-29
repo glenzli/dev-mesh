@@ -539,10 +539,13 @@ def build_dashboard(
         kind = str(row["kind"])
         lifecycle = str(row["lifecycle"])
         identifier = str(row["workspace_id"])
+        is_active = _active_snapshot(record, kind, lifecycle)
         if kind == "contention":
             contention_id = record.get("contention_id")
             key = (identifier, str(contention_id))
-            if isinstance(contention_id, str) and key in displayed_contentions:
+            if isinstance(contention_id, str) and (
+                key in displayed_contentions or is_active
+            ):
                 contention_participants[key] = [
                     {
                         "owner": str(participant["owner"]),
@@ -591,18 +594,26 @@ def build_dashboard(
                     )
                     if record.get(field) is not None
                 }
-        if not _active_snapshot(record, kind, lifecycle):
+        if not is_active:
             continue
         active_counts_by_workspace[identifier][kind] += 1
         active_detail = {
-                "workspace_id": identifier,
-                "kind": kind,
-                "object_id": str(row["object_id"]),
-                "status": row["status"],
-                "owner": record.get("owner"),
-                "run_id": record.get("run_id") or record.get("owner_run_id"),
-                "scope": record.get("scope"),
-            }
+            "workspace_id": identifier,
+            "kind": kind,
+            "object_id": str(row["object_id"]),
+            "status": row["status"],
+            "owner": record.get("owner"),
+            "run_id": record.get("run_id") or record.get("owner_run_id"),
+            "scope": record.get("scope"),
+        }
+        if kind == "contention":
+            participants = contention_participants.get(
+                (identifier, str(record.get("contention_id")))
+            )
+            if participants:
+                active_detail["details"] = {
+                    "contention_participants": participants,
+                }
         active_details.append(active_detail)
 
     for event in all_events:
