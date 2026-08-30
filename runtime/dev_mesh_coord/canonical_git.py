@@ -294,7 +294,11 @@ def _advance(
                 "add",
                 "-A",
                 "--",
-                *[item for item in record.get("paths", []) if isinstance(item, str)],
+                *[
+                    item
+                    for item in record.get("intended_paths", [])
+                    if isinstance(item, str)
+                ],
                 pass_fds=(canonical_fd,),
             )
             index_tree = _index_tree(root)

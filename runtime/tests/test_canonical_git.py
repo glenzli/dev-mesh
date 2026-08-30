@@ -88,6 +88,36 @@ class CanonicalGitTest(GitWorkspaceTest):
             ["direct-commit-completed", "direct-commit-started"],
         )
 
+    def test_direct_commit_stages_only_materialized_claim_paths(self) -> None:
+        create_claim(
+            self.root,
+            scope="future-direct",
+            owner="agent-a",
+            run_id="run-a",
+            task="edit materialized path while retaining future ownership",
+            paths=["other.txt", "future.txt"],
+            semantic_writes=["future-direct-slice"],
+            validation="focused direct checks",
+        )
+        (self.root / "other.txt").write_text(
+            "other\nmaterialized\n", encoding="utf-8"
+        )
+
+        completed = canonical_git.commit(
+            self.root,
+            scope="future-direct",
+            owner="agent-a",
+            run_id="run-a",
+            summary="materialized direct candidate",
+            validation_evidence="focused direct validation passed",
+        )
+
+        self.assertEqual(completed["status"], "completed")
+        self.assertEqual(completed["staged_paths"], ["other.txt"])
+        self.assertEqual(git(self.root, "show", "HEAD:other.txt"), "other\nmaterialized")
+        self.assertFalse((self.root / "future.txt").exists())
+        self.assertEqual(git(self.root, "diff", "--cached", "--name-only"), "")
+
     def test_two_direct_commits_serialize_and_leave_no_index_state(self) -> None:
         (self.root / "app.txt").write_text("base\none\n", encoding="utf-8")
         first = self._commit("first direct")
