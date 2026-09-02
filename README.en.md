@@ -64,9 +64,13 @@ python3 skills/observe-dev-mesh/scripts/console.py \
 
 The Console shows current Runs, Claims, contention, handoffs, recovery state, and cross-project
 relations. Active contention presents the participating Runs, declared scopes, and requested
-paths directly; the collaboration flow opens by default when useful causal history exists. Closed
-contention and raw events remain available on demand. The Observer does not write to collected
-workspaces.
+paths directly. Collaboration history opens by default and includes recorded notifications,
+handoffs, dependencies, contention, and recovery, whether or not a conflict is currently active.
+Cross-project relations retain their latest recorded time and closure state; within-project lanes
+keep participant identities separate by project. Select a project and a window from 6 hours to
+30 days. Node spacing does not measure duration; missing activity is not reconstructed, and truncated
+results are marked. Raw events can be expanded to check evidence. The view reuses existing records
+without adding Agent reporting steps. The Observer does not write to collected workspaces.
 
 The example below uses virtual data to show the contention workbench and collaboration flow. It is
 not a production activity capture.

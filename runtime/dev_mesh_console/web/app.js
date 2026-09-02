@@ -24,8 +24,8 @@ const nodes = Object.fromEntries([
   "metrics", "insights", "projects", "project-count", "active-details", "active-count", "flow-summary",
   "project-collaboration", "project-collaboration-count", "project-collaboration-panel",
   "projects-panel", "work-status-grid", "flow-panel", "diagnostics-panel", "lower-grid",
-  "flow", "flow-scroll", "flow-scrollbar", "flow-scrollbar-control", "flow-owner-rail", "flow-tooltip", "flow-empty", "diagnostics", "diagnostic-count",
-  "events", "event-count", "language", "theme", "add-root", "root-dialog", "root-form",
+  "flow", "flow-scroll", "flow-scrollbar", "flow-scrollbar-control", "flow-owner-rail", "flow-tooltip", "flow-empty", "flow-legend", "flow-viewport", "diagnostics", "diagnostic-count",
+  "events", "event-count", "events-window-note", "language", "theme", "add-root", "root-dialog", "root-form",
   "root-path", "root-list", "dialog-error", "close-dialog", "cancel-root",
   "run-close-dialog", "run-close-form", "run-close-facts", "run-close-warning",
   "run-close-outcome", "run-close-reviewer", "run-close-reason", "run-close-evidence",
@@ -449,11 +449,13 @@ function renderProjectCollaboration(presentation) {
   }
   const result = renderProjectOverview(
     nodes["project-collaboration"],
-    state.dashboard.project_collaboration,
+    presentation.projectCollaboration,
     {
       current: state.workspace,
       translate: t,
       formatNumber,
+      formatTime,
+      includeHints: false,
       onSelect: selectWorkspace,
     },
   );
@@ -461,8 +463,8 @@ function renderProjectCollaboration(presentation) {
 }
 
 function renderProjects(presentation) {
-  nodes["work-status-grid"].hidden = presentation.showWorkbench;
-  if (presentation.showWorkbench) return;
+  nodes["work-status-grid"].hidden = presentation.showWorkbench && presentation.attention;
+  if (nodes["work-status-grid"].hidden) return;
   nodes["projects-panel"].hidden = !presentation.showProjects;
   nodes["work-status-grid"].classList.toggle("is-activity-only", !presentation.showProjects);
   const projects = visibleProjects()
@@ -654,12 +656,14 @@ async function openRunCloseReview(item) {
 function renderEvents() {
   const events = [...state.dashboard.events].reverse();
   nodes["event-count"].textContent = formatNumber(events.length);
+  nodes["events-window-note"].hidden = !state.dashboard.selection?.events_truncated;
+  nodes["events-window-note"].textContent = t("events.windowLimit", {count: formatNumber(events.length)});
   if (!events.length) {
     nodes.events.replaceChildren(empty("empty.eventsTitle", "empty.eventsBody"));
     return;
   }
   const names = projectNames();
-  nodes.events.replaceChildren(...events.slice(0, 80).map((event) => {
+  nodes.events.replaceChildren(...events.map((event) => {
     const row = div("event-row");
     const dot = div(`event-dot effect-${event.authority_effect}`);
     const identity = div("event-identity");
@@ -677,23 +681,32 @@ function renderEvents() {
 }
 
 function renderGraph(presentation) {
-  nodes["flow-panel"].hidden = !presentation.showFlow;
-  if (!presentation.showFlow) {
-    nodes["flow-panel"].open = false;
-    nodes["flow-summary"].textContent = "";
-    return;
-  }
   const coordination = state.dashboard.coordination ?? {events: []};
   if (!state.flowDisclosureTouched) {
     nodes["flow-panel"].open = presentation.defaultOpenFlow;
   }
   const pieces = [
+    state.window <= 48 ? `${state.window}h` : `${state.window / 24}d`,
     `${formatNumber(coordination.relation_count ?? 0)} ${t("flow.relations")}`,
     `${formatNumber(coordination.participant_count ?? 0)} ${t("flow.participants")}`,
     `${formatNumber(coordination.event_count ?? 0)} ${t("flow.keyEvents")}`,
+    `${formatNumber(presentation.projectCollaboration.collaboration_relation_count)} ${t("flow.projectRelations")}`,
   ];
   if (coordination.events_truncated) pieces.push(t("flow.truncated"));
   nodes["flow-summary"].textContent = pieces.join(" · ");
+  nodes["flow-legend"].hidden = !presentation.showFlow;
+  nodes["flow-viewport"].hidden = !presentation.showFlow;
+  nodes["flow-empty"].hidden = presentation.showFlow || presentation.showProjectRelations;
+  if (!presentation.showFlow) {
+    nodes.flow.replaceChildren();
+    nodes["flow-owner-rail"].replaceChildren();
+    nodes["flow-tooltip"].hidden = true;
+    const content = empty("empty.flowTitle", "empty.flowIndependentBody", {
+      count: formatNumber(coordination.independent_run_count ?? 0),
+    });
+    nodes["flow-empty"].replaceChildren(...content.children);
+    return;
+  }
   if (!nodes["flow-panel"].open) return;
   const result = renderFlow(
     nodes.flow,

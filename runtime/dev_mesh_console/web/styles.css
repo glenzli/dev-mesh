@@ -380,13 +380,11 @@ select, input {
 .fact.is-danger b { color: var(--danger); }
 .fact.is-attention b { color: var(--warning); }
 
-.project-collaboration-panel { margin-bottom: 10px; }
+.project-collaboration-panel { border-bottom: 1px solid var(--border); }
 .project-collaboration { min-height: 142px; background: var(--surface); }
 .project-graph-legend { display: flex; gap: 18px; padding: 8px 14px; border-bottom: 1px solid var(--border); color: var(--muted); font-size: 10px; }
 .project-graph-legend span { display: inline-flex; align-items: center; gap: 7px; }
 .project-graph-legend span::before { width: 22px; height: 0; border-top: 2px solid var(--accent); content: ""; }
-.project-graph-legend .protocol::after { content: ">"; font: 700 11px ui-monospace, monospace; transform: translateX(-13px); }
-.project-graph-legend .protocol::after { color: var(--accent); }
 .project-graph-legend .hint::before { border-top-style: dashed; border-top-color: var(--muted); }
 .project-graph-scroll { width: 100%; overflow: auto; }
 .project-graph { display: block; min-width: 100%; }
@@ -428,7 +426,11 @@ select, input {
 .event-row time { flex: 0 0 auto; color: var(--subtle); font: 10px ui-monospace, monospace; }
 
 .flow-panel { min-height: 0; }
-.flow-panel[open] { min-height: 304px; }
+.history-note { margin: 0; padding: 10px 14px; color: var(--muted); font-size: 11px; line-height: 1.5; border-bottom: 1px solid var(--border); }
+.project-history-list { margin: 0; padding: 0 14px 12px; list-style: none; }
+.project-history-list li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 14px; padding: 7px 0; border-top: 1px solid var(--border); font-size: 12px; }
+.project-history-list time, .project-history-status { color: var(--muted); font: 11px ui-monospace, monospace; }
+.project-history-status { margin-left: auto; }
 .flow-heading { gap: 20px; }
 .flow-panel > summary { cursor: pointer; list-style: none; }
 .flow-panel > summary::-webkit-details-marker { display: none; }
@@ -472,6 +474,7 @@ select, input {
 .flow-owner-heading strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-size: 12px; font-weight: 750; }
 .flow-owner-badge { flex: 0 0 auto; padding: 2px 5px; border: 1px solid color-mix(in srgb, var(--accent) 60%, var(--border)); border-radius: 8px; background: var(--accent-soft); color: var(--accent); font: 800 7px ui-monospace, SFMono-Regular, monospace; letter-spacing: .25px; }
 .flow-owner-run { display: block; overflow: hidden; margin-top: 5px; color: var(--muted); font: 10px ui-monospace, SFMono-Regular, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.flow-owner-run + .flow-owner-run { margin-top: 3px; }
 .flow-group-band { fill: transparent; }
 .flow-group-band.related { fill: color-mix(in srgb, var(--accent-soft) 28%, transparent); stroke: color-mix(in srgb, var(--accent) 22%, var(--border)); stroke-width: 1; }
 .flow-group-rail { fill: var(--accent); opacity: .28; }
@@ -605,7 +608,7 @@ dialog textarea { resize: vertical; min-height: 72px; padding: 8px 10px; border:
   .filter-group { justify-content: space-between; }
   .filter-group select { flex: 1; min-width: 0; }
   .toolbar-meta { margin-left: 0; justify-content: space-between; }
-  .metric-grid { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
+  .metric-grid, .metric-grid.is-quiet, .metric-grid.is-workbench { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .metric-card:last-child { grid-column: span 2; }
   .metric-grid.is-quiet .metric-card:last-child, .metric-grid.is-workbench .metric-card:last-child { grid-column: auto; }
   .insight-grid { grid-template-columns: 1fr; }
@@ -617,5 +620,8 @@ dialog textarea { resize: vertical; min-height: 72px; padding: 8px 10px; border:
   .project-identity span { max-width: 82vw; }
   .project-graph-legend { align-items: flex-start; flex-direction: column; gap: 7px; }
   .legend { gap: 12px; }
+  .flow-heading { flex-wrap: wrap; gap: 8px; }
+  .flow-panel > summary .flow-summary { flex: 1 0 100%; order: 1; margin-left: 0; line-height: 1.6; }
+  .flow-panel > summary::after { margin-left: auto; }
   .event-row time { display: none; }
 }

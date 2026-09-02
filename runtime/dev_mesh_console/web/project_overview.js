@@ -80,7 +80,7 @@ function connectedComponents(nodes, edges, groups) {
 
 export function projectGraphLayout(
   projection,
-  { left = 24, top = 48, nodeWidth = 158, nodeHeight = 52, nodeGap = 104, rowGap = 38 } = {},
+  { left = 24, top = 48, nodeWidth = 158, nodeHeight = 52, nodeGap = 104, rowGap = 38, includeHints = true } = {},
 ) {
   const rawNodes = projection?.nodes ?? [];
   const rawEdges = projection?.edges ?? [];
@@ -92,7 +92,7 @@ export function projectGraphLayout(
   ).filter(
     (edge) => Number(edge.collaboration_count) > 0,
   );
-  const groups = hintGroups(projection, nodeById);
+  const groups = includeHints ? hintGroups(projection, nodeById) : [];
   const relatedIds = new Set(edges.flatMap(
     (edge) => [edge.source_workspace_id, edge.target_workspace_id],
   ));
@@ -212,7 +212,7 @@ function emptyState(translate) {
   return node;
 }
 
-function relationLabel(edge, translate, formatNumber) {
+export function relationLabel(edge, translate, formatNumber) {
   const values = [];
   if (Number(edge.collaboration_count) > 0) {
     values.push(`${translate("projectOverview.crossTask")} ${formatNumber(edge.collaboration_count)}`);
@@ -228,6 +228,10 @@ function relationLabel(edge, translate, formatNumber) {
   if (pending > 0) {
     values.push(`${translate("projectOverview.pendingSettlement")} ${formatNumber(pending)}`);
   }
+  const closed = Math.max(0, Number(edge.collaboration_count || 0) - active - pending);
+  if (closed > 0) {
+    values.push(`${translate("projectOverview.closed")} ${formatNumber(closed)}`);
+  }
   return values.join(" · ");
 }
 
@@ -241,9 +245,9 @@ function hintGroupLabel(group, translate, formatNumber) {
 export function renderProjectOverview(
   container,
   projection,
-  { current = "", translate, formatNumber, onSelect },
+  { current = "", translate, formatNumber, formatTime = (value) => value ?? "—", onSelect, includeHints = true },
 ) {
-  const layout = projectGraphLayout(projection);
+  const layout = projectGraphLayout(projection, {includeHints});
   if (!layout.edges.length && !layout.hintGroups.length) {
     container.replaceChildren(emptyState(translate));
     return { projectCount: 0, relationCount: 0 };
@@ -257,7 +261,8 @@ export function renderProjectOverview(
   const hintLegend = document.createElement("span");
   hintLegend.className = "hint";
   hintLegend.textContent = translate("projectOverview.sameTaskHintRelation");
-  legend.append(protocolLegend, hintLegend);
+  if (layout.edges.length) legend.append(protocolLegend);
+  if (layout.hintGroups.length) legend.append(hintLegend);
 
   const scroll = document.createElement("div");
   scroll.className = "project-graph-scroll";
@@ -316,7 +321,7 @@ export function renderProjectOverview(
       y: edge.labelY,
       "text-anchor": "middle",
     });
-    label.textContent = relationLabel(edge, translate, formatNumber);
+    label.textContent = `${translate("projectOverview.crossTask")} ${formatNumber(edge.collaboration_count)}`;
     const title = svgElement("title");
     title.textContent = edge.samples?.map(
       (sample) => [sample.owner, sample.run_id, sample.collaboration_id, sample.status]
@@ -358,7 +363,26 @@ export function renderProjectOverview(
     svg.append(group);
   });
   scroll.append(svg);
-  container.replaceChildren(legend, scroll);
+  // These are latest recorded facts per project pair, not invented durations
+  // or a reconstructed lifecycle. Keep completed relations available for review.
+  const history = document.createElement("ol");
+  history.className = "project-history-list";
+  const names = new Map(layout.nodes.map((node) => [node.workspace_id, node.name]));
+  [...layout.edges].sort((left, right) => String(right.latest_at ?? "").localeCompare(String(left.latest_at ?? "")))
+    .forEach((edge) => {
+      const row = document.createElement("li");
+      const time = document.createElement("time");
+      if (edge.latest_at) time.dateTime = edge.latest_at;
+      time.textContent = `${translate("projectOverview.latestRecord")} · ${formatTime(edge.latest_at)}`;
+      const pair = document.createElement("span");
+      pair.textContent = `${names.get(edge.source_workspace_id)} ↔ ${names.get(edge.target_workspace_id)}`;
+      const status = document.createElement("span");
+      status.className = "project-history-status";
+      status.textContent = relationLabel(edge, translate, formatNumber);
+      row.append(time, pair, status);
+      history.append(row);
+    });
+  container.replaceChildren(legend, scroll, history);
   return {
     projectCount: layout.nodes.length,
     relationCount: layout.edges.length + layout.hintGroups.length,

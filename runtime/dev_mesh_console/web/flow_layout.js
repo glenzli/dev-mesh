@@ -1,13 +1,17 @@
-export function identityKey(owner, runId) {
-  return owner && runId ? `${owner}\u0000${runId}` : null;
+export function ownerKey(owner, workspaceId = "") {
+  return workspaceId ? `${owner}\u0000${workspaceId}` : owner;
+}
+
+export function identityKey(owner, runId, workspaceId = "") {
+  return owner && runId ? ownerKey(`${owner}\u0000${runId}`, workspaceId) : null;
 }
 
 export function eventLaneKey(event) {
   if (event.owner || event.run_id) {
-    return `${event.owner ?? "unknown"}\u0000${event.run_id ?? "unknown"}`;
+    return identityKey(event.owner ?? "unknown", event.run_id ?? "unknown", event.workspace_id);
   }
   const source = event.details?.source_owner;
-  return `${source ?? "unattributed"}\u0000unattributed`;
+  return identityKey(source ?? "unattributed", "unattributed", event.workspace_id);
 }
 
 const transactionEvents = new Set([
@@ -32,7 +36,7 @@ export function activeRunKeys(activeDetails = []) {
   return new Set(
     activeDetails
       .filter((item) => item?.kind === "run" && item.status === "active")
-      .map((item) => identityKey(item.owner, item.run_id))
+      .map((item) => identityKey(item.owner, item.run_id, item.workspace_id))
       .filter(Boolean),
   );
 }
@@ -60,7 +64,7 @@ function relatedOwners(event) {
   (event.details?.contention_participants ?? []).forEach((participant) => {
     if (participant.owner) owners.add(participant.owner);
   });
-  return [...owners];
+  return [...owners].map((owner) => ownerKey(owner, event.workspace_id));
 }
 
 function assignRunSlots(runs) {
@@ -88,10 +92,12 @@ export function buildFlowLayout(
     groupedRuns.get(key).push({ event, index });
   });
   const runLanes = [...groupedRuns.entries()].map(([key, entries]) => {
-    const [owner, runId] = key.split("\u0000");
+    const [owner, runId, workspaceId = ""] = key.split("\u0000");
     return {
       key,
       owner,
+      ownerKey: ownerKey(owner, workspaceId),
+      workspaceId,
       runId,
       values: entries.map(({ event }) => event),
       first: entries[0].event.at,
@@ -103,29 +109,31 @@ export function buildFlowLayout(
     };
   });
   const ownerReferences = new Map();
-  const noteOwner = (owner, runId, at) => {
+  const noteOwner = (owner, runId, at, workspaceId) => {
     if (!owner || !at) return;
-    if (!ownerReferences.has(owner)) ownerReferences.set(owner, []);
-    ownerReferences.get(owner).push({at, runId});
+    const key = ownerKey(owner, workspaceId);
+    if (!ownerReferences.has(key)) ownerReferences.set(key, []);
+    ownerReferences.get(key).push({at, runId});
   };
   events.forEach((event) => {
-    noteOwner(event.owner, event.run_id, event.at);
-    noteOwner(event.details?.source_owner, event.details?.source_run_id, event.at);
-    noteOwner(event.details?.target_owner, event.details?.target_run_id, event.at);
+    noteOwner(event.owner, event.run_id, event.at, event.workspace_id);
+    noteOwner(event.details?.source_owner, event.details?.source_run_id, event.at, event.workspace_id);
+    noteOwner(event.details?.target_owner, event.details?.target_run_id, event.at, event.workspace_id);
     (event.details?.contention_participants ?? []).forEach((participant) => {
-      noteOwner(participant.owner, participant.run_id, event.at);
+      noteOwner(participant.owner, participant.run_id, event.at, event.workspace_id);
     });
   });
   const rowsByOwner = new Map();
   runLanes.forEach((run) => {
-    if (!rowsByOwner.has(run.owner)) rowsByOwner.set(run.owner, []);
-    rowsByOwner.get(run.owner).push(run);
+    if (!rowsByOwner.has(run.ownerKey)) rowsByOwner.set(run.ownerKey, []);
+    rowsByOwner.get(run.ownerKey).push(run);
   });
   ownerReferences.forEach((_times, owner) => {
     if (!rowsByOwner.has(owner)) rowsByOwner.set(owner, []);
   });
-  const ownerRows = [...rowsByOwner.entries()].map(([owner, runs]) => {
-    const references = ownerReferences.get(owner) ?? [];
+  const ownerRows = [...rowsByOwner.entries()].map(([key, runs]) => {
+    const [owner, workspaceId = ""] = key.split("\u0000");
+    const references = ownerReferences.get(key) ?? [];
     const referenceTimes = references.map((reference) => reference.at);
     const slotCount = runs.length ? assignRunSlots(runs) : 1;
     const first = runs.length
@@ -147,7 +155,9 @@ export function buildFlowLayout(
         referenceTimes[0],
       );
     return {
+      key,
       owner,
+      workspaceId,
       runs,
       ownerOnly: runs.length === 0,
       referencedRunIds: [...new Set(references.map((reference) => reference.runId).filter(Boolean))],
@@ -158,7 +168,7 @@ export function buildFlowLayout(
       last,
     };
   });
-  const parent = new Map(ownerRows.map((row) => [row.owner, row.owner]));
+  const parent = new Map(ownerRows.map((row) => [row.key, row.key]));
   const root = (owner) => {
     let current = owner;
     while (parent.get(current) !== current) current = parent.get(current);
@@ -182,7 +192,7 @@ export function buildFlowLayout(
 
   const groupedOwners = new Map();
   ownerRows.forEach((row) => {
-    const key = root(row.owner);
+    const key = root(row.key);
     if (!groupedOwners.has(key)) groupedOwners.set(key, []);
     groupedOwners.get(key).push(row);
   });

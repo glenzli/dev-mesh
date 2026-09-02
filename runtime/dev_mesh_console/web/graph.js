@@ -4,6 +4,7 @@ import {
   buildFlowLayout,
   eventLaneKey as laneKey,
   identityKey,
+  ownerKey,
   timeLabelMode,
   transactionBranchOffset,
   tooltipPosition,
@@ -94,8 +95,8 @@ function flowEventLabel(event) {
 }
 
 function interactionPeer(event) {
-  const source = identityKey(event.details?.source_owner, event.details?.source_run_id);
-  const target = identityKey(event.details?.target_owner, event.details?.target_run_id);
+  const source = identityKey(event.details?.source_owner, event.details?.source_run_id, event.workspace_id);
+  const target = identityKey(event.details?.target_owner, event.details?.target_run_id, event.workspace_id);
   const sourceOwner = event.details?.source_owner;
   const targetOwner = event.details?.target_owner;
   if (event.event === "handoff-offered" || event.event === "handoff-withdrawn") {
@@ -350,9 +351,9 @@ function setTooltip(
       tooltip.append(confirmation);
     }
     (event.details?.contention_participants ?? [])
-      .filter((participant) => `${participant.owner}\u0000${participant.run_id}` !== laneKey(event))
+      .filter((participant) => identityKey(participant.owner, participant.run_id, event.workspace_id) !== laneKey(event))
       .forEach((participant) => {
-        const key = `${participant.owner}\u0000${participant.run_id}`;
+        const key = identityKey(participant.owner, participant.run_id, event.workspace_id);
         const response = latestResponses.get(key);
         const status = document.createElement("span");
         status.textContent = `${short(participant.owner, 20)} · ${response ? responseLabel(response) : t("flow.awaitingResponse")}`;
@@ -394,7 +395,7 @@ function marker(defs, name, colorClass) {
   defs.append(value);
 }
 
-function renderOwnerRail(ownerRail, layout) {
+function renderOwnerRail(ownerRail, layout, projectNames) {
   ownerRail.replaceChildren();
   ownerRail.style.height = `${layout.height}px`;
   layout.ownerRows.forEach((row) => {
@@ -422,6 +423,12 @@ function renderOwnerRail(ownerRail, layout) {
     heading.className = "flow-owner-heading";
     heading.append(badge, owner);
     card.append(heading, run);
+    if (row.workspaceId) {
+      const project = document.createElement("span");
+      project.className = "flow-owner-run";
+      project.textContent = projectNames.get(row.workspaceId) ?? row.workspaceId;
+      card.append(project);
+    }
     ownerRail.append(card);
   });
 }
@@ -444,7 +451,7 @@ export function renderFlow(svg, ownerRail, tooltip, dashboard, projectNames) {
   const laneKeys = new Set(lanes.map((lane) => lane.key));
   const activeRuns = activeRunKeys(dashboard.active_details ?? []);
   const lanePositions = layout.runPositions;
-  const ownerRowsByOwner = new Map(layout.ownerRows.map((row) => [row.owner, row]));
+  const ownerRowsByOwner = new Map(layout.ownerRows.map((row) => [row.key, row]));
   const workNumbers = new Map();
   events.forEach((event) => {
     const key = workKey(event);
@@ -458,7 +465,7 @@ export function renderFlow(svg, ownerRail, tooltip, dashboard, projectNames) {
   svg.setAttribute("preserveAspectRatio", "xMinYMin meet");
   svg.setAttribute("width", width);
   svg.setAttribute("height", height);
-  renderOwnerRail(ownerRail, layout);
+  renderOwnerRail(ownerRail, layout, projectNames);
 
   const defs = element("defs");
   marker(defs, "normal", "normal");
@@ -512,17 +519,17 @@ export function renderFlow(svg, ownerRail, tooltip, dashboard, projectNames) {
     nodeXsByLane.get(key).push(x);
   });
   const ownerGuideExtents = new Map(
-    layout.ownerRows.map((row) => [row.owner, { start: Infinity, end: -Infinity }]),
+    layout.ownerRows.map((row) => [row.key, { start: Infinity, end: -Infinity }]),
   );
   lanes.forEach((lane) => {
-    const extent = ownerGuideExtents.get(lane.owner);
+    const extent = ownerGuideExtents.get(lane.ownerKey);
     extent.start = Math.min(extent.start, positions.get(lane.values[0].event_id));
     extent.end = Math.max(extent.end, positions.get(lane.values[lane.values.length - 1].event_id));
   });
   events.forEach((event) => {
     const peer = interactionPeer(event);
     if (!peer?.owner || (peer.runKey && laneKeys.has(peer.runKey))) return;
-    const extent = ownerGuideExtents.get(peer.owner);
+    const extent = ownerGuideExtents.get(ownerKey(peer.owner, event.workspace_id));
     if (!extent) return;
     const x = positions.get(event.event_id);
     extent.start = Math.min(extent.start, x);
@@ -561,7 +568,7 @@ export function renderFlow(svg, ownerRail, tooltip, dashboard, projectNames) {
     });
     rowRail.classList.add("owner-row-rail");
     svg.append(rowRail);
-    const extent = ownerGuideExtents.get(row.owner);
+    const extent = ownerGuideExtents.get(row.key);
     if (Number.isFinite(extent?.start) && Number.isFinite(extent?.end)) {
       const guide = element("line", {
         x1: extent.start,
@@ -595,7 +602,7 @@ export function renderFlow(svg, ownerRail, tooltip, dashboard, projectNames) {
       path.classList.add("flow-edge", type);
       svg.append(path);
     });
-    const ownerRow = ownerRowsByOwner.get(lane.owner);
+    const ownerRow = ownerRowsByOwner.get(lane.ownerKey);
     if (ownerRow?.runs.length > 1) {
       const runLabel = element("text", {
         x: positions.get(lane.values[0].event_id) + 10,
@@ -618,6 +625,7 @@ export function renderFlow(svg, ownerRail, tooltip, dashboard, projectNames) {
     const selfResponse = event.event === "contention-decision-responded" && isSelfResponse(event, proposal);
     const workNumber = workNumbers.get(workKey(event)) ?? null;
     const activeRunStart = event.event === "agent-joined" && activeRuns.has(laneKey(event));
+    const projectName = projectNames.get(event.workspace_id) ?? event.workspace_id;
     const node = eventNode(event, x, y, type, selfResponse);
     node.classList.add("flow-node", type);
     node.classList.add(`event-${event.event}`);
@@ -625,6 +633,8 @@ export function renderFlow(svg, ownerRail, tooltip, dashboard, projectNames) {
       "aria-label",
       [
         flowEventLabel(event),
+        projectName,
+        timestamp(event.at),
         event.owner,
         event.run_id,
         event.scope,
@@ -650,7 +660,6 @@ export function renderFlow(svg, ownerRail, tooltip, dashboard, projectNames) {
     }
     if (event.authority_effect === "terminal" || event.authority_effect === "release") node.classList.add("terminal");
     node.tabIndex = 0;
-    const projectName = projectNames.get(event.workspace_id) ?? event.workspace_id;
     const show = () => setTooltip(
       tooltip,
       event,
@@ -689,7 +698,7 @@ export function renderFlow(svg, ownerRail, tooltip, dashboard, projectNames) {
     if (semantics.handoff.has(event.event)) {
       const peer = interactionPeer(event);
       const exactTarget = Boolean(peer?.runKey && laneKeys.has(peer.runKey));
-      const targetRow = peer?.owner ? ownerRowsByOwner.get(peer.owner) : null;
+      const targetRow = peer?.owner ? ownerRowsByOwner.get(ownerKey(peer.owner, event.workspace_id)) : null;
       const targetCenterY = exactTarget ? lanePositions.get(peer.runKey) : targetRow?.y;
       const sameSource = exactTarget
         ? peer.runKey === laneKey(event)
@@ -726,7 +735,7 @@ export function renderFlow(svg, ownerRail, tooltip, dashboard, projectNames) {
     if (event.event === "contention-decision-proposed") {
       const linkedLanes = new Set();
       (event.details?.contention_participants ?? []).forEach((participant) => {
-        const targetKey = `${participant.owner}\u0000${participant.run_id}`;
+        const targetKey = identityKey(participant.owner, participant.run_id, event.workspace_id);
         if (targetKey === laneKey(event) || linkedLanes.has(targetKey) || !laneKeys.has(targetKey)) {
           return;
         }
@@ -774,13 +783,13 @@ export function renderFlow(svg, ownerRail, tooltip, dashboard, projectNames) {
     if (event.event !== "contention-opened") return;
     const linkedLanes = new Set();
     (event.details?.contention_participants ?? []).forEach((participant) => {
-      const targetKey = `${participant.owner}\u0000${participant.run_id}`;
+      const targetKey = identityKey(participant.owner, participant.run_id, event.workspace_id);
       if (targetKey === laneKey(event) || linkedLanes.has(targetKey)) {
         return;
       }
       linkedLanes.add(targetKey);
       const exactTarget = laneKeys.has(targetKey);
-      const targetRow = ownerRowsByOwner.get(participant.owner);
+      const targetRow = ownerRowsByOwner.get(ownerKey(participant.owner, event.workspace_id));
       const targetY = exactTarget ? lanePositions.get(targetKey) : targetRow?.y;
       if (!Number.isFinite(targetY)) return;
       if (targetY === laneY) return;

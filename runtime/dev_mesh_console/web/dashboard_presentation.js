@@ -24,7 +24,8 @@ export function contentionSummaries(dashboard) {
   );
   const grouped = new Map();
   (dashboard?.coordination?.events ?? []).forEach((event) => {
-    const id = contentionIdentifier(event);
+    if (!event.contention_id && !event.details?.contention_id) return;
+    const id = event.contention_id ?? event.details.contention_id;
     if (!id) return;
     const summary = grouped.get(id) ?? {
       active: active.has(id),
@@ -77,7 +78,7 @@ export function contentionSummaries(dashboard) {
 
 export function dashboardPresentation(dashboard, selectedWorkspace = "") {
   const coordination = dashboard?.coordination ?? {};
-  const projectCollaboration = dashboard?.project_collaboration ?? {};
+  const projectCollaboration = projectHistoryProjection(dashboard?.project_collaboration, selectedWorkspace);
   const activeDetails = dashboard?.active_details ?? [];
   const summaries = contentionSummaries(dashboard);
   const activeContentions = summaries.filter((item) => item.active);
@@ -95,10 +96,10 @@ export function dashboardPresentation(dashboard, selectedWorkspace = "") {
   const showWorkbench = displayedContentions.length > 0;
   const hasActiveCoordination = activeDetails.some((item) => activeCoordinationKinds.has(item.kind));
   const attention = activeContentions.length > 0 || hasActiveCoordination;
-  const showProjectRelations = attention && count(projectCollaboration.collaboration_relation_count) > 0;
-  const showFlow = showWorkbench
-    && count(coordination.relation_count) > 0
-    && count(coordination.event_count) > 1;
+  // History is evidence in the observation window, not current authority.
+  const showProjectRelations = count(projectCollaboration.collaboration_relation_count) > 0;
+  const showFlow = count(coordination.relation_count) > 0
+    && count(coordination.event_count) > 0;
   const quiet = (dashboard?.projects?.length ?? 0) > 0
     && !showWorkbench
     && !hasActiveCoordination;
@@ -109,14 +110,34 @@ export function dashboardPresentation(dashboard, selectedWorkspace = "") {
     affectedRunCount: affectedRunKeys.size,
     attention,
     contentionCount: summaries.length,
-    defaultOpenFlow: attention && showFlow,
+    defaultOpenFlow: true,
     contentions: displayedContentions,
     independentRunCount: count(coordination.independent_run_count),
+    projectCollaboration,
     requestedPathCount: (dashboard?.operational?.contention?.hot_paths ?? []).length,
     quiet,
     showFlow,
     showProjectRelations,
     showProjects: !selectedWorkspace,
     showWorkbench,
+  };
+}
+
+export function projectHistoryProjection(projection = {}, selectedWorkspace = "") {
+  // The Observer supplies a global overview even for a scoped dashboard.
+  // Review includes only explicit relationships touching the selected project.
+  const known = new Set((projection.nodes ?? []).map((node) => node.workspace_id));
+  const edges = (projection.edges ?? []).filter((edge) =>
+    count(edge.collaboration_count) > 0
+    && known.has(edge.source_workspace_id) && known.has(edge.target_workspace_id)
+    && edge.source_workspace_id !== edge.target_workspace_id
+    && (!selectedWorkspace || edge.source_workspace_id === selectedWorkspace || edge.target_workspace_id === selectedWorkspace),
+  );
+  const related = new Set(edges.flatMap((edge) => [edge.source_workspace_id, edge.target_workspace_id]));
+  return {
+    nodes: (projection.nodes ?? []).filter((node) => related.has(node.workspace_id)),
+    edges,
+    hint_groups: [],
+    collaboration_relation_count: edges.length,
   };
 }

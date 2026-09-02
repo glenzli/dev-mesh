@@ -116,7 +116,7 @@ class ConsoleRuntimeTest(GitWorkspaceTest):
             / "project_overview.js"
         ).as_uri()
         script = f"""
-          import {{ projectGraphLayout, selectableProjects }} from {json.dumps(module)};
+          import {{ projectGraphLayout, relationLabel, selectableProjects }} from {json.dumps(module)};
           const projects = [
             {{workspace_id: "quiet", name: "quiet", event_count: 0, event_counts: {{}}, active: {{}}, diagnostic_count: 0}},
             {{workspace_id: "base", name: "base", event_count: 2, event_counts: {{"agent-joined": 1, "claim-created": 1}}, active: {{}}, diagnostic_count: 0}},
@@ -151,6 +151,12 @@ class ConsoleRuntimeTest(GitWorkspaceTest):
           if (!layout.edges[0].protocol || !layout.edges[0].direct) {{
             throw new Error(`explicit collaboration was not projected as direct ${{JSON.stringify(layout)}}`);
           }}
+          const closedLabel = relationLabel({{
+            collaboration_count: 3, active_collaboration_count: 1, pending_settlement_count: 1,
+          }}, (key) => key, String);
+          if (!closedLabel.includes("projectOverview.closed 1") || !closedLabel.includes("projectOverview.pendingSettlement 1")) {{
+            throw new Error(`closed and pending relations were conflated ${{closedLabel}}`);
+          }}
           const hintLayout = projectGraphLayout({{
             nodes: [
               {{workspace_id: "left", name: "left"}},
@@ -169,6 +175,14 @@ class ConsoleRuntimeTest(GitWorkspaceTest):
           }}
           if (hintLayout.hintGroups[0].project_count !== 3 || !hintLayout.hintGroups[0].path.includes(" H ")) {{
             throw new Error(`same-run hint group lacks one multi-project bracket ${{JSON.stringify(hintLayout)}}`);
+          }}
+          const evidenceOnly = projectGraphLayout({{
+            nodes: [{{workspace_id: "left"}}, {{workspace_id: "right"}}, {{workspace_id: "hint-only"}}],
+            edges: [{{source_workspace_id: "left", target_workspace_id: "right", collaboration_count: 1}}],
+            hint_groups: [{{workspace_ids: ["left", "hint-only"], same_run_hint_count: 1}}],
+          }}, {{includeHints: false}});
+          if (evidenceOnly.nodes.length !== 2 || evidenceOnly.hintGroups.length) {{
+            throw new Error("history must not draw same-name hints as project relationships");
           }}
         """
         subprocess.run(
@@ -235,10 +249,10 @@ class ConsoleRuntimeTest(GitWorkspaceTest):
           if (contention.quiet || !contention.attention || !contention.showWorkbench) {{
             throw new Error(`active contention was not actionable ${{JSON.stringify(contention)}}`);
           }}
-          if (contention.showFlow || contention.showProjects || contention.affectedRunCount !== 2 || contention.requestedPathCount !== 2) {{
-            throw new Error(`single conflict event was over-expanded ${{JSON.stringify(contention)}}`);
+          if (!contention.showFlow || contention.showProjects || contention.affectedRunCount !== 2 || contention.requestedPathCount !== 2) {{
+            throw new Error(`single recorded conflict was hidden ${{JSON.stringify(contention)}}`);
           }}
-          if (contention.defaultOpenFlow) throw new Error("single conflict event opened an empty investigation");
+          if (!contention.defaultOpenFlow) throw new Error("single conflict event was collapsed");
           const activeOutsideWindow = dashboardPresentation({{
             ...quietDashboard,
             operational: {{contention: {{hot_paths: []}}}},
@@ -283,7 +297,7 @@ class ConsoleRuntimeTest(GitWorkspaceTest):
           if (resolved.attention || !resolved.showWorkbench || !resolved.showFlow) {{
             throw new Error(`resolved contention state was lost ${{JSON.stringify(resolved)}}`);
           }}
-          if (resolved.defaultOpenFlow) throw new Error("resolved contention opened its investigation by default");
+          if (!resolved.defaultOpenFlow) throw new Error("resolved contention history was collapsed by default");
           if (summaries.length !== 1 || summaries[0].status !== "cancelled" || summaries[0].reasonCode !== "superseded") {{
             throw new Error(`terminal contention was not summarized ${{JSON.stringify(summaries)}}`);
           }}
@@ -294,6 +308,83 @@ class ConsoleRuntimeTest(GitWorkspaceTest):
             capture_output=True,
             text=True,
         )
+
+    def test_history_is_independent_of_current_contention(self) -> None:
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("Node.js is unavailable")
+        web = Path(__file__).parents[1] / "dev_mesh_console" / "web"
+        module = (web / "dashboard_presentation.js").as_uri()
+        layout_module = (web / "flow_layout.js").as_uri()
+        script = f"""
+          import {{ contentionSummaries, dashboardPresentation }} from {json.dumps(module)};
+          import {{ activeRunKeys, buildFlowLayout, identityKey, ownerKey }} from {json.dumps(layout_module)};
+          for (const event of ["message-sent", "handoff-accepted", "work-resumed", "run-authority-recovered"]) {{
+            const dashboard = {{
+              projects: [{{workspace_id: "a"}}], active_details: [],
+              coordination: {{event_count: 1, relation_count: 1, events: [{{event, object_id: "not-a-contention"}}]}},
+            }};
+            const view = dashboardPresentation(dashboard, "a");
+            if (!view.showFlow || !view.defaultOpenFlow || view.attention || view.showWorkbench) {{
+              throw new Error(`historical ${{event}} did not remain visible without contention: ${{JSON.stringify(view)}}`);
+            }}
+            if (contentionSummaries(dashboard).length) throw new Error("an interaction became a contention");
+          }}
+          const crossProjectDashboard = {{
+            projects: [{{workspace_id: "a"}}], active_details: [],
+            coordination: {{event_count: 0, relation_count: 0}},
+            project_collaboration: {{
+              collaboration_relation_count: 1,
+              nodes: [{{workspace_id: "a"}}, {{workspace_id: "b"}}],
+              edges: [{{source_workspace_id: "a", target_workspace_id: "b", collaboration_count: 1}}],
+            }},
+          }};
+          const crossProjectOnly = dashboardPresentation(crossProjectDashboard);
+          if (!crossProjectOnly.showProjectRelations || crossProjectOnly.showFlow || !crossProjectOnly.defaultOpenFlow) {{
+            throw new Error("closed cross-project history depends on local contention");
+          }}
+          if (dashboardPresentation(crossProjectDashboard, "unrelated").showProjectRelations
+              || !dashboardPresentation(crossProjectDashboard, "a").showProjectRelations
+              || !dashboardPresentation(crossProjectDashboard, "b").showProjectRelations) {{
+            throw new Error("history did not scope cross-project evidence to both endpoints");
+          }}
+          const noEvidence = dashboardPresentation({{
+            projects: [{{workspace_id: "a"}}], active_details: [],
+            coordination: {{event_count: 0, relation_count: 0}},
+            project_collaboration: {{collaboration_relation_count: 0, inferred_relation_count: 2}},
+          }});
+          if (noEvidence.showFlow || noEvidence.showProjectRelations || !noEvidence.defaultOpenFlow) {{
+            throw new Error("empty history must stay reachable without inventing relationships");
+          }}
+          const event = {{
+            event_id: "a", event: "message-sent", workspace_id: "a", owner: "owner", run_id: "run",
+            at: "2026-09-03T08:00:00Z", details: {{source_owner: "owner", source_run_id: "run", target_owner: "peer", target_run_id: "peer-run"}},
+          }};
+          const layout = buildFlowLayout([event, {{...event, event_id: "b", workspace_id: "b"}}]);
+          if (layout.runLanes.length !== 2 || layout.ownerRows.length !== 4 || layout.groupCount !== 2) {{
+            throw new Error("matching names across workspaces were merged into collaboration");
+          }}
+          for (const workspaceId of ["a", "b"]) {{
+            if (!layout.runPositions.has(identityKey("owner", "run", workspaceId))
+                || !layout.ownerRows.some((row) => row.key === ownerKey("peer", workspaceId))) {{
+              throw new Error("workspace-scoped event or referenced peer was lost");
+            }}
+          }}
+          const active = activeRunKeys([{{kind: "run", status: "active", owner: "owner", run_id: "run", workspace_id: "a"}}]);
+          if (!active.has(identityKey("owner", "run", "a")) || active.has(identityKey("owner", "run", "b"))) {{
+            throw new Error("current status leaked between projects");
+          }}
+        """
+        subprocess.run(
+            [node, "--input-type=module", "--eval", script],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        html = (web / "index.html").read_text(encoding="utf-8")
+        self.assertIn('id="flow-panel" class="panel flow-panel" open', html)
+        self.assertLess(html.index('id="work-status-grid"'), html.index('id="flow-panel"'))
+        self.assertLess(html.index('id="flow-panel"'), html.index('id="project-collaboration-panel"'))
 
     def test_root_registry_is_durable_bounded_external_state(self) -> None:
         registry_path = Path(self.temporary.name) / "console-roots.json"
