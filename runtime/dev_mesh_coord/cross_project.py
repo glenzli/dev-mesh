@@ -385,6 +385,45 @@ def close_collaboration(
     )
 
 
+def close_bound_collaboration(
+    root: Path,
+    *,
+    collaboration_id: str,
+    owner: str,
+    run_id: str,
+    outcome: str,
+) -> dict[str, object]:
+    """Close using the immutable local binding and its exact active target Run."""
+
+    collaboration_id = require_identifier(collaboration_id, "collaboration id")
+    owner = require_slug(owner, "owner")
+    run_id = require_identifier(run_id, "run id")
+    with operation(root, "cross-project-close-bound") as plane:
+        _active_run(plane, owner, run_id)
+        extension = _bound_extension(plane, collaboration_id=collaboration_id)
+        source = extension["source"]
+        target = extension["target"]
+        assert isinstance(source, dict) and isinstance(target, dict)
+        if target.get("owner") != owner or target.get("run_id") != run_id:
+            raise ValueError("close requires the exact bound target Owner and Run")
+        kind = extension["kind"]
+        assert isinstance(kind, str)
+
+    # The binding is immutable; recording rechecks the active actor under the operation lock.
+    return _record_phase(
+        root,
+        collaboration_id=collaboration_id,
+        phase="closed",
+        kind=kind,
+        actor_role="target",
+        owner=owner,
+        run_id=run_id,
+        source=source,
+        target=target,
+        outcome=outcome,
+    )
+
+
 def reconcile_closed_collaboration(
     root: Path,
     *,

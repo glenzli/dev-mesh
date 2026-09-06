@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -26,7 +29,7 @@ class PluginPackagingTest(unittest.TestCase):
                 revision="abcdef1234567890abcdef1234567890abcdef12",
                 require_clean=False,
             )
-            self.assertEqual(metadata["version"], "0.2.2")
+            self.assertEqual(metadata["version"], "0.2.3")
             self.assertEqual(
                 metadata["source_revision"],
                 "abcdef1234567890abcdef1234567890abcdef12",
@@ -47,6 +50,29 @@ class PluginPackagingTest(unittest.TestCase):
             self.assertFalse((package / "runtime" / "tests").exists())
             self.assertFalse((package / "contracts" / "archive").exists())
             self.assertFalse((package / ".dev-mesh").exists())
+
+            # Check the producer and guidance in the distributable, not just its manifest version.
+            for relative in (
+                "runtime/dev_mesh_coord/canonical_git.py",
+                "runtime/dev_mesh_coord/cli.py",
+                "runtime/dev_mesh_coord/cli_output.py",
+                "runtime/dev_mesh_coord/cross_project.py",
+                "skills/coordinate-shared-workspace/SKILL.md",
+                "skills/coordinate-shared-workspace/references/claim-options.md",
+                "skills/coordinate-shared-workspace/references/communication.md",
+                "skills/coordinate-shared-workspace/references/direct-publication.md",
+            ):
+                self.assertEqual((package / relative).read_bytes(), (REPOSITORY / relative).read_bytes())
+            environment = os.environ.copy()
+            environment.pop("PYTHONPATH", None)
+            environment["PYTHONDONTWRITEBYTECODE"] = "1"
+            launcher = package / "skills/coordinate-shared-workspace/scripts/coord.py"
+            help_result = subprocess.run(
+                [sys.executable, str(launcher), "record-message", "--help"],
+                cwd=root, env=environment, capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(help_result.returncode, 0, help_result.stderr)
+            self.assertIn("--source-run-id", help_result.stdout)
 
             marketplace = root / "marketplace"
             catalog = marketplace / ".agents" / "plugins" / "marketplace.json"

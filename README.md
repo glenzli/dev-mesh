@@ -45,7 +45,8 @@ marketplace 只需登记一次。安装或更新插件后，请在新任务中�
 [`coordinate-shared-workspace`](skills/coordinate-shared-workspace/SKILL.md) 说明。
 
 Dev Mesh 可以记录已经完成的任务间通信，但不负责发送消息或唤醒任务。联系其他任务仍需
-使用宿主环境提供的任务控制能力。
+使用宿主环境提供的任务控制能力，成功后用 `record-message` 留痕；原有 `send` 命令继续兼容。
+默认状态输出包含待接受的脏基线和有界冲突原因，区分文件重叠与语义依赖。
 
 ## Console
 
@@ -80,6 +81,7 @@ python3 scripts/install_console_service.py status
 - 当前写入合同为 `dev-mesh.coordination@20260823.1`。
 - 可选的跨项目关系合同为
   `dev-mesh.cross-project-collaboration@20260823.1`。
+- 命令别名、紧凑提示和从已绑定记录读取参数的简短关闭命令沿用上述合同，无需升级工作区协议。
 - 权限以 `.dev-mesh/coord/20260823.1/` 下的当前状态为准；Events、Observer 和 Console 只用于
   诊断。
 - Observer 可以读取 `20260814.1` 和 `20260823.1` 来源，未知版本会报告为兼容性问题。
@@ -99,7 +101,8 @@ python3 scripts/plugin_dist.py sync \
 ```
 
 `sync` 不会提交或推送仓库。发布版本使用普通的 `MAJOR.MINOR.PATCH`；源码提交记录在
-release metadata 的 `source_revision` 中。
+release metadata 的 `source_revision` 中。安装后应核对运行时与技能文件和已验证包的内容，
+不能仅凭相同的 manifest 版本判断源码修复已经生效。
 
 安装包只包含 manifest、运行时、技能、assets、当前 schemas 和 contracts。测试、历史状态和
 缓存不会进入安装包。插件图标位于 [`assets/dev-mesh.png`](assets/dev-mesh.png)，原始图稿保留在

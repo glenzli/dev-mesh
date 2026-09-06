@@ -50,14 +50,31 @@ semantics are needed.
 
 ## Close once
 
-After the requested cross-project work reaches a terminal result, one exact participant records
-`completed`, `cancelled`, or `failed`. Close the relation **before** that participant leaves its Run;
-`leave` does not close cross-project evidence automatically. This example closes from the target:
+The bound target normally records `completed`, `cancelled`, or `failed` **before leaving its Run**.
+The source should observe that close, not repeat it. Designate a source-side close only when the
+target cannot perform normal closure, and check the multi-workspace evidence first. This convention
+reduces duplicate work; it does not introduce a cross-workspace lock or change either participant's
+existing ability to close. `leave` does not close cross-project evidence automatically.
+
+For the normal target path, use the local immutable binding instead of repeating participant facts:
 
 ```bash
 python3 <skill>/scripts/coord.py --root TARGET_ROOT cross-project-close \
-  --collaboration-id RELATION_ID --actor-role target \
-  --owner TARGET_OWNER --run-id TARGET_RUN \
+  --collaboration-id RELATION_ID \
+  --owner TARGET_OWNER --run-id TARGET_RUN --outcome completed
+```
+
+This checks the exact bound target Owner/Run and reads the original workspace, task, participant,
+and kind fields. It rejects a missing binding or a different Run, even for the same Owner. It emits
+the same `closed` event as the full form; the protocol and extension versions remain `20260823.1`.
+
+The full form remains available for compatible callers and an explicitly coordinated source close.
+Provide **all** participant facts; partial overrides are rejected:
+
+```bash
+python3 <skill>/scripts/coord.py --root SOURCE_ROOT cross-project-close \
+  --collaboration-id RELATION_ID --actor-role source \
+  --owner SOURCE_OWNER --run-id SOURCE_RUN \
   --source-workspace-id SOURCE_WORKSPACE_ID \
   --source-owner SOURCE_OWNER --source-run-id SOURCE_RUN \
   --target-workspace-id TARGET_WORKSPACE_ID \

@@ -17,6 +17,27 @@ REPOSITORY = Path(__file__).parents[2]
 
 
 class CliTest(GitWorkspaceTest):
+    def test_record_message_and_legacy_send_share_the_same_passive_contract(self) -> None:
+        root = str(self.root)
+        self._run("dev_mesh_coord", "--root", root, "join", "--owner", "sender",
+                  "--run-id", "sender-run", "--task", "record external communication")
+        for command in ("record-message", "send"):
+            with self.subTest(command=command):
+                output = json.loads(self._run(
+                    "dev_mesh_coord", "--root", root, command,
+                    "--source-owner", "sender", "--source-run-id", "sender-run",
+                    "--target-owner", "receiver", "--subject", "already delivered",
+                    "--body", "recorded checkpoint", "--kind", "notice",
+                ).stdout)
+                self.assertEqual(output["next_action"], "recording_complete")
+                self.assertEqual(output["dev_mesh_effect"], "record_persisted")
+                self.assertFalse(output["target_task_woken_by_dev_mesh"])
+        state = self.root / ".dev-mesh" / "coord" / "20260823.1"
+        events = [json.loads(p.read_text()) for p in (state / "events").glob("*-message-sent.json")]
+        self.assertEqual(len(events), 2)
+        self.assertTrue(all(e["authority_effect"] == "none" for e in events))
+        self.assertTrue(all(e["protocol_version"] == "20260823.1" for e in events))
+
     def test_protocol_error_codes_are_exhaustive_and_documented(self) -> None:
         package = Path(__file__).parents[1] / "dev_mesh_coord"
         emitted: set[str] = set()

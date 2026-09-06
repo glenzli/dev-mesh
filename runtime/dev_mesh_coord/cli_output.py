@@ -86,6 +86,8 @@ _FIELDS = (
     "requested_scope",
     "completion_kind",
     "work_result_created",
+    "physical_overlap_count",
+    "next_action",
 )
 
 _COLLECTION_KEYS = {
@@ -113,6 +115,22 @@ _COLLECTION_KEYS = {
 
 def _record(value: Mapping[str, object]) -> dict[str, object]:
     projected = {field: value[field] for field in _FIELDS if field in value}
+    conflicts = value.get("conflicts")
+    if isinstance(conflicts, list) and conflicts:
+        projected["conflicts"] = _collection(conflicts)
+    semantic_resources = value.get("semantic_resources")
+    if isinstance(semantic_resources, list):
+        projected["semantic_resources"] = _collection(semantic_resources)
+        physical_count = value.get("physical_overlap_count")
+        if isinstance(physical_count, int):
+            if semantic_resources:
+                projected["routing_hint"] = (
+                    "review_paths_and_semantic_dependencies_before_retrying"
+                    if physical_count
+                    else "review_semantic_dependencies_before_retrying"
+                )
+            elif physical_count:
+                projected["routing_hint"] = "narrow_paths_or_wait_for_release"
     coordinator = value.get("coordinator")
     if isinstance(coordinator, Mapping):
         projected["coordinator"] = _record(coordinator)
@@ -190,7 +208,7 @@ def _mapping_collection(value: Mapping[object, object]) -> dict[str, object]:
 def _next_action(command: str, value: Mapping[str, object]) -> str | None:
     status = value.get("status")
     if command == "join":
-        return "inspect_scoped_status_then_claim"
+        return "claim_declared_scope" if value.get("event_path") else "inspect_scoped_status_then_claim"
     if command in {"claim", "claim-activate", "claim-resume", "claim-pause", "claim-baseline-accept"}:
         if status == "pending-arbitration":
             return "stop_overlap_writes_and_coordinate"
@@ -230,11 +248,11 @@ def _next_action(command: str, value: Mapping[str, object]) -> str | None:
         return "follow_terminal_decision"
     if command == "contention-open":
         return "coordinator_proposes_bounded_decision"
-    if command == "send":
+    if command in {"send", "record-message"}:
         return (
-            "ensure_actual_task_delivery_then_wait_for_acknowledgement"
+            "share_message_id_then_wait_for_acknowledgement"
             if value.get("requires_ack")
-            else "ensure_actual_task_delivery"
+            else "recording_complete"
         )
     if command == "cross-project-open":
         return "include_correlation_in_target_task_message"
@@ -332,12 +350,12 @@ def _compact_status(value: Mapping[str, object], *, filtered: bool) -> dict[str,
     ]
     pending = [
         {
+            **item,
             "kind": "claim",
-            **_record(item),
             "next_action": _next_action("claim-pause" if item.get("status") == "paused" else "claim", item),
         }
         for item in claims
-        if item.get("status") in {"pending-arbitration", "paused"}
+        if item.get("status") in {"pending-arbitration", "pending-baseline", "paused"}
     ]
     result: dict[str, object] = {
         "protocol": value.get("protocol"),
@@ -347,7 +365,8 @@ def _compact_status(value: Mapping[str, object], *, filtered: bool) -> dict[str,
             "claims": len(claims),
             "active_claims": sum(item.get("status") == "active" for item in claims),
             "pending_claims": sum(
-                item.get("status") == "pending-arbitration" for item in claims
+                item.get("status") in {"pending-arbitration", "pending-baseline"}
+                for item in claims
             ),
             "leave_blocked_runs": len(blocker_items),
         },
@@ -391,7 +410,7 @@ def project(
         result = dict(selected)
         if command == "contention-wait":
             result["write_authority"] = "none"
-        if command == "send":
+        if command in {"send", "record-message"}:
             result["next_action"] = _next_action(command, selected)
             result["dev_mesh_effect"] = "record_persisted"
             result["external_task_delivery"] = "not_performed_by_dev_mesh"
@@ -406,7 +425,7 @@ def project(
     next_action = _next_action(command, selected)
     if next_action is not None:
         result["next_action"] = next_action
-    if command == "send":
+    if command in {"send", "record-message"}:
         result["dev_mesh_effect"] = "record_persisted"
         result["external_task_delivery"] = "not_performed_by_dev_mesh"
         result["target_task_woken_by_dev_mesh"] = False

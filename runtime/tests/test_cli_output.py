@@ -3,15 +3,86 @@ from __future__ import annotations
 import json
 
 from dev_mesh_coord import canonical_git
-from dev_mesh_coord import contention
+from dev_mesh_coord import contention, work_results
 from dev_mesh_coord.cli_output import MAX_COMPACT_ITEMS, project
 from dev_mesh_coord.control_plane import initialize
-from dev_mesh_coord.lifecycle import create_claim, join_run
+from dev_mesh_coord.lifecycle import create_claim, join_run, status
 
 from helpers import GitWorkspaceTest
 
 
 class CliOutputTest(GitWorkspaceTest):
+    def test_fresh_join_can_claim_but_rejoined_run_must_inspect_existing_state(self) -> None:
+        initialize(self.root)
+        arguments = dict(run_id="run-a", owner="agent-a", task="edit app")
+        fresh = join_run(self.root, **arguments)
+        self.assertEqual(project("join", fresh, verbose=False)["next_action"], "claim_declared_scope")
+        reused = join_run(self.root, **arguments)
+        self.assertEqual(
+            project("join", reused, verbose=False)["next_action"],
+            "inspect_scoped_status_then_claim",
+        )
+
+    def test_semantic_overlap_explains_why_narrowing_paths_will_not_help(self) -> None:
+        initialize(self.root)
+        join_run(self.root, run_id="run-a", owner="agent-a", task="change contract")
+        join_run(self.root, run_id="run-b", owner="agent-b", task="consume contract")
+        create_claim(
+            self.root, scope="producer", owner="agent-a", run_id="run-a",
+            task="change API", paths=["app.txt"], semantic_writes=["api:shared"],
+        )
+        pending = create_claim(
+            self.root, scope="consumer", owner="agent-b", run_id="run-b",
+            task="consume API", paths=["other.txt"], sensitive_to=["api:shared"],
+        )
+        compact = project("claim", pending, verbose=False)
+        self.assertEqual(compact["write_authority"], "none")
+        conflict = compact["conflicts"]["sample"][0]
+        self.assertEqual((conflict["owner"], conflict["run_id"], conflict["scope"]),
+                         ("agent-a", "run-a", "producer"))
+        self.assertEqual(conflict["physical_overlap_count"], 0)
+        self.assertEqual(conflict["semantic_resources"]["sample"], ["api:shared"])
+        self.assertEqual(conflict["routing_hint"], "review_semantic_dependencies_before_retrying")
+        self.assertEqual(project("claim", pending, verbose=True), pending)
+        overview = project("status", status(self.root), verbose=False)
+        action = overview["action_required"]["sample"][0]
+        self.assertEqual(action["next_action"], "stop_overlap_writes_and_coordinate")
+        self.assertEqual(action["conflicts"], compact["conflicts"])
+
+        crowded = {**pending, "conflicts": [
+            {**pending["conflicts"][0], "semantic_resources": [f"api:{i}" for i in range(20)]}
+            for _ in range(20)
+        ]}
+        bounded = project("claim", crowded, verbose=False)["conflicts"]
+        self.assertTrue(bounded["truncated"])
+        self.assertEqual(len(bounded["sample"]), MAX_COMPACT_ITEMS)
+        self.assertTrue(bounded["sample"][0]["semantic_resources"]["truncated"])
+        self.assertEqual(len(bounded["sample"][0]["semantic_resources"]["sample"]), MAX_COMPACT_ITEMS)
+
+    def test_status_keeps_baseline_acceptance_visible_until_exact_accept(self) -> None:
+        initialize(self.root)
+        join_run(self.root, run_id="run-a", owner="agent-a", task="continue dirty work")
+        (self.root / "app.txt").write_text("inherited\n", encoding="utf-8")
+        pending = create_claim(
+            self.root, scope="continued", owner="agent-a", run_id="run-a",
+            task="continue app", paths=["app.txt"],
+        )
+        self.assertEqual(pending["status"], "pending-baseline")
+        for filters in ({}, {"owner": "agent-a", "run_id": "run-a"}):
+            overview = project("status", status(self.root), verbose=False, **filters)
+            self.assertEqual(overview["counts"]["pending_claims"], 1)
+            action = overview["action_required"]["sample"][0]
+            self.assertEqual(action["write_authority"], "none")
+            self.assertEqual(action["next_action"], "review_and_accept_inherited_baseline")
+            self.assertEqual(action["accept_baseline_sha256"], pending["baseline"]["baseline_sha256"])
+        work_results.accept_baseline(
+            self.root, scope="continued", owner="agent-a", run_id="run-a",
+            baseline_sha256=pending["baseline"]["baseline_sha256"],
+        )
+        overview = project("status", status(self.root), verbose=False)
+        self.assertEqual(overview["counts"]["pending_claims"], 0)
+        self.assertEqual(overview["action_required"]["count"], 0)
+
     def test_direct_commit_projection_is_small_and_action_oriented(self) -> None:
         initialize(self.root)
         join_run(self.root, run_id="run-a", owner="agent-a", task="direct")
@@ -138,6 +209,9 @@ class CliOutputTest(GitWorkspaceTest):
             paths=["app.txt"],
             allow_overlap=True,
         )
+        conflict = project("claim", pending, verbose=False)["conflicts"]["sample"][0]
+        self.assertEqual(conflict["physical_overlap_count"], 1)
+        self.assertEqual(conflict["routing_hint"], "narrow_paths_or_wait_for_release")
         record = contention.open_for_claim(self.root, scope="pending")
         compact = project("contention-open", record, verbose=False)
         self.assertEqual(compact["contention_id"], pending["contention_id"])
@@ -292,7 +366,7 @@ class CliOutputTest(GitWorkspaceTest):
         self.assertFalse(compact["target_task_woken_by_dev_mesh"])
         self.assertEqual(
             compact["next_action"],
-            "ensure_actual_task_delivery_then_wait_for_acknowledgement",
+            "share_message_id_then_wait_for_acknowledgement",
         )
 
         notice = project(
@@ -305,7 +379,7 @@ class CliOutputTest(GitWorkspaceTest):
             },
             verbose=False,
         )
-        self.assertEqual(notice["next_action"], "ensure_actual_task_delivery")
+        self.assertEqual(notice["next_action"], "recording_complete")
 
         verbose = project(
             "send",
@@ -321,7 +395,7 @@ class CliOutputTest(GitWorkspaceTest):
         self.assertEqual(verbose["dev_mesh_effect"], "record_persisted")
         self.assertEqual(
             verbose["next_action"],
-            "ensure_actual_task_delivery_then_wait_for_acknowledgement",
+            "share_message_id_then_wait_for_acknowledgement",
         )
 
     def test_pause_projection_remains_a_blocking_state(self) -> None:

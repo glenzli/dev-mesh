@@ -48,7 +48,10 @@ can wait. Handoff, exclusivity, or a short-lived branch is used only when needed
 recovery procedures.
 
 Dev Mesh can record communication that has already happened, but it does not send messages or wake
-tasks. Contacting another task still uses the host environment's task controls.
+tasks. Contacting another task still uses the host environment's task controls, followed by
+`record-message`; the original `send` command remains compatible. Compact status includes pending
+dirty-baseline acceptance and bounded conflict reasons, distinguishing file overlap from semantic
+dependencies.
 
 ## Console
 
@@ -89,6 +92,8 @@ python3 scripts/install_console_service.py status
 - The current write contract is `dev-mesh.coordination@20260823.1`.
 - The optional cross-project relation contract is
   `dev-mesh.cross-project-collaboration@20260823.1`.
+- Command aliases, compact guidance, and the short close command that reads an existing binding
+  retain these contracts and require no workspace protocol upgrade.
 - Current state under `.dev-mesh/coord/20260823.1/` is authoritative. Events, the Observer, and
   the Console are diagnostic surfaces.
 - The Observer can read `20260814.1` and `20260823.1` sources. Unknown versions are reported as
@@ -110,7 +115,9 @@ python3 scripts/plugin_dist.py sync \
 ```
 
 `sync` does not commit or push either repository. Release versions use plain `MAJOR.MINOR.PATCH`;
-the source commit is recorded separately as `source_revision` in the release metadata.
+the source commit is recorded separately as `source_revision` in the release metadata. After
+installation, compare runtime and skill contents with the verified package. A matching manifest
+version alone does not establish that a source fix reached the installed producer.
 
 The package contains the manifest, runtime, skills, assets, current schemas, and contracts. Tests,
 historical state, and caches are excluded. The packaged icon is

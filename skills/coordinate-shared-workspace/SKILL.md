@@ -5,234 +5,118 @@ description: Coordinate concurrent Agents or tasks editing one local Git workspa
 
 # Coordinate a Shared Workspace
 
-Use the light direct path for ordinary work. Load the linked references only when their trigger
-occurs; do not read the full protocol or immutable event directory during routine work.
+Use the routine path below. Load references only at their trigger; ordinary work does not need the
+full protocol, event directory, Observer catalog, or other Runs' complete state.
 
-## Preserve authority boundaries
+## Authority boundaries
 
 - Never clean, revert, stage, commit, move, or discard another owner's work.
-- A `pending-arbitration` Claim records intent but grants no write authority.
-- Treat timestamps as diagnostics, never permission to take over authority.
-- Treat sandbox, policy, approval, network, and tool failures as environment blockers, not Agent
-  contention.
-- Cooperating Agents must not run raw canonical `git add`, `git commit`, `git merge`, or ref
-  updates. Use `direct-commit` or transaction publication. Read-only Git inspection is allowed.
-- Events are immutable diagnostics. Materialized state under `.dev-mesh/coord/20260823.1/` is
-  authoritative; Observer data never grants or reconstructs authority.
-- Keep `.dev-mesh/` local unless the user explicitly authorizes committing it.
+- `pending-arbitration` and `pending-baseline` grant no write authority. Timestamps never permit
+  takeover; sandbox, approval, network, and tool failures are environment blockers, not contention.
+- Use managed `direct-commit` or transaction publication for canonical Git writes. Do not run raw
+  canonical `git add`, `git commit`, `git merge`, or ref updates. Read-only Git inspection is allowed.
+- Materialized state under `.dev-mesh/coord/20260823.1/` is authoritative. Events and Observer are
+  diagnostics. Keep `.dev-mesh/` local unless the user explicitly authorizes committing it.
 
-## Run the routine path
+## Routine work
 
-Use the repository-owned `python3 <skill>/scripts/coord.py` launcher. Replace uppercase placeholders
-with stable, bounded identifiers; reuse one Run id only for the current Agent task in this workspace.
+Use `python3 <skill>/scripts/coord.py` from this plugin. Replace uppercase placeholders with stable,
+bounded identifiers; reuse a Run id only for this Agent task in this workspace.
 
-1. Find the exact Git root, read repository instructions, and inspect dirty state without changing
-   it.
-2. Join before claiming:
+1. Find the exact Git root, read repository instructions, and inspect dirty state without changing it.
+   Read-only inspection alone does not require a Run or Claim; join when recording collaboration or
+   preparing to write.
+2. Join:
 
 ```bash
 python3 <skill>/scripts/coord.py --root ROOT join \
   --owner OWNER --run-id RUN --task "bounded task"
 ```
 
-3. Read only this Run's compact state:
+A fresh Run returns `claim_declared_scope`: go directly to Claim. If it returns
+`inspect_scoped_status_then_claim`, inspect the existing Run before continuing:
 
 ```bash
 python3 <skill>/scripts/coord.py --root ROOT status --owner OWNER --run-id RUN
 ```
 
-Use unfiltered `status` only for a bounded workspace overview. Add root option `--verbose` before
-the command only when an action reports `needs-attention`, recovery is required, or exact evidence
-must be reviewed:
+Use that filtered status when resuming or checking progress. Unfiltered status is a bounded workspace
+overview; root `--verbose` is for exact evidence or recovery, not routine polling.
 
-```bash
-python3 <skill>/scripts/coord.py --root ROOT --verbose status --owner OWNER --run-id RUN
-```
-
-4. Claim exact likely write paths before editing:
+3. Claim the likely write paths:
 
 ```bash
 python3 <skill>/scripts/coord.py --root ROOT claim \
-  --scope SCOPE --owner OWNER --run-id RUN \
-  --task "bounded change" \
+  --scope SCOPE --owner OWNER --run-id RUN --task "bounded change" \
   --path src/example.py --path tests/test_example.py \
-  --intent local-edit \
-  --semantic-write api:example \
-  --sensitive-to contract:example \
-  --validation "focused tests" \
-  --first-release "implementation and focused tests"
+  --validation "focused checks"
 ```
 
-Use one bounded intent:
+The default intent is `local-edit`. If `claim_reused: true`, use the returned scope. Extend a narrower
+Claim with `claim-update`; do not create competing lifecycles for the same Run. For refactors,
+semantic dependencies, changing scope, or ignored local files, load
+[claim-options.md](references/claim-options.md). Semantic tags are optional blocking constraints,
+not ordinary dependency notes.
 
-- `read` for read-only work;
-- `local-edit` for a bounded existing unit;
-- `semantic-edit` when same-file edits may be semantically independent;
-- `exclusive-refactor` for moves, deletion, generation, or broad restructuring.
-
-Declare semantic resources only when they affect overlap routing. Do not list incidental reads.
-
-If the same Run already owns one Claim that fully covers the requested paths and semantic resources,
-`claim` returns that existing Claim with `claim_reused: true`; use the returned `scope` and do not
-create another lifecycle. If the existing Claim is narrower, extend that exact Claim with
-`claim-update`. Same-Run overlap is scope hygiene, not Agent contention.
-
-The default `--projection-mode git-tree` covers tracked and ordinary untracked source paths. For an
-exact small regular file that is intentionally excluded by Git, opt in explicitly:
-
-```bash
-python3 <skill>/scripts/coord.py --root ROOT claim \
-  --scope SCOPE --owner OWNER --run-id RUN --task "update local data" \
-  --path data/local.json --projection-mode workspace-bytes
-```
-
-`workspace-bytes` accepts only ignored, untracked regular files with at most 16 MiB total content.
-It hashes bytes for Work Result and inherited-baseline evidence without storing the content. It
-cannot use direct Git publication or `parallel-tx`; overlapping writers normally select wait and
-release the small Claim quickly. Databases and external stores still require their own transaction.
-
-5. Follow the returned `next_action`:
+4. Follow `next_action`:
 
 - `edit_and_validate_declared_scope`: edit only declared paths and run focused checks.
-- `review_and_accept_inherited_baseline`: inspect the existing dirty work, then accept the exact
-  offered digest before editing:
+- `review_and_accept_inherited_baseline`: inspect the inherited dirty work, then accept the exact
+  returned `accept_baseline_sha256` before writing:
 
 ```bash
 python3 <skill>/scripts/coord.py --root ROOT claim-baseline-accept \
   --scope SCOPE --owner OWNER --run-id RUN --baseline-sha256 DIGEST
 ```
 
-- `review_changed_baseline_then_retry_accept`: the content, canonical revision, or branch changed
-  during review. Inspect the newly returned baseline and invoke the same command once with its new
-  `accept_baseline_sha256`; the first call deliberately grants no authority.
-
-- `stop_overlap_writes_and_coordinate`: do not write the overlap; load
-  [contention-and-transactions.md](references/contention-and-transactions.md).
+- `review_changed_baseline_then_retry_accept`: content, canonical revision, or branch changed during
+  review. Inspect the refreshed baseline and retry with its new digest; the first call granted no
+  authority. Never accept a stale or unreviewed digest.
+- `stop_overlap_writes_and_coordinate`: inspect the bounded `conflicts` summary and load
+  [contention-and-transactions.md](references/contention-and-transactions.md). A semantic dependency
+  is not resolved just by reducing file paths.
 - `wait_for_resume_condition`: preserve the Claim and follow its recorded condition.
 - `preserve_state_and_inspect_verbose_recovery_facts`: stop mutation and load
   [recovery-and-cutover.md](references/recovery-and-cutover.md).
 
-6. Finish editing independently of Git publication. Use the contribution-aware routine finish:
+5. Finish validated work and leave:
 
 ```bash
 python3 <skill>/scripts/coord.py --root ROOT claim-finish \
   --result-id RESULT --scope SCOPE --owner OWNER --run-id RUN \
-  --summary "what changed" \
-  --validation-evidence "checks and results"
+  --summary "what changed" --validation-evidence "checks and results"
 
 python3 <skill>/scripts/coord.py --root ROOT leave \
   --owner OWNER --run-id RUN --outcome completed --summary "completed result"
 ```
 
-`claim-finish` creates an immutable, non-authoritative Work Result only when the Claim contributed
-source bytes. If the paths are clean or still equal the accepted inherited baseline, it releases the
-Claim without inventing a zero-change result. A later overlapping Claim must inspect and accept the
-exact inherited dirty baseline before editing. Work Results are attribution and validation evidence,
-not private branches, operation receipts, or rollback checkpoints. `claim-complete` remains the
-exact low-level completion primitive for recovery and compatible callers.
+`claim-finish` records a Work Result only for a contribution, then releases the Claim. Clean paths or
+bytes equal to the accepted baseline release without a zero-change result. Work Results are
+attribution and validation evidence, not rollback checkpoints or private branches. A later writer
+must review and accept inherited dirty work. `claim-complete` remains the low-level recovery primitive.
 
-An overlap is materialized directly as a non-authoritative `pending-arbitration` Claim; callers do
-not need to predict overlap or add a special flag. A changed inherited baseline is also recoverable:
-retrying `claim-baseline-accept` with the previously offered digest refreshes the Claim and returns
-the one current `accept_baseline_sha256` to inspect and accept. Acceptance also binds the observed
-canonical revision and branch for `git-tree`, so same-content Git drift still requires a second
-review. `workspace-bytes` instead binds only the exact ignored-file projection; unrelated Git drift
-does not force another acknowledgement. Neither mode grants authority to stale content.
+If an immediate commit is already authorized, use
+[direct-publication.md](references/direct-publication.md) before finishing the active Claim. Building
+and testing do not require a commit. Do not pause completed work to await an optional commit.
 
-If the user already authorized an immediate commit while the Claim is active, publish through the
-managed boundary, then release the now-clean Claim and leave:
+For clean or cancelled work, `claim-release --scope SCOPE --owner OWNER --run-id RUN --summary TEXT`
+may precede `leave`. Never leave completed while owning active authority. Failed or abandoned Runs
+retain authority until explicit same-owner recovery. Pause is for a real environment, authorization,
+dependency, or external-resource blocker; use contention wait for overlap and finish for completed work.
 
-```bash
-python3 <skill>/scripts/coord.py --root ROOT direct-commit \
-  --scope SCOPE --owner OWNER --run-id RUN \
-  --summary "what changed" \
-  --validation-evidence "checks and results"
-```
+## Communication and additional workflows
 
-This stages only declared changed paths, binds the exact intended tree before advancing the
-canonical branch, and serializes the shared index/branch with transaction publication.
+- Before contacting another task or recording a handoff, load
+  [communication.md](references/communication.md). Use the actual task tool first, then
+  `record-message` (compatible alias: `send`). Recording does not deliver or wake a task.
+- For work between tasks in different Git workspaces, load
+  [cross-project-collaboration.md](references/cross-project-collaboration.md). Record one relation,
+  let the receiver bind it, and have the target close before leaving. Matching Owner/Run text across
+  workspaces does not establish a relation.
+- For crashes, ambiguous durable intents, stranded authority, or explicitly authorized cutover, load
+  [recovery-and-cutover.md](references/recovery-and-cutover.md).
+- Heartbeats only refresh snapshots; use them for genuinely long work, not per edit or tool call.
 
-Run the declared validation on the working bytes before publication. A commit is not a prerequisite
-for building or testing, and creating one does not make unvalidated bytes authoritative.
-
-Managed publication requires permission to write the repository's Git metadata. The producer
-preflights that capability before creating a durable direct-commit intent. If the preflight is
-denied, do not repeat the same command in the same restricted sandbox: obtain approved Git-write
-execution, or record the validated dirty Work Result and leave while reporting that publication is
-still pending. A permission failure that returns no `direct_commit_id` created no publication
-authority and must not be described as an unrecoverable transaction.
-
-If a command does return a `direct_commit_id` with `needs-attention`, preserve it and inspect
-`direct-commit-doctor`. Reconcile it under an exact active steward Run with Git-write capability;
-do not bypass it with raw Git. The durable record exists for ambiguous crash windows, not to make
-ordinary task completion depend on a commit.
-
-Pause is only for work that genuinely cannot proceed because of authorization, environment,
-dependency, or an external resource. Record the blocker, checkpoint, and resume condition; never
-use pause to mean complete, awaiting optional commit, handed off, or waiting for a Claim overlap.
-Use the contention wait path for overlaps and `claim-finish` for finished routine work.
-
-7. Clean or cancelled work may release without a Work Result, then leave:
-
-```bash
-python3 <skill>/scripts/coord.py --root ROOT claim-release \
-  --scope SCOPE --owner OWNER --run-id RUN --summary "completed result"
-
-python3 <skill>/scripts/coord.py --root ROOT leave \
-  --owner OWNER --run-id RUN --outcome completed --summary "completed result"
-```
-
-Do not leave `completed` while this Run still owns active authority. A failed or abandoned Run
-retains its authority until an explicit same-owner recovery.
-
-## Execute communication, then record it
-
-Dev Mesh is the execution record, not the communication transport. Treat `send` as
-`record-message` and a handoff as `record-handoff-offer`:
-
-1. Identify the real target task. Use the current environment's task, team, thread, or subagent
-   control to actually send the notice, request, or handoff. Create or resume the target task first
-   when necessary.
-2. If that real communication action fails or is unavailable, stop and report that the target was
-   not contacted. Do not run Dev Mesh `send` and do not claim that notification or handoff occurred.
-3. After the real action succeeds, run Dev Mesh `send` to persist bounded correlation evidence.
-   Instruct the receiver to run `ack` with its exact active Run when acknowledgement is required.
-
-A successful Dev Mesh `send`, `ack`, or handoff command means only that a workspace-local record was
-persisted. It never creates, delivers to, starts, resumes, or wakes a Codex task. `--target-owner` is
-an authority identity, not a task address, and `--requires-ack` does not contact or poll the target.
-
-After executing the real communication, use `send --kind notice` to record information and
-`send --kind request --requires-ack` to record a decision request. Use a caller-supplied stable
-`--handoff-id` for `--kind handoff`; retry with the same id after an uncertain recording result.
-Acknowledging a handoff records acceptance but does not silently transfer a Claim. For dirty direct
-work, the current owner creates a Work Result and the target creates its own Claim, reviews the
-inherited work, and accepts the exact baseline digest. An active transaction may instead use
-`tx-handoff`. The target must not infer edit authority from pause,
-message delivery, or acceptance. Load the contention reference for the full handoff sequence.
-
-When a Codex task in another Git workspace is created, messaged, awaited, or handed development
-work, load [cross-project-collaboration.md](references/cross-project-collaboration.md). Record one
-stable relation after the target task id is known, let the receiver bind its exact workspace and
-Run, and close the relation once **before the closing participant leaves its Run**. If that close was
-missed, use the target-side same-owner reconciliation described in the reference; never rewrite the
-original binding. This optional extension is diagnostic only and is not needed for ordinary
-single-workspace work.
-
-Owner and Run identities are workspace-scoped. Matching Owner/Run text in two workspaces may be a
-single Codex task visiting both projects, but it is never proof that two tasks collaborated. Do not
-replace `cross-project-open` and receiver `bind` evidence with matching names or a local handoff.
-
-## Keep routine context bounded
-
-- Prefer filtered compact status and the command's `next_action` over reading state files.
-- Do not ingest event JSON, Observer catalogs, full diffs, or unrelated Claims into the prompt
-  unless diagnosing a concrete correlation.
-- Heartbeats update snapshots without creating events. Send one only for genuinely long work, not
-  per file edit or tool call.
-- Use Observer reports to understand system behavior; never use them to decide write permission.
-
-For exact protocol guarantees, consult
-`contracts/dev-mesh-coordination-20260823.1.md` in the Dev Mesh repository only when changing
-the core protocol itself. Cross-project correlation is the separate compatible extension
-`contracts/dev-mesh-cross-project-collaboration-20260823.1.md`.
+CLI aliases and compact projections do not change the `20260823.1` protocol. An older workspace
+requires its own cutover assessment; never update its pointer as an ordinary task step. Read the
+repository's `contracts/dev-mesh-coordination-20260823.1.md` only when changing core guarantees.

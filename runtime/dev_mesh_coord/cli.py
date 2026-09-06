@@ -148,7 +148,12 @@ def parser() -> argparse.ArgumentParser:
     recover_run.add_argument("--recovery-run-id", required=True)
     recover_run.add_argument("--evidence", required=True)
 
-    send = commands.add_parser("send")
+    send = commands.add_parser(
+        "record-message",
+        aliases=["send"],
+        help="Record an already delivered task message; does not send or wake a task",
+    )
+    send.set_defaults(command="send")
     send.add_argument("--source-owner", required=True)
     send.add_argument("--target-owner", required=True)
     send.add_argument("--subject", required=True)
@@ -184,18 +189,18 @@ def parser() -> argparse.ArgumentParser:
 
     cross_close = commands.add_parser("cross-project-close")
     cross_close.add_argument("--collaboration-id", required=True)
-    cross_close.add_argument("--actor-role", required=True, choices=("source", "target"))
+    cross_close.add_argument("--actor-role", default="target", choices=("source", "target"))
     cross_close.add_argument("--owner", required=True)
     cross_close.add_argument("--run-id", required=True)
-    cross_close.add_argument("--source-workspace-id", required=True)
-    cross_close.add_argument("--source-owner", required=True)
-    cross_close.add_argument("--source-run-id", required=True)
-    cross_close.add_argument("--target-workspace-id", required=True)
-    cross_close.add_argument("--target-owner", required=True)
-    cross_close.add_argument("--target-run-id", required=True)
-    cross_close.add_argument("--target-task-id", required=True)
+    cross_close.add_argument("--source-workspace-id")
+    cross_close.add_argument("--source-owner")
+    cross_close.add_argument("--source-run-id")
+    cross_close.add_argument("--target-workspace-id")
+    cross_close.add_argument("--target-owner")
+    cross_close.add_argument("--target-run-id")
+    cross_close.add_argument("--target-task-id")
     cross_close.add_argument(
-        "--kind", required=True, choices=sorted(cross_project.COLLABORATION_KINDS)
+        "--kind", choices=sorted(cross_project.COLLABORATION_KINDS)
     )
     cross_close.add_argument(
         "--outcome", required=True, choices=sorted(cross_project.COLLABORATION_OUTCOMES)
@@ -452,6 +457,21 @@ def dispatch(arguments: argparse.Namespace) -> object:
     if command == "cross-project-bind":
         return cross_project.bind_collaboration(root, collaboration_id=arguments.collaboration_id, source_workspace_id=arguments.source_workspace_id, source_owner=arguments.source_owner, source_run_id=arguments.source_run_id, target_owner=arguments.target_owner, target_run_id=arguments.target_run_id, target_task_id=arguments.target_task_id, kind=arguments.kind)
     if command == "cross-project-close":
+        facts = {
+            name: getattr(arguments, name)
+            for name in (
+                "source_workspace_id", "source_owner", "source_run_id",
+                "target_workspace_id", "target_owner", "target_run_id", "target_task_id", "kind",
+            )
+        }
+        if all(value is None for value in facts.values()) and arguments.actor_role == "target":
+            return cross_project.close_bound_collaboration(root, collaboration_id=arguments.collaboration_id, owner=arguments.owner, run_id=arguments.run_id, outcome=arguments.outcome)
+        missing = ["--" + name.replace("_", "-") for name, value in facts.items() if value is None]
+        if missing:
+            raise ValueError(
+                "explicit cross-project close requires " + ", ".join(missing)
+                + "; omit all participant facts for a bound target close"
+            )
         return cross_project.close_collaboration(root, collaboration_id=arguments.collaboration_id, actor_role=arguments.actor_role, owner=arguments.owner, run_id=arguments.run_id, source_workspace_id=arguments.source_workspace_id, source_owner=arguments.source_owner, source_run_id=arguments.source_run_id, target_workspace_id=arguments.target_workspace_id, target_owner=arguments.target_owner, target_run_id=arguments.target_run_id, target_task_id=arguments.target_task_id, kind=arguments.kind, outcome=arguments.outcome)
     if command == "cross-project-reconcile-close":
         return cross_project.reconcile_closed_collaboration(root, collaboration_id=arguments.collaboration_id, owner=arguments.owner, run_id=arguments.run_id, outcome=arguments.outcome)

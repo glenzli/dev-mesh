@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
 from unittest import mock
@@ -81,6 +81,14 @@ class CrossProjectCollaborationTest(GitWorkspaceTest):
         self.assertEqual(opened["phase"], "opened")
         self.assertEqual(bound["phase"], "bound")
         self.assertEqual(closed["outcome"], "completed")
+        abbreviated = cross_project.close_bound_collaboration(
+            self.target,
+            collaboration_id=collaboration_id,
+            owner="target-agent",
+            run_id="target-run",
+            outcome="completed",
+        )
+        self.assertEqual(abbreviated, closed)
 
         again = cross_project.bind_collaboration(
             self.target,
@@ -156,6 +164,72 @@ class CrossProjectCollaborationTest(GitWorkspaceTest):
                 kind="request",
                 outcome="completed",
             )
+
+    def test_short_close_cli_reuses_binding_and_repairs_a_missing_event(self) -> None:
+        collaboration_id = "short-close"
+        bound = cross_project.bind_collaboration(
+            self.target, collaboration_id=collaboration_id,
+            source_workspace_id=cross_project.workspace_id(self.root),
+            source_owner="source-agent", source_run_id="source-run",
+            target_owner="target-agent", target_run_id="target-run",
+            target_task_id="target-task", kind="review",
+        )
+        with mock.patch.object(cross_project, "write_event", side_effect=RuntimeError("stop")):
+            with self.assertRaisesRegex(RuntimeError, "stop"):
+                cross_project.close_bound_collaboration(
+                    self.target, collaboration_id=collaboration_id,
+                    owner="target-agent", run_id="target-run", outcome="completed",
+                )
+        arguments = [
+            "--root", str(self.target), "cross-project-close",
+            "--collaboration-id", collaboration_id, "--owner", "target-agent",
+            "--run-id", "target-run", "--outcome", "completed",
+        ]
+        for _ in range(2):
+            output = StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(main(arguments), 0)
+            closed = json.loads(output.getvalue())
+            for name in ("source_workspace_id", "source_owner", "source_run_id",
+                         "target_workspace_id", "target_owner", "target_run_id", "target_task_id", "kind"):
+                self.assertEqual(closed[name], bound[name])
+            self.assertEqual(closed["actor_role"], "target")
+            self.assertFalse(closed["reconciled"])
+        events = self._events(self.target)
+        self.assertEqual([e["cross_project"]["phase"] for e in events], ["bound", "closed"])
+        self.assertTrue(all(e["protocol_version"] == "20260823.1" for e in events))
+        self.assertTrue(all(e["authority_effect"] == "none" for e in events))
+
+        for extra in (["--kind", "review"], ["--actor-role", "source"]):
+            error = StringIO()
+            with redirect_stderr(error):
+                self.assertEqual(main([*arguments, *extra]), 1)
+            self.assertIn("explicit cross-project close requires", error.getvalue())
+        self.assertEqual(len(self._events(self.target)), 2)
+
+    def test_bound_close_never_infers_another_owner_or_successor_run(self) -> None:
+        arguments = dict(collaboration_id="bound-identity", owner="target-agent",
+                         run_id="target-run", outcome="completed")
+        with self.assertRaisesRegex(ValueError, "no exact bound"):
+            cross_project.close_bound_collaboration(self.target, **arguments)
+        cross_project.bind_collaboration(
+            self.target, collaboration_id="bound-identity",
+            source_workspace_id=cross_project.workspace_id(self.root),
+            source_owner="source-agent", source_run_id="source-run",
+            target_owner="target-agent", target_run_id="target-run",
+            target_task_id="target-task", kind="request",
+        )
+        for owner, run_id in (("other-agent", "other-run"), ("target-agent", "successor-run")):
+            join_run(self.target, owner=owner, run_id=run_id, task="cannot replace bound actor")
+            with self.assertRaisesRegex(ValueError, "exact bound target"):
+                cross_project.close_bound_collaboration(
+                    self.target, **{**arguments, "owner": owner, "run_id": run_id},
+                )
+        leave_run(self.target, owner="target-agent", run_id="target-run",
+                  outcome="completed", summary="work completed")
+        with self.assertRaisesRegex(ValueError, "not active"):
+            cross_project.close_bound_collaboration(self.target, **arguments)
+        self.assertEqual(len(self._events(self.target)), 1)
 
     def test_terminal_target_run_can_be_closed_by_same_owner_reconciliation(self) -> None:
         collaboration_id = "late-target-close"

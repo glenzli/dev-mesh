@@ -21,6 +21,11 @@ not appropriate.
 
 Use this order; choose the least expensive safe option:
 
+Read the compact Claim's `conflicts` first. Zero `physical_overlap_count` with nonempty
+`semantic_resources` means path narrowing alone cannot remove the blocker. Review the dependency
+with the active owner; preserve genuine blocking constraints. Use exact verbose state only if the
+bounded sample is insufficient.
+
 1. Decompose this Agent's own scope or semantic resources so a replacement Claim no longer
    overlaps. This is a local release-and-reclaim action, not a shared contention decision.
 2. Wait when the active owner will finish soon.
@@ -138,7 +143,7 @@ After actual delivery succeeds, record the handoff with a stable caller-supplied
 recording retries converge:
 
 ```bash
-python3 <skill>/scripts/coord.py --root ROOT send \
+python3 <skill>/scripts/coord.py --root ROOT record-message \
   --source-owner OWNER --source-run-id RUN --target-owner TARGET \
   --kind handoff --topic takeover --requires-ack \
   --handoff-id HANDOFF_ID \
@@ -154,7 +159,7 @@ python3 <skill>/scripts/coord.py --root ROOT ack \
   --note "accepted"
 ```
 
-`send` success proves only that the offer was recorded; it does not prove delivery and it does not
+`record-message` (legacy `send`) success proves only that the offer was recorded; it does not prove delivery and it does not
 run `ack` for the receiver. Recorded acceptance does not transfer a Claim. For clean direct work,
 release the Claim and let the accepted target create its own exact Claim. For completed dirty
 direct work, create a Work Result and leave; the target then creates its own Claim and explicitly
