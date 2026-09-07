@@ -1,6 +1,6 @@
 {
   "name": "dev-mesh",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Shared-workspace coordination and local observability for multi-Agent development.",
   "author": {
     "name": "Glen Li",

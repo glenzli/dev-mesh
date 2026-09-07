@@ -10,7 +10,7 @@ import tempfile
 from pathlib import Path
 
 from . import git_backend as git
-from .constants import MAX_TRANSACTION_CHANGED_PATHS, MAX_WORKSPACE_BYTES
+from .constants import MAX_WORKSPACE_BYTES
 from .control_plane import ControlPlane
 
 
@@ -18,12 +18,14 @@ def _run_git(
     root: Path,
     *arguments: str,
     environment: dict[str, str] | None = None,
+    input: bytes | None = None,
 ) -> subprocess.CompletedProcess[bytes]:
     completed = subprocess.run(
         ("git", "-C", str(root), *arguments),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         check=False,
+        input=input,
         env=environment,
     )
     if completed.returncode != 0:
@@ -216,10 +218,15 @@ def declared_projection(
         if projection_pathspecs:
             _run_git(
                 root,
+                "--literal-pathspecs",
                 "add",
                 "-A",
-                "--",
-                *projection_pathspecs,
+                "--pathspec-from-file=-",
+                "--pathspec-file-nul",
+                input=b"".join(
+                    path.encode("utf-8", errors="surrogateescape") + b"\0"
+                    for path in projection_pathspecs
+                ),
                 environment=environment,
             )
         expected_tree = _run_git(
@@ -256,10 +263,6 @@ def declared_projection(
             pass
     if require_changes and not paths:
         raise ValueError("projection has no declared-path changes")
-    if len(paths) > MAX_TRANSACTION_CHANGED_PATHS:
-        raise ValueError(
-            f"declared paths change more than {MAX_TRANSACTION_CHANGED_PATHS} paths"
-        )
     outside = [
         path for path in paths if not any(within(path, allowed) for allowed in declared)
     ]

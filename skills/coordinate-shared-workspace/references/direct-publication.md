@@ -22,6 +22,11 @@ shared index/branch with transaction publication. Verify the resulting Git revis
 and remaining dirty state. A completed coordination record alone is not proof of source coverage.
 Commit authorization does not authorize a push.
 
+The 128-path Claim limit counts declared files or directories, not the changed files inside a
+declared directory. Ordinary direct commits and Work Result publication can include larger file
+sets without splitting the commit. Choose directory scopes that match ownership; microtransactions
+retain their separate 128 changed-file limit.
+
 ## Git metadata permissions and recovery
 
 The producer preflights Git-write capability before creating a durable direct-commit intent. If

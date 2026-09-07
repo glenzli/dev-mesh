@@ -89,6 +89,11 @@ A Claim declares at most 128 normalized workspace paths, one intent (`read`, `lo
 default. `workspace-bytes` is an explicit non-Git mode for exact ignored regular-file paths.
 Semantic write and sensitivity sets are bounded to 64.
 
+For `git-tree`, a declared directory may contain more than 128 changed files. The declaration
+bound does not cap expanded file counts in inherited baselines, Work Results, `direct-commit`,
+or `publish-results`. Exact content/tree checks and path containment still apply; events retain
+bounded count/digest/sample projections. The 128 changed-file cap belongs only to microtransactions.
+
 `workspace-bytes` is deliberately narrow. Every declared path must be untracked and matched by a
 Git ignore rule; directories, symlinks, devices, tracked paths, and more than 16 MiB of total file
 content fail closed. Missing ignored files are valid so an Agent may claim a file before creating

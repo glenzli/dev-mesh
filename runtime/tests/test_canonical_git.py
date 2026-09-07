@@ -493,7 +493,7 @@ class CanonicalGitTest(GitWorkspaceTest):
         wrapper = wrapper_root / "git"
         wrapper.write_text(
             "#!/bin/sh\n"
-            "if [ \"$3:$4\" = \"add:-A\" ] && [ -z \"$GIT_INDEX_FILE\" ]; then\n"
+            "if [ \"$3:$4:$5\" = \"--literal-pathspecs:add:-A\" ] && [ -z \"$GIT_INDEX_FILE\" ]; then\n"
             f"  echo $$ > {shlex.quote(str(wrapper_pid))}\n"
             f"  : > {shlex.quote(str(entered))}\n"
             "  attempts=0\n"

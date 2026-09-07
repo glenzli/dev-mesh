@@ -32,12 +32,16 @@ def _run_git(
     check: bool = True,
     pass_fds: tuple[int, ...] = (),
     environment: dict[str, str] | None = None,
+    input: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     completed = subprocess.run(
         ("git", "-C", str(root), *arguments),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        encoding="utf-8",
+        errors="surrogateescape",
+        input=input,
         check=False,
         pass_fds=pass_fds,
         env=environment,
@@ -291,14 +295,16 @@ def _advance(
             replace_json(path, record, base=plane.state_root)
             _run_git(
                 root,
+                "--literal-pathspecs",
                 "add",
                 "-A",
-                "--",
-                *[
-                    item
+                "--pathspec-from-file=-",
+                "--pathspec-file-nul",
+                input="".join(
+                    item + "\0"
                     for item in record.get("intended_paths", [])
                     if isinstance(item, str)
-                ],
+                ),
                 pass_fds=(canonical_fd,),
             )
             index_tree = _index_tree(root)
