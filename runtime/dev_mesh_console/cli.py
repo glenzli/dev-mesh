@@ -26,6 +26,12 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--port", type=int, default=8765)
     result.add_argument("--collect-interval", type=float, default=15.0)
     result.add_argument(
+        "--discovery-maintenance-interval",
+        type=float,
+        default=10 * 60,
+        help="seconds between low-frequency Discovery integrity checks; 0 disables them",
+    )
+    result.add_argument(
         "--infra-runtime-dir",
         help="override the absolute Infra Discovery runtime root",
     )
@@ -74,6 +80,16 @@ def main(argv: list[str] | None = None) -> int:
                     sequence=sequence,
                 ),
                 runtime_root=runtime_root,
+                maintenance_interval=arguments.discovery_maintenance_interval,
+                maintenance_reporter=lambda result: print(
+                    json.dumps(
+                        {"kind": "dev-mesh.discovery.maintenance", **result},
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                    file=sys.stderr,
+                    flush=True,
+                ),
             )
             facility.start()
             state.set_discovery_repair(facility.repair_publication)

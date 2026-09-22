@@ -155,7 +155,9 @@ def parser() -> argparse.ArgumentParser:
     )
     send.set_defaults(command="send")
     send.add_argument("--source-owner", required=True)
-    send.add_argument("--target-owner", required=True)
+    send.add_argument("--target-owner")
+    send.add_argument("--target-run-id", help="Bind a registered target Run and derive its exact owner")
+    send.add_argument("--target-task-id", help="Opaque host task correlation; not a delivery receipt")
     send.add_argument("--subject", required=True)
     send.add_argument("--body", required=True)
     send.add_argument("--kind", required=True, choices=sorted(interactions.INTERACTION_KINDS))
@@ -451,7 +453,7 @@ def dispatch(arguments: argparse.Namespace) -> object:
     if command == "run-recover-authority":
         return lifecycle.recover_run_authority(root, closed_run_id=arguments.closed_run_id, owner=arguments.owner, recovery_run_id=arguments.recovery_run_id, evidence=arguments.evidence)
     if command == "send":
-        return interactions.send(root, source_owner=arguments.source_owner, target_owner=arguments.target_owner, subject=arguments.subject, body=arguments.body, interaction_kind=arguments.kind, topic=arguments.topic, requires_ack=arguments.requires_ack, source_run_id=arguments.source_run_id, handoff_id=arguments.handoff_id)
+        return interactions.send(root, source_owner=arguments.source_owner, target_owner=arguments.target_owner, subject=arguments.subject, body=arguments.body, interaction_kind=arguments.kind, topic=arguments.topic, requires_ack=arguments.requires_ack, source_run_id=arguments.source_run_id, handoff_id=arguments.handoff_id, target_run_id=arguments.target_run_id, target_task_id=arguments.target_task_id)
     if command == "cross-project-open":
         return cross_project.open_collaboration(root, collaboration_id=arguments.collaboration_id, source_owner=arguments.source_owner, source_run_id=arguments.source_run_id, target_task_id=arguments.target_task_id, kind=arguments.kind, target_workspace_id=arguments.target_workspace_id, target_owner=arguments.target_owner)
     if command == "cross-project-bind":

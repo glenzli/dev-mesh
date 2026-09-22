@@ -11,6 +11,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from .state import ConsoleState
+from .directories import browse_directories
 
 
 MAX_REQUEST_BYTES = 4096
@@ -127,6 +128,20 @@ class ConsoleHandler(BaseHTTPRequestHandler):
         if target.path == "/api/roots":
             self._json({"roots": [str(item) for item in self.server.state.registry.roots()]})
             return
+        if target.path == "/api/directories":
+            try:
+                query = parse_qs(target.query, keep_blank_values=True)
+                if set(query) - {"path", "query", "hidden"} or any(len(items) != 1 for items in query.values()):
+                    raise ValueError("unsupported directory query")
+                hidden = query.get("hidden", ["0"])[0]
+                if hidden not in {"0", "1"}:
+                    raise ValueError("hidden must be 0 or 1")
+                self._json(browse_directories(query.get("path", [None])[0],
+                                             query=query.get("query", [""])[0],
+                                             show_hidden=hidden == "1"))
+            except (ValueError, OSError) as error:
+                self._error(HTTPStatus.BAD_REQUEST, "directory_unavailable", str(error))
+            return
         self._static(target.path)
 
     def do_POST(self) -> None:
@@ -149,9 +164,7 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             if target.path == "/api/roots":
                 if set(value) != {"path"} or not isinstance(value.get("path"), str):
                     raise ValueError("root request requires exactly one string path")
-                roots = self.server.state.registry.add(str(value["path"]))
-                result = self.server.state.collect()
-                self._json({"roots": [str(item) for item in roots], "collection": result})
+                self._json(self.server.state.add_root(str(value["path"])))
                 return
             if target.path == "/api/actions/run-close/preview":
                 if set(value) != {"workspace_id", "run_id"} or not all(

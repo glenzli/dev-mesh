@@ -87,6 +87,13 @@ python3 scripts/install_console_service.py install
 python3 scripts/install_console_service.py status
 ```
 
+By default, the Console checks its own Infra Discovery publication every ten minutes. It does not
+rewrite a valid manifest; it atomically restores the same generation and endpoint only when the
+manifest is missing or invalid. The check also removes Dev Mesh sockets that are at least 24 hours
+old, unreferenced, and confirmed to have no listener. Pass
+`--discovery-maintenance-interval` during installation to change the interval in seconds, or `0` to
+disable automatic checks.
+
 ## Protocol and state
 
 - The current write contract is `dev-mesh.coordination@20260823.1`.

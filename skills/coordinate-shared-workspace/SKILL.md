@@ -76,6 +76,9 @@ python3 <skill>/scripts/coord.py --root ROOT claim-baseline-accept \
   [contention-and-transactions.md](references/contention-and-transactions.md). A semantic dependency
   is not resolved just by reducing file paths.
 - `wait_for_resume_condition`: preserve the Claim and follow its recorded condition.
+- `activate_after_overlap_release_or_release_if_work_delegated`: a completed wait decision still
+  retains a pending Claim. Activate if the work remains yours; release it when another task has
+  completed the requested change. Follow the contention reference for the exact commands.
 - `preserve_state_and_inspect_verbose_recovery_facts`: stop mutation and load
   [recovery-and-cutover.md](references/recovery-and-cutover.md).
 
@@ -94,6 +97,10 @@ python3 <skill>/scripts/coord.py --root ROOT leave \
 bytes equal to the accepted baseline release without a zero-change result. Work Results are
 attribution and validation evidence, not rollback checkpoints or private branches. A later writer
 must review and accept inherited dirty work. `claim-complete` remains the low-level recovery primitive.
+
+For shared integration, make required entry files, resources, and translations ready before enabling
+them in a shared catalog or build manifest. Reuse another task's validation only for unchanged inputs
+and an identified artifact; transient failures against unfinished peer work are not final validation.
 
 If an immediate commit is already authorized, use
 [direct-publication.md](references/direct-publication.md) before finishing the active Claim. Building

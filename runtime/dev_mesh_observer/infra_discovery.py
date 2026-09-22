@@ -6,11 +6,13 @@ import ctypes
 import errno
 import json
 import os
+import re
 import socket
 import stat
 import struct
 import sys
 import threading
+import time
 import uuid
 from collections.abc import Callable
 from pathlib import Path
@@ -33,6 +35,9 @@ REQUEST_LIMIT = 512
 RESPONSE_LIMIT = 256 * 1024
 MANIFEST_LIMIT = 64 * 1024
 ENDPOINT_BIND_ATTEMPTS = 8
+DEFAULT_MAINTENANCE_INTERVAL_SECONDS = 10 * 60
+DEFAULT_STALE_SOCKET_MIN_AGE_SECONDS = 24 * 60 * 60
+DEV_MESH_SOCKET_NAME = re.compile(r"dm-[0-9a-f]{12}\.sock")
 
 
 class InfraDiscoveryError(RuntimeError):
@@ -248,8 +253,18 @@ class ObserverFacilityService:
         snapshot_factory: Callable[[dict[str, str], int], dict[str, object]],
         *,
         runtime_root: Path | None = None,
+        maintenance_interval: float = DEFAULT_MAINTENANCE_INTERVAL_SECONDS,
+        stale_socket_min_age: float = DEFAULT_STALE_SOCKET_MIN_AGE_SECONDS,
+        maintenance_reporter: Callable[[dict[str, object]], None] | None = None,
     ) -> None:
+        if maintenance_interval < 0:
+            raise ValueError("maintenance interval must be non-negative")
+        if stale_socket_min_age < 0:
+            raise ValueError("stale socket minimum age must be non-negative")
         self.snapshot_factory = snapshot_factory
+        self.maintenance_interval = maintenance_interval
+        self.stale_socket_min_age = stale_socket_min_age
+        self.maintenance_reporter = maintenance_reporter
         self.runtime = DiscoveryRuntime(runtime_root)
         self.service = {
             "kind": SERVICE_KIND,
@@ -266,6 +281,7 @@ class ObserverFacilityService:
         self._listener: socket.socket | None = None
         self._stop = threading.Event()
         self._serve_thread: threading.Thread | None = None
+        self._maintenance_thread: threading.Thread | None = None
         self._publication_lock = threading.RLock()
         self._sequence_lock = threading.Lock()
         self._sequence = 0
@@ -322,12 +338,24 @@ class ObserverFacilityService:
         self._listener = listener
         self._started_once = True
         self._stop.clear()
+        removed = self._remove_stale_sockets()
+        if removed:
+            self._report_maintenance(
+                {"publication": "current", "stale_sockets_removed": removed}
+            )
         self._serve_thread = threading.Thread(
             target=self._serve_loop,
             name="dev-mesh-observer-facility-status",
             daemon=True,
         )
         self._serve_thread.start()
+        if self.maintenance_interval > 0:
+            self._maintenance_thread = threading.Thread(
+                target=self._maintenance_loop,
+                name="dev-mesh-observer-discovery-maintenance",
+                daemon=True,
+            )
+            self._maintenance_thread.start()
 
     def repair_publication(self) -> dict[str, object]:
         """Verify this live offer and restore its Discovery manifest if needed.
@@ -372,12 +400,14 @@ class ObserverFacilityService:
             else:
                 self._write_manifest()
                 status = "restored"
+            removed = self._remove_stale_sockets()
             return {
                 "kind": SERVICE_KIND,
                 "protocol": PROTOCOL_ID,
                 "protocol_version": PROTOCOL_VERSION,
                 "generation": self.service["generation"],
                 "publication": status,
+                "stale_sockets_removed": removed,
             }
 
     def stop(self) -> None:
@@ -389,6 +419,12 @@ class ObserverFacilityService:
         if self._serve_thread is not None and self._serve_thread is not threading.current_thread():
             self._serve_thread.join(timeout=3)
         self._serve_thread = None
+        if (
+            self._maintenance_thread is not None
+            and self._maintenance_thread is not threading.current_thread()
+        ):
+            self._maintenance_thread.join(timeout=3)
+        self._maintenance_thread = None
         if self._authority is not None:
             self._authority.close()
             self._authority = None
@@ -443,6 +479,115 @@ class ObserverFacilityService:
                 os.close(descriptor)
             if temporary.exists() and not temporary.is_symlink():
                 temporary.unlink()
+
+    def _referenced_socket_endpoints(self) -> set[str]:
+        endpoints: set[str] = set()
+        for path in sorted(self.runtime.registrations.glob("*.json")):
+            try:
+                info = path.lstat()
+                payload = path.read_bytes()
+                if (
+                    not stat.S_ISREG(info.st_mode)
+                    or info.st_uid != os.geteuid()
+                    or stat.S_IMODE(info.st_mode) != 0o600
+                    or len(payload) > MANIFEST_LIMIT
+                ):
+                    raise InfraDiscoveryError("registration is unsafe during socket cleanup")
+                registration = json.loads(
+                    payload.decode("utf-8"),
+                    object_pairs_hook=_strict_object,
+                    parse_constant=_reject_constant,
+                )
+            except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as error:
+                raise InfraDiscoveryError(
+                    "registration cannot be verified during socket cleanup"
+                ) from error
+            if not isinstance(registration, dict):
+                raise InfraDiscoveryError("registration is invalid during socket cleanup")
+            offers = registration.get("offers")
+            if not isinstance(offers, list):
+                raise InfraDiscoveryError("registration offers are invalid during socket cleanup")
+            for offer in offers:
+                if not isinstance(offer, dict):
+                    raise InfraDiscoveryError("registration offer is invalid during socket cleanup")
+                endpoint = offer.get("endpoint")
+                if isinstance(endpoint, str):
+                    endpoints.add(endpoint)
+        return endpoints
+
+    def _remove_stale_sockets(self) -> int:
+        try:
+            referenced = self._referenced_socket_endpoints()
+        except InfraDiscoveryError as error:
+            self._report_maintenance(
+                {"publication": "cleanup_skipped", "error": type(error).__name__}
+            )
+            return 0
+        removed = 0
+        now = time.time()
+        for path in sorted(self.runtime.sockets.glob("dm-*.sock")):
+            if path == self.socket_path or DEV_MESH_SOCKET_NAME.fullmatch(path.name) is None:
+                continue
+            try:
+                before = path.lstat()
+            except FileNotFoundError:
+                continue
+            if (
+                not stat.S_ISSOCK(before.st_mode)
+                or before.st_uid != os.geteuid()
+                or stat.S_IMODE(before.st_mode) != 0o600
+                or now - before.st_mtime < self.stale_socket_min_age
+                or f"sockets/{path.name}" in referenced
+            ):
+                continue
+            probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            try:
+                probe.settimeout(0.2)
+                probe.connect(str(path))
+            except OSError as error:
+                if error.errno not in {errno.ECONNREFUSED, errno.ENOENT}:
+                    continue
+            else:
+                continue
+            finally:
+                probe.close()
+            try:
+                after = path.lstat()
+            except FileNotFoundError:
+                continue
+            if (
+                after.st_dev != before.st_dev
+                or after.st_ino != before.st_ino
+                or not stat.S_ISSOCK(after.st_mode)
+                or after.st_uid != os.geteuid()
+                or stat.S_IMODE(after.st_mode) != 0o600
+            ):
+                continue
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                continue
+            removed += 1
+        return removed
+
+    def _report_maintenance(self, result: dict[str, object]) -> None:
+        if self.maintenance_reporter is not None:
+            try:
+                self.maintenance_reporter(result)
+            except Exception:
+                pass
+
+    def _maintenance_loop(self) -> None:
+        while not self._stop.wait(self.maintenance_interval):
+            try:
+                result = self.repair_publication()
+            except Exception as error:
+                self._report_maintenance(
+                    {"publication": "error", "error": type(error).__name__}
+                )
+                continue
+            if result["publication"] != "current" or result["stale_sockets_removed"]:
+                self._report_maintenance(result)
 
     def _serve_loop(self) -> None:
         while not self._stop.is_set():

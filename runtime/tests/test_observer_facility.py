@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
 import socket
 import stat
 import tempfile
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -185,9 +187,84 @@ class ObserverFacilityStatusTest(GitWorkspaceTest):
 
         self.assertEqual(restored["publication"], "restored")
         self.assertEqual(current["publication"], "current")
+        self.assertEqual(restored["stale_sockets_removed"], 0)
         self.assertEqual(restored["generation"], expected["service"]["generation"])
         self.assertEqual(json.loads(self.service.manifest_path.read_text(encoding="utf-8")), expected)
         self.assertTrue(self.service.socket_path.exists())
+
+    def test_low_frequency_maintenance_restores_deleted_registration(self) -> None:
+        reports: list[dict[str, object]] = []
+        self.service = ObserverFacilityService(
+            self._snapshot,
+            runtime_root=self.runtime_root,
+            maintenance_interval=0.05,
+            maintenance_reporter=reports.append,
+        )
+        try:
+            self.service.start()
+        except PermissionError:
+            self.skipTest("Unix sockets are unavailable in this sandbox")
+        self.service.manifest_path.unlink()
+
+        deadline = time.monotonic() + 2
+        while not self.service.manifest_path.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+        self.assertTrue(self.service.manifest_path.is_file())
+        self.assertTrue(any(report.get("publication") == "restored" for report in reports))
+
+    def test_start_removes_only_old_unreferenced_unbound_dev_mesh_sockets(self) -> None:
+        self.service = ObserverFacilityService(
+            self._snapshot,
+            runtime_root=self.runtime_root,
+            maintenance_interval=0,
+            stale_socket_min_age=60,
+        )
+        stale = self.service.runtime.sockets / "dm-000000000001.sock"
+        referenced = self.service.runtime.sockets / "dm-000000000002.sock"
+        live = self.service.runtime.sockets / "dm-000000000003.sock"
+        young = self.service.runtime.sockets / "dm-000000000004.sock"
+        live_listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            for path in (stale, referenced, young):
+                listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                try:
+                    listener.bind(str(path))
+                    path.chmod(0o600)
+                finally:
+                    listener.close()
+            live_listener.bind(str(live))
+        except PermissionError:
+            live_listener.close()
+            self.skipTest("Unix sockets are unavailable in this sandbox")
+        live_listener.listen(1)
+        live.chmod(0o600)
+        old = time.time() - 120
+        for path in (stale, referenced, live):
+            os.utime(path, (old, old))
+        registration = self.service.runtime.registrations / "other--local.json"
+        registration.write_text(
+            json.dumps({"offers": [{"endpoint": f"sockets/{referenced.name}"}]}) + "\n",
+            encoding="utf-8",
+        )
+        registration.chmod(0o600)
+        try:
+            self.service.start()
+        except PermissionError:
+            live_listener.close()
+            self.skipTest("Unix sockets are unavailable in this sandbox")
+        try:
+            self.assertFalse(stale.exists())
+            self.assertTrue(referenced.exists())
+            self.assertTrue(live.exists())
+            self.assertTrue(young.exists())
+        finally:
+            live_listener.close()
+            for path in (referenced, live, young):
+                try:
+                    path.unlink()
+                except FileNotFoundError:
+                    pass
 
     def test_restart_rotates_generation_and_endpoint_but_keeps_manifest(self) -> None:
         self.service = ObserverFacilityService(self._snapshot, runtime_root=self.runtime_root)

@@ -76,6 +76,11 @@ python3 scripts/install_console_service.py install
 python3 scripts/install_console_service.py status
 ```
 
+Console 默认每 10 分钟检查一次自己的 Infra Discovery 发布。清单有效时不会重写；缺失或
+损坏时才原子恢复同一 generation 和 endpoint。检查也会清理至少 24 小时、未被注册引用且
+确认无人监听的旧 Dev Mesh socket。安装时可用 `--discovery-maintenance-interval` 调整秒数，
+设为 `0` 可关闭自动检查。
+
 ## 协议与状态
 
 - 当前写入合同为 `dev-mesh.coordination@20260823.1`。

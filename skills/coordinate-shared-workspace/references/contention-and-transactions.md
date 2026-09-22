@@ -63,6 +63,18 @@ python3 <skill>/scripts/coord.py --root ROOT contention-wait \
   --contention-id CONTENTION --reason "active edit should finish shortly"
 ```
 
+`completed` here ends the decision, not the pending Claim. If the current writer incorporates the
+requested change for you, confirm that result and release your now-unneeded intent immediately:
+
+```bash
+python3 <skill>/scripts/coord.py --root ROOT claim-release \
+  --scope SCOPE --owner OWNER --run-id RUN --summary "requested change completed by the active writer"
+```
+
+Do not activate only to release, and do not wait until the whole task leaves. A retained pending
+Claim still blocks later overlapping requests. Only its exact owner/Run may release it; the writer
+who helped must ask through the real task channel, not release another owner's Claim.
+
 After the active Claim releases or completes, recheck under the operation lock. No free-form
 evidence is required for this exact wait decision:
 

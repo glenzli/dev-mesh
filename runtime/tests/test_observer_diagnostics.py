@@ -62,6 +62,16 @@ class ObserverIntegrityTest(GitWorkspaceTest):
             run_id="run-pending",
             reason="first edit is short",
         )
+        database = Path(self.temporary.name) / "observer.sqlite3"
+        with Catalog(database) as catalog:
+            catalog.collect_workspace(self.root)
+            waiting_report = catalog.report(workspace=workspace_id(self.root))
+        waiting = [item for item in waiting_report["diagnostics"]
+                   if item["code"] == "claim.pending-after-wait"]
+        self.assertEqual(len(waiting), 1)
+        self.assertEqual(waiting[0]["object_id"], "pending-scope")
+        self.assertEqual(waiting[0]["severity"], "info")
+        self.assertEqual(waiting_report["contention"]["active"], 0)
         release_claim(
             self.root,
             scope="active-scope",
@@ -103,6 +113,7 @@ class ObserverIntegrityTest(GitWorkspaceTest):
             report = catalog.report(workspace=workspace_id(self.root))
 
         self.assertEqual(report["non_collaborative_runs"], [])
+        self.assertFalse(any(item["code"] == "claim.pending-after-wait" for item in report["diagnostics"]))
         self.assertIn(
             {
                 "source": "agent-pending",

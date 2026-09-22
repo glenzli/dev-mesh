@@ -19,15 +19,22 @@
       </div>
       <div class="topbar-actions">
         <span id="connection-status" class="status-pill is-loading" data-i18n="status.loading">载入中</span>
-        <button id="add-root" class="icon-button action-icon" type="button" aria-label="添加工作区" title="添加工作区">＋</button>
-        <button id="refresh" class="icon-button action-icon" type="button" aria-label="刷新" title="刷新">↻</button>
-        <button id="repair-discovery" class="icon-button action-icon" type="button" aria-label="检查发现发布" title="检查发现发布">⌁</button>
+        <button id="add-root" class="button secondary" type="button" data-i18n="actions.addRoot">关注目录</button>
+        <button id="refresh" class="icon-button action-icon" type="button" aria-label="刷新" title="刷新">
+          <span class="action-symbol" aria-hidden="true">↻</span>
+          <span class="action-spinner" aria-hidden="true"></span>
+        </button>
+        <button id="repair-discovery" class="icon-button action-icon" type="button" aria-label="检查发现发布" title="检查发现发布">
+          <span class="action-symbol" aria-hidden="true">⌁</span>
+          <span class="action-spinner" aria-hidden="true"></span>
+        </button>
         <button id="language" class="icon-button action-icon language-icon" type="button" aria-label="切换语言" title="切换语言">文</button>
         <button id="theme" class="icon-button" type="button" data-i18n-aria="actions.theme" aria-label="切换主题">◐</button>
       </div>
     </header>
 
     <main>
+      <div id="action-feedback" class="action-feedback" role="status" hidden></div>
       <section class="toolbar" aria-label="Dashboard filters">
         <div class="filter-group">
           <label for="workspace" data-i18n="filters.workspace">项目范围</label>
@@ -52,6 +59,12 @@
         </div>
       </section>
 
+      <nav class="section-nav" aria-label="Console sections">
+        <a href="#activity-panel" data-i18n="nav.current">当前工作</a>
+        <a href="#flow-panel" data-i18n="nav.history">协作历程</a>
+        <a href="#diagnostics-panel" data-i18n="nav.attention">状态提示</a>
+      </nav>
+
       <section id="metrics" class="metric-grid" aria-label="Overview metrics"></section>
 
       <section id="insights" class="insight-grid" aria-label="Coordination insights"></section>
@@ -68,7 +81,7 @@
           <div id="projects" class="project-list"></div>
         </article>
 
-        <article class="panel activity-panel">
+        <article id="activity-panel" class="panel activity-panel">
           <div class="panel-heading">
             <div>
               <span class="eyebrow" data-i18n="sections.activityEyebrow">当前工作</span>
@@ -89,6 +102,30 @@
           <div id="flow-summary" class="flow-summary"></div>
         </summary>
         <p class="history-note" data-i18n="flow.historyNote">只展示已记录的协作。节点按时间顺序排列，间距不代表耗时；连线不代表期间持续工作。</p>
+        <div class="history-toolbar">
+          <div class="view-switch" role="group" data-i18n-aria="history.view">
+            <button id="history-list-view" class="button secondary" type="button" aria-pressed="true" data-i18n="history.listView">过程列表</button>
+            <button id="history-graph-view" class="button secondary" type="button" aria-pressed="false" data-i18n="history.graphView">关系图</button>
+          </div>
+        </div>
+        <div id="history-view">
+          <div class="history-filters">
+            <label class="visually-hidden" for="history-search" data-i18n="history.search">搜索参与方、Run 或范围</label>
+            <input id="history-search" type="search" autocomplete="off" data-i18n-aria="history.search">
+            <label class="visually-hidden" for="history-kind" data-i18n="history.kind">记录类型</label>
+            <select id="history-kind">
+              <option value="" data-i18n="history.all">全部记录</option>
+              <option value="contention" data-i18n="history.contention">争用处理</option>
+              <option value="message" data-i18n="history.message">通知与确认</option>
+              <option value="handoff" data-i18n="history.handoff">交接</option>
+            </select>
+            <span id="history-count" aria-live="polite"></span>
+          </div>
+          <p id="history-limit" class="history-note" data-i18n="history.limit" hidden>记录受当前窗口与查询上限约束，可缩小项目范围查看。</p>
+          <div id="history-list"></div>
+          <button id="history-more" class="button secondary" type="button" data-i18n="history.more" hidden>显示更多</button>
+        </div>
+        <div id="graph-view" hidden>
         <section id="project-collaboration-panel" class="project-collaboration-panel" hidden>
           <div class="panel-heading compact-heading">
             <div>
@@ -126,6 +163,7 @@
             <div id="flow-tooltip" class="flow-tooltip" hidden></div>
           </div>
         </div>
+        </div>
       </details>
 
       <section id="lower-grid" class="dashboard-grid lower-grid">
@@ -154,19 +192,39 @@
       </section>
     </main>
 
-    <dialog id="root-dialog">
+    <dialog id="root-dialog" aria-labelledby="root-dialog-title">
       <form id="root-form" method="dialog">
         <div class="dialog-heading">
           <div>
             <span class="eyebrow" data-i18n="dialog.eyebrow">扫描范围</span>
-            <h2 data-i18n="dialog.title">添加工作区根目录</h2>
+            <h2 id="root-dialog-title" data-i18n="dialog.title">添加工作区根目录</h2>
           </div>
-          <button id="close-dialog" class="icon-button" aria-label="Close" type="button">×</button>
+          <button id="close-dialog" class="icon-button" aria-label="Close" data-i18n-aria="actions.close" type="button">×</button>
         </div>
         <p data-i18n="dialog.help">输入项目本身或包含多个项目的父目录。Console 只读扫描 .dev-mesh。</p>
-        <label for="root-path" data-i18n="dialog.path">绝对路径</label>
-        <input id="root-path" name="path" type="text" autocomplete="off" placeholder="/Users/name/lab" required>
-        <div id="root-list" class="root-list"></div>
+        <div class="picker-shortcuts">
+          <button id="directory-home" class="button secondary" type="button" data-i18n="picker.home">个人目录</button>
+          <span data-i18n="picker.watched">已关注</span>
+          <div id="root-list" class="root-list"></div>
+        </div>
+        <nav id="directory-breadcrumbs" class="directory-breadcrumbs" data-i18n-aria="picker.location"></nav>
+        <div class="directory-controls">
+          <button id="directory-up" class="button secondary" type="button" data-i18n="picker.up">↑ 上一级</button>
+          <label class="visually-hidden" for="directory-search" data-i18n="picker.search">筛选此层目录</label>
+          <input id="directory-search" type="search" autocomplete="off" data-i18n-aria="picker.search">
+          <label class="checkbox-label"><input id="directory-hidden" type="checkbox"><span data-i18n="picker.hidden">隐藏目录</span></label>
+        </div>
+        <div id="directory-list" class="directory-list" aria-live="polite"></div>
+        <div id="directory-status" class="directory-status" role="status"></div>
+        <details class="path-entry">
+          <summary data-i18n="picker.enterPath">输入路径前往…</summary>
+          <div class="path-entry-row">
+            <label class="visually-hidden" for="root-path" data-i18n="dialog.path">绝对路径</label>
+            <input id="root-path" name="path" type="text" autocomplete="off" placeholder="~/lab">
+            <button id="directory-go" class="button secondary" type="button" data-i18n="picker.go">前往</button>
+          </div>
+        </details>
+        <div class="picker-selection"><span data-i18n="picker.selected">当前选择</span><strong id="selected-directory"></strong></div>
         <div id="dialog-error" class="inline-error" hidden></div>
         <div class="dialog-actions">
           <button id="cancel-root" class="button secondary" type="button" data-i18n="actions.cancel">取消</button>
@@ -182,7 +240,7 @@
             <span class="eyebrow" data-i18n="recovery.eyebrow">人工审阅</span>
             <h2 data-i18n="recovery.title">结束异常 Run</h2>
           </div>
-          <button id="close-run-dialog" class="icon-button" aria-label="Close" type="button">×</button>
+          <button id="close-run-dialog" class="icon-button" aria-label="Close" data-i18n-aria="actions.close" type="button">×</button>
         </div>
         <p data-i18n="recovery.help">操作会重新核对 Run 与权限状态，并写入不可变的审阅证据。</p>
         <div id="run-close-facts" class="review-facts"></div>

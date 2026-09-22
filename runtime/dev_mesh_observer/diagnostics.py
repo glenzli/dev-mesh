@@ -270,6 +270,19 @@ def project_diagnostics(
                     diagnostics.append(
                         _issue(item, "claim.pending-after-cancel", severity="info")
                     )
+                elif (
+                    contention["record"].get("status") == "completed"
+                    and contention["record"].get("decision") == "wait"
+                    and any(
+                        isinstance(participant, dict)
+                        and all(participant.get(field) == record.get(field)
+                                for field in ("owner", "run_id", "scope"))
+                        for participant in contention["record"].get("participants", [])
+                    )
+                ):
+                    diagnostics.append(
+                        _issue(item, "claim.pending-after-wait", severity="info")
+                    )
             heartbeat = _parse_time(record.get("heartbeat_at"))
             if heartbeat is not None:
                 heartbeat_age = (now_time - heartbeat).total_seconds()

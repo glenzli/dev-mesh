@@ -1,5 +1,7 @@
 import { applyTranslations, diagnosticLabel, eventLabel, language, t, toggleLanguage } from "/i18n.js";
 import { dashboardPresentation } from "/dashboard_presentation.js";
+import {createRootPicker} from "/root_picker.js";
+import {activeWorkGroups, createActivityHistory} from "/activity_history.js";
 import { renderFlow } from "/graph.js";
 import {
   projectHasSignal,
@@ -12,6 +14,10 @@ const state = {
   workspace: new URLSearchParams(location.search).get("workspace") || "",
   window: Number(new URLSearchParams(location.search).get("window") || 48),
   loading: false,
+  loadGeneration: 0,
+  loadController: null,
+  historyView: "list",
+  recentContentionsOpen: false,
   collecting: false,
   repairingDiscovery: false,
   flowScrollToLatest: true,
@@ -27,6 +33,7 @@ const nodes = Object.fromEntries([
   "flow", "flow-scroll", "flow-scrollbar", "flow-scrollbar-control", "flow-owner-rail", "flow-tooltip", "flow-empty", "flow-legend", "flow-viewport", "diagnostics", "diagnostic-count",
   "events", "event-count", "events-window-note", "language", "theme", "add-root", "root-dialog", "root-form",
   "root-path", "root-list", "dialog-error", "close-dialog", "cancel-root",
+  "action-feedback", "history-list-view", "history-graph-view", "history-view", "graph-view",
   "run-close-dialog", "run-close-form", "run-close-facts", "run-close-warning",
   "run-close-outcome", "run-close-reviewer", "run-close-reason", "run-close-evidence",
   "run-close-confirm", "run-close-error", "close-run-dialog", "cancel-run-close", "confirm-run-close",
@@ -44,6 +51,7 @@ const pendingDiagnosticCodes = new Set([
   "claim.heartbeat-aging",
   "claim.finalization-pending",
   "claim.baseline-acknowledgement-pending",
+  "claim.pending-after-wait",
   "claim.completion-pending",
   "contention.finalization-pending",
   "work.finalization-pending",
@@ -180,31 +188,24 @@ function renderMetrics(presentation) {
   const grouped = partitionDiagnostics(diagnostics);
   const hasCritical = grouped.action.some((item) => item.severity === "critical") || dashboard.collector.last_error;
   const diagnosticTone = hasCritical ? "danger" : grouped.action.length ? "attention" : "neutral";
-  const values = presentation.showWorkbench
-    ? [
-        ["contentions", t(presentation.attention ? "metrics.activeContentions" : "metrics.recentContentions"), presentation.attention ? presentation.activeContentionCount : presentation.contentionCount, presentation.attention ? "danger" : "good"],
-        ["affected-runs", t("metrics.affectedRuns"), presentation.affectedRunCount, presentation.attention ? "attention" : "neutral"],
-        ["requested-paths", t("metrics.requestedPaths"), presentation.requestedPathCount, presentation.requestedPathCount ? "attention" : "neutral"],
-        ["diagnostics", t("metrics.diagnostics"), grouped.action.length, diagnosticTone],
-      ]
-    : presentation.quiet
-      ? [
-        ["workspaces", t("metrics.workspaces"), visibleProjects().length, "neutral"],
-        ["runs", t("metrics.activeRuns"), presentation.activeRunCount, presentation.activeRunCount ? "good" : "neutral"],
-        ["independent", t("metrics.independentRuns"), presentation.independentRunCount, "neutral"],
-        ["diagnostics", t("metrics.diagnostics"), grouped.action.length, diagnosticTone],
-      ]
-    : [
-        ["workspaces", t("metrics.workspaces"), visibleProjects().length, "neutral"],
-        ["authority", t("metrics.authority"), activeAuthorityDetails().length, activeAuthorityDetails().length ? "attention" : "neutral"],
-        ["conflicts", t("metrics.conflicts"), operational.contention?.active ?? 0, operational.contention?.active ? "danger" : "neutral"],
-        ["collaborations", t("metrics.collaborations"), dashboard.coordination?.relation_count ?? 0, "neutral"],
-        ["diagnostics", t("metrics.diagnostics"), grouped.action.length, diagnosticTone],
-      ];
+  const values = [
+    ["runs", t("metrics.activeRuns"), presentation.activeRunCount, presentation.activeRunCount ? "good" : "neutral"],
+    ["authority", t("metrics.workScopes"), (dashboard.active_details ?? []).filter(item => item.kind === "claim").length, "neutral"],
+    ["collaborations", t("metrics.collaborations"), dashboard.coordination?.relation_count ?? 0, "neutral"],
+    ["diagnostics", t("metrics.diagnostics"), grouped.action.length, diagnosticTone],
+  ];
   nodes.metrics.classList.toggle("is-quiet", presentation.quiet);
   nodes.metrics.classList.toggle("is-workbench", presentation.showWorkbench);
   nodes.metrics.replaceChildren(...values.map(([key, label, value, tone]) => {
-    const card = div(`metric-card ${tone}`);
+    const card = document.createElement("button");
+    card.type = "button";
+    card.className = `metric-card ${tone}`;
+    card.addEventListener("click", () => {
+      const target = key === "diagnostics" ? "diagnostics-panel" : key === "workspaces" ? "projects-panel" : ["runs", "authority"].includes(key) ? "activity-panel" : "flow-panel";
+      const panel = document.getElementById(target);
+      if (panel.tagName === "DETAILS") {panel.open = true; state.flowDisclosureTouched = true;}
+      if (!panel.hidden) panel.scrollIntoView({block: "start"});
+    });
     card.dataset.metric = key;
     const text = document.createElement("span");
     text.textContent = label;
@@ -260,19 +261,23 @@ function renderQuietSummary(presentation) {
 
 function renderContentionWorkbench(presentation) {
   const operational = state.dashboard.operational;
+  const pendingWait = !presentation.attention && (operational.diagnostics ?? []).some((item) =>
+    item.code === "claim.pending-after-wait" && (!state.workspace || item.workspace_id === state.workspace));
+  const phase = presentation.attention ? "Active" : pendingWait ? "Pending" : "Recent";
   const workbench = div(`contention-workbench ${presentation.attention ? "is-active" : "is-recent"}`);
   const heading = div("contention-workbench-heading");
   const copy = div("contention-workbench-copy");
   const eyebrow = document.createElement("span");
   eyebrow.textContent = t(presentation.attention ? "contention.eyebrowActive" : "contention.eyebrowRecent");
   const title = document.createElement("strong");
-  title.textContent = t(presentation.attention ? "contention.titleActive" : "contention.titleRecent");
+  title.textContent = t(`contention.title${phase}`);
   const body = document.createElement("p");
-  body.textContent = t(presentation.attention ? "contention.bodyActive" : "contention.bodyRecent");
+  body.textContent = t(`contention.body${phase}`);
   copy.append(eyebrow, title, body);
   const status = document.createElement("span");
   status.className = "contention-workbench-status";
-  status.textContent = t(presentation.attention ? "contention.status.active" : "contention.status.resolved");
+  status.textContent = t(presentation.attention ? "contention.status.active"
+    : pendingWait ? "contention.status.waiting" : "contention.status.resolved");
   heading.append(copy, status);
 
   const list = div("contention-list");
@@ -334,18 +339,31 @@ function renderContentionWorkbench(presentation) {
   const nextLabel = document.createElement("strong");
   nextLabel.textContent = t("contention.nextLabel");
   const nextBody = document.createElement("span");
-  nextBody.textContent = t(presentation.attention ? "contention.nextActive" : "contention.nextRecent");
+  nextBody.textContent = t(`contention.next${phase}`);
   next.append(nextLabel, nextBody);
-  workbench.append(heading, list);
-  if (paths.length) workbench.append(pathSection);
-  workbench.append(next);
+  workbench.append(heading);
+  if (phase === "Recent") {
+    const disclosure = document.createElement("details");
+    disclosure.className = "recent-contentions";
+    disclosure.open = state.recentContentionsOpen;
+    disclosure.addEventListener("toggle", () => {if (disclosure.isConnected) state.recentContentionsOpen = disclosure.open;});
+    const summary = document.createElement("summary");
+    summary.textContent = t("contention.showRecent", {count: presentation.contentionCount});
+    disclosure.append(summary, list);
+    if (paths.length) disclosure.append(pathSection);
+    workbench.append(disclosure);
+  } else {
+    workbench.append(list);
+    if (paths.length) workbench.append(pathSection);
+    workbench.append(next);
+  }
   nodes.insights.classList.remove("is-quiet");
   nodes.insights.classList.add("is-workbench");
   nodes.insights.replaceChildren(workbench);
 }
 
 function renderInsights(presentation) {
-  if (presentation.showWorkbench) {
+  if (presentation.showWorkbench || (state.dashboard.operational.diagnostics ?? []).some(item => item.code === "claim.pending-after-wait")) {
     renderContentionWorkbench(presentation);
     return;
   }
@@ -518,28 +536,53 @@ function renderProjects(presentation) {
 }
 
 function renderActive() {
-  const details = state.dashboard?.active_details ?? [];
-  nodes["active-count"].textContent = formatNumber(details.length);
-  if (!details.length) {
+  const groups = activeWorkGroups(state.dashboard?.active_details);
+  nodes["active-count"].textContent = formatNumber(groups.length);
+  if (!groups.length) {
     nodes["active-details"].replaceChildren(empty("empty.activeTitle", "empty.activeBody"));
     return;
   }
   const names = projectNames();
-  nodes["active-details"].replaceChildren(...details.map((item) => {
-    const row = div("active-row");
-    const icon = div(`active-icon kind-${item.kind}`, item.kind.slice(0, 1).toUpperCase());
-    const identity = div("active-identity");
-    const title = document.createElement("strong");
-    title.textContent = t(`active.${item.kind}`);
-    const meta = document.createElement("span");
-    meta.textContent = [names.get(item.workspace_id), short(item.owner), short(item.scope || item.object_id)].filter(Boolean).join(" · ");
-    identity.append(title, meta);
-    const status = document.createElement("span");
-    status.className = "object-status";
-    const statusKey = `objectStatus.${item.status || "active"}`;
-    status.textContent = t(statusKey) === statusKey ? (item.status || "active") : t(statusKey);
-    row.append(icon, identity, status);
-    return row;
+  nodes["active-details"].replaceChildren(...groups.map(group => {
+    const card = div("work-card");
+    const heading = div("work-card-heading");
+    const owner = document.createElement("strong");
+    owner.textContent = group.owner || t("work.shared");
+    const project = document.createElement("button");
+    project.type = "button";
+    project.className = "work-project";
+    project.textContent = names.get(group.workspaceId) || group.workspaceId;
+    project.addEventListener("click", () => selectWorkspace(group.workspaceId));
+    heading.append(owner, project);
+    const run = div("work-run", group.runId || "");
+    card.append(heading, run);
+    if (!group.objects.length) card.append(div("work-idle", t("work.noClaim")));
+    group.objects.forEach(item => {
+      const row = div("work-scope");
+      const scope = document.createElement("span");
+      scope.textContent = item.scope || item.object_id;
+      const status = document.createElement("span");
+      status.className = `object-status ${item.status !== "active" ? "is-pending" : ""}`;
+      const key = `objectStatus.${item.status || "active"}`;
+      status.textContent = `${t(`active.${item.kind}`)} · ${t(key) === key ? item.status : t(key)}`;
+      row.append(scope, status);
+      card.append(row);
+    });
+    const activity = document.createElement("button");
+    activity.type = "button";
+    activity.className = "work-history-link";
+    activity.textContent = t("work.history");
+    activity.addEventListener("click", () => {
+      setHistoryView("list");
+      nodes["flow-panel"].open = true;
+      state.flowDisclosureTouched = true;
+      const search = document.getElementById("history-search");
+      search.value = group.runId || group.owner || "";
+      search.dispatchEvent(new Event("input"));
+      nodes["flow-panel"].scrollIntoView({block: "start"});
+    });
+    card.append(activity);
+    return card;
   }));
 }
 
@@ -575,6 +618,7 @@ function renderDiagnostics() {
     meta.textContent = pending
       ? [
           names.get(item.workspace_id),
+          item.code === "claim.pending-after-wait" ? short(item.object_id) : "",
           item.source_owner && item.target_owner ? `${short(item.source_owner)} → ${short(item.target_owner)}` : "",
           item.at ? `${t("diagnostic.waitingFor")} ${formatCompactAge(item.at)}` : "",
           item.topic,
@@ -707,7 +751,7 @@ function renderGraph(presentation) {
     nodes["flow-empty"].replaceChildren(...content.children);
     return;
   }
-  if (!nodes["flow-panel"].open) return;
+  if (!nodes["flow-panel"].open || state.historyView !== "graph") return;
   const result = renderFlow(
     nodes.flow,
     nodes["flow-owner-rail"],
@@ -762,6 +806,7 @@ function render() {
   renderProjectCollaboration(presentation);
   renderProjects(presentation);
   renderActive();
+  activityHistory.update(state.dashboard, state.workspace);
   renderGraph(presentation);
   renderDiagnostics();
   renderEvents();
@@ -787,21 +832,32 @@ async function request(url, options = {}) {
   return value;
 }
 
+function notify(message, warning = false) {
+  nodes["action-feedback"].textContent = message;
+  nodes["action-feedback"].hidden = !message;
+  nodes["action-feedback"].classList.toggle("is-warning", warning);
+}
+
 async function loadDashboard() {
-  if (state.loading) return;
+  const generation = ++state.loadGeneration;
+  state.loadController?.abort();
+  state.loadController = new AbortController();
   state.loading = true;
-  updateStatus("loading", "status.loading");
-  const query = new URLSearchParams({ window: String(state.window), limit: "240" });
+  if (!state.dashboard) updateStatus("loading", "status.loading");
+  const query = new URLSearchParams({window: String(state.window), limit: "240"});
   if (state.workspace) query.set("workspace", state.workspace);
   history.replaceState(null, "", `?${query}`);
   try {
-    state.dashboard = await request(`/api/dashboard?${query}`);
+    const value = await request(`/api/dashboard?${query}`, {signal: state.loadController.signal});
+    if (generation !== state.loadGeneration) return;
+    state.dashboard = value;
     render();
   } catch (error) {
+    if (generation !== state.loadGeneration || error.name === "AbortError") return;
     updateStatus("error", "status.error");
-    nodes.metrics.replaceChildren(empty("status.error", error.message));
+    notify(`${t("status.error")} · ${error.message}`, true);
   } finally {
-    state.loading = false;
+    if (generation === state.loadGeneration) state.loading = false;
   }
 }
 
@@ -812,9 +868,11 @@ async function collect() {
   updateTopbarActions();
   try {
     await request("/api/collect", { method: "POST", body: "{}" });
+    notify(t("actions.refreshed"));
     await loadDashboard();
   } catch (error) {
     updateStatus("error", "status.error");
+    notify(error.message, true);
   } finally {
     nodes.refresh.disabled = false;
     state.collecting = false;
@@ -828,9 +886,11 @@ async function repairDiscovery() {
   updateTopbarActions();
   try {
     await request("/api/actions/discovery/repair", { method: "POST", body: "{}" });
+    notify(t("actions.discoveryChecked"));
     await loadDashboard();
   } catch (error) {
     updateStatus("error", "status.error");
+    notify(error.message, true);
   } finally {
     nodes["repair-discovery"].disabled = false;
     state.repairingDiscovery = false;
@@ -838,12 +898,16 @@ async function repairDiscovery() {
   }
 }
 
-async function openRootDialog() {
-  nodes["dialog-error"].hidden = true;
-  const value = await request("/api/roots");
-  nodes["root-list"].replaceChildren(...value.roots.map((root) => div("root-chip", root)));
-  nodes["root-path"].value = "";
-  nodes["root-dialog"].showModal();
+const rootPicker = createRootPicker({request, onSaved: loadDashboard, notify});
+const activityHistory = createActivityHistory({t, eventLabel, formatTime});
+
+function setHistoryView(view) {
+  state.historyView = view;
+  nodes["history-view"].hidden = view !== "list";
+  nodes["graph-view"].hidden = view !== "graph";
+  nodes["history-list-view"].setAttribute("aria-pressed", String(view === "list"));
+  nodes["history-graph-view"].setAttribute("aria-pressed", String(view === "graph"));
+  if (state.dashboard) renderGraph(dashboardPresentation(state.dashboard, state.workspace));
 }
 
 function applyTheme(value) {
@@ -885,35 +949,16 @@ nodes["flow-scrollbar-control"].addEventListener("input", () => {
 nodes.language.addEventListener("click", () => {
   toggleLanguage();
   if (state.dashboard) render();
+  if (nodes["root-dialog"].open) rootPicker.render();
+  translatePlaceholders();
 });
 nodes.theme.addEventListener("click", () => {
   const current = localStorage.getItem("dev-mesh-theme") || "system";
   applyTheme(current === "system" ? "light" : current === "light" ? "dark" : "system");
 });
-nodes["add-root"].addEventListener("click", () => {
-  openRootDialog().catch((error) => {
-    updateStatus("error", "status.error");
-    console.error(error);
-  });
-});
-nodes["close-dialog"].addEventListener("click", () => nodes["root-dialog"].close());
-nodes["cancel-root"].addEventListener("click", () => nodes["root-dialog"].close());
-nodes["root-form"].addEventListener("submit", async (event) => {
-  event.preventDefault();
-  nodes["dialog-error"].hidden = true;
-  try {
-    await request("/api/roots", {
-      method: "POST",
-      body: JSON.stringify({ path: nodes["root-path"].value }),
-    });
-    nodes["root-dialog"].close();
-    state.flowScrollToLatest = true;
-    await loadDashboard();
-  } catch (error) {
-    nodes["dialog-error"].textContent = error.message;
-    nodes["dialog-error"].hidden = false;
-  }
-});
+nodes["add-root"].addEventListener("click", () => rootPicker.open());
+nodes["history-list-view"].addEventListener("click", () => setHistoryView("list"));
+nodes["history-graph-view"].addEventListener("click", () => setHistoryView("graph"));
 nodes["close-run-dialog"].addEventListener("click", () => nodes["run-close-dialog"].close());
 nodes["cancel-run-close"].addEventListener("click", () => nodes["run-close-dialog"].close());
 nodes["run-close-form"].addEventListener("submit", async (event) => {
@@ -954,10 +999,16 @@ nodes["run-close-form"].addEventListener("submit", async (event) => {
   }
 });
 
+function translatePlaceholders() {
+  document.getElementById("directory-search").placeholder = t("picker.search");
+  document.getElementById("history-search").placeholder = t("history.search");
+}
+translatePlaceholders();
 nodes.window.value = String(state.window);
 applyTheme(localStorage.getItem("dev-mesh-theme") || "system");
 applyTranslations();
 loadDashboard();
 setInterval(() => {
-  if (!document.hidden) loadDashboard();
+  if (!document.hidden && !state.loading && !document.activeElement?.closest("#flow-panel, #insights, #active-details")
+      && !nodes["root-dialog"].open && !nodes["run-close-dialog"].open) loadDashboard();
 }, 15000);

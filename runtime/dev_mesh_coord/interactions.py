@@ -50,6 +50,8 @@ def _assert_same_message(record: dict[str, object], expected: dict[str, object])
         "message_id",
         "source_owner",
         "target_owner",
+        "target_run_id",
+        "target_task_id",
         "source_run_id",
         "interaction_kind",
         "topic",
@@ -84,7 +86,7 @@ def send(
     root: Path,
     *,
     source_owner: str,
-    target_owner: str,
+    target_owner: str | None = None,
     subject: str,
     body: str,
     interaction_kind: str,
@@ -92,9 +94,18 @@ def send(
     topic: str = "general",
     requires_ack: bool = False,
     handoff_id: str | None = None,
+    target_run_id: str | None = None,
+    target_task_id: str | None = None,
 ) -> dict[str, object]:
     source_owner = require_slug(source_owner, "source owner")
-    target_owner = require_slug(target_owner, "target owner")
+    if target_owner is not None:
+        target_owner = require_slug(target_owner, "target owner")
+    if target_run_id is not None:
+        target_run_id = require_identifier(target_run_id, "target run id")
+    if target_owner is None and target_run_id is None:
+        raise ValueError("record-message requires a target owner or exact target run id")
+    if target_task_id is not None:
+        target_task_id = require_text(target_task_id, "target task id", 300)
     subject = require_text(subject, "subject", 300)
     body = require_text(body, "body", 4000)
     if interaction_kind not in INTERACTION_KINDS:
@@ -122,6 +133,36 @@ def send(
         run = read_json(plane.state_root / "runs" / f"{source_run_id}.json", base=plane.state_root)
         if run.get("owner") != source_owner or run.get("status") != "active":
             raise ValueError("source run is not active for the source owner")
+        correlation: dict[str, object] = {}
+        if target_run_id is not None:
+            target_run = read_json(
+                plane.state_root / "runs" / f"{target_run_id}.json", base=plane.state_root
+            )
+            registered_owner = target_run.get("owner")
+            if not isinstance(registered_owner, str):
+                raise ValueError("target Run lacks a registered owner")
+            registered_owner = require_slug(registered_owner, "registered target owner")
+            if target_run.get("run_id") != target_run_id:
+                raise ValueError("target Run identity does not match its record")
+            if target_owner is not None and target_owner != registered_owner:
+                raise ValueError("target owner does not match the exact target Run")
+            target_owner = registered_owner
+            correlation["target_run_id"] = target_run_id
+        if target_task_id is not None:
+            correlation["target_task_id"] = target_task_id
+        identity: dict[str, object] = {"target_identity_status": "exact-run"}
+        if target_run_id is None:
+            candidates = [
+                {field: candidate.get(field) for field in ("owner", "run_id", "status")}
+                for path in sorted((plane.state_root / "runs").glob("*.json"))
+                for candidate in [read_json(path, base=plane.state_root)]
+                if candidate.get("owner") == target_owner
+            ]
+            identity = {
+                "target_identity_status": "owner-only" if candidates else "unregistered-owner",
+                "identity_action": "use_exact_target_run_id_for_correlation",
+                "target_run_candidates": candidates,
+            }
         record = materialized(
             {
                 "schema": 1,
@@ -136,6 +177,7 @@ def send(
                 "body": body,
                 "handoff_id": handoff_id,
                 "created_at": now(),
+                **correlation,
             }
         )
         message_path = _message_path(plane, message_id)
@@ -190,6 +232,8 @@ def send(
             "requires_ack": requires_ack,
             "handoff_id": handoff_id,
         }
+        if correlation:
+            message_event_payload.update(source_run_id=source_run_id, **correlation)
         if repairing:
             _ensure_event(
                 plane,
@@ -209,6 +253,8 @@ def send(
                 "owner": source_owner,
                 "run_id": source_run_id,
             }
+            if correlation:
+                handoff_event_payload.update(source_run_id=source_run_id, **correlation)
             if repairing:
                 _ensure_event(
                     plane,
@@ -219,7 +265,7 @@ def send(
                 )
             else:
                 emit(plane, "handoff-offered", payload=handoff_event_payload)
-        return record
+        return {**record, **identity}
 
 
 def acknowledge(
@@ -238,6 +284,8 @@ def acknowledge(
         message = read_json(_message_path(plane, message_id), base=plane.state_root)
         if message.get("target_owner") != target_owner:
             raise ValueError("message targets another owner")
+        if message.get("target_run_id") not in (None, target_run_id):
+            raise ValueError("message targets another exact Run")
         if not message.get("requires_ack"):
             raise ValueError("message does not require acknowledgement")
         kind = message.get("interaction_kind")
@@ -378,6 +426,10 @@ def _terminal_handoff(
         handoff = read_json(path, base=plane.state_root)
         if handoff.get(expected_role) != actor:
             raise ValueError(f"handoff {expected_role} does not match actor")
+        if expected_role == "target_owner":
+            message = read_json(_message_path(plane, str(handoff["message_id"])), base=plane.state_root)
+            if message.get("target_run_id") not in (None, actor_run_id):
+                raise ValueError("handoff targets another exact Run")
         expected_run = handoff.get("source_run_id") if expected_role == "source_owner" else actor_run_id
         if expected_run != actor_run_id:
             raise ValueError("handoff source Run does not match actor Run")

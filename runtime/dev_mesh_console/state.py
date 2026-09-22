@@ -93,6 +93,18 @@ class ConsoleState:
                 "max_depth": self.max_depth,
             }
 
+    def add_root(self, path: str) -> dict[str, object]:
+        roots = self.registry.add(path)
+        # Registration is durable even when the timer already owns collection or scanning fails.
+        # Return that fact so the UI never invites a duplicate retry of a successful registration.
+        try:
+            result = self.collect()
+        except Exception as error:
+            return {"roots": [str(item) for item in roots], "saved": True,
+                    "collection": {"refreshed": False, "error": str(error)}}
+        return {"roots": [str(item) for item in roots], "saved": True,
+                "collection": {**result, "refreshed": True}}
+
     def dashboard(
         self,
         *,

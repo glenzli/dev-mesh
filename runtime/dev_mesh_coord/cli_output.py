@@ -19,12 +19,16 @@ _FIELDS = (
     "source_run_id",
     "target_owner",
     "target_run_id",
+    "target_identity_status",
+    "identity_action",
     "status",
     "outcome",
     "event_id",
     "message_id",
     "handoff_id",
     "contention_id",
+    "contention_status",
+    "contention_decision",
     "decision",
     "decision_revision",
     "epoch",
@@ -115,6 +119,9 @@ _COLLECTION_KEYS = {
 
 def _record(value: Mapping[str, object]) -> dict[str, object]:
     projected = {field: value[field] for field in _FIELDS if field in value}
+    candidates = value.get("target_run_candidates")
+    if isinstance(candidates, list):
+        projected["target_run_candidates"] = _collection(candidates)
     conflicts = value.get("conflicts")
     if isinstance(conflicts, list) and conflicts:
         projected["conflicts"] = _collection(conflicts)
@@ -174,6 +181,8 @@ def _record(value: Mapping[str, object]) -> dict[str, object]:
         projected["accept_baseline_sha256"] = baseline.get("baseline_sha256")
         if value.get("baseline_changed") is True:
             projected["retry_required"] = True
+    if status == "pending-arbitration" and value.get("contention_decision") == "wait":
+        projected["if_work_delegated_or_unneeded"] = "claim-release_by_exact_owner_and_run"
     return projected
 
 
@@ -211,6 +220,8 @@ def _next_action(command: str, value: Mapping[str, object]) -> str | None:
         return "claim_declared_scope" if value.get("event_path") else "inspect_scoped_status_then_claim"
     if command in {"claim", "claim-activate", "claim-resume", "claim-pause", "claim-baseline-accept"}:
         if status == "pending-arbitration":
+            if value.get("contention_decision") == "wait":
+                return "activate_after_overlap_release_or_release_if_work_delegated"
             return "stop_overlap_writes_and_coordinate"
         if status == "pending-baseline":
             if value.get("baseline_changed") is True:
@@ -410,6 +421,8 @@ def project(
         result = dict(selected)
         if command == "contention-wait":
             result["write_authority"] = "none"
+            result["decision_releases_claim"] = False
+            result["if_work_delegated_or_unneeded"] = "claim-release_by_exact_owner_and_run"
         if command in {"send", "record-message"}:
             result["next_action"] = _next_action(command, selected)
             result["dev_mesh_effect"] = "record_persisted"
@@ -419,6 +432,8 @@ def project(
     result = _record(selected)
     if command == "contention-wait":
         result["write_authority"] = "none"
+        result["decision_releases_claim"] = False
+        result["if_work_delegated_or_unneeded"] = "claim-release_by_exact_owner_and_run"
     for key, item in selected.items():
         if key in _COLLECTION_KEYS and isinstance(item, list):
             result[key] = _collection(item)

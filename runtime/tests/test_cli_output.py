@@ -238,6 +238,27 @@ class CliOutputTest(GitWorkspaceTest):
             waiting["next_action"], "wait_for_overlap_release_then_activate_claim"
         )
         self.assertEqual(waiting["write_authority"], "none")
+        self.assertFalse(waiting["decision_releases_claim"])
+        overview = project("status", status(self.root), verbose=False, owner="agent-b", run_id="run-b")
+        action = overview["action_required"]["sample"][0]
+        self.assertEqual(action["contention_status"], "completed")
+        self.assertEqual(action["contention_decision"], "wait")
+        self.assertEqual(action["status"], "pending-arbitration")
+        self.assertEqual(action["write_authority"], "none")
+        self.assertEqual(action["next_action"], "activate_after_overlap_release_or_release_if_work_delegated")
+        self.assertEqual(action["if_work_delegated_or_unneeded"], "claim-release_by_exact_owner_and_run")
+
+    def test_message_identity_candidates_are_bounded_without_claiming_delivery(self) -> None:
+        result = project("record-message", {
+            "message_id": "notice", "target_identity_status": "owner-only",
+            "identity_action": "use_exact_target_run_id_for_correlation",
+            "target_run_candidates": [{"owner": "worker", "run_id": f"run-{i}"}
+                                      for i in range(MAX_COMPACT_ITEMS + 2)],
+        }, verbose=False)
+        self.assertEqual(result["target_run_candidates"]["count"], MAX_COMPACT_ITEMS + 2)
+        self.assertEqual(len(result["target_run_candidates"]["sample"]), MAX_COMPACT_ITEMS)
+        self.assertTrue(result["target_run_candidates"]["truncated"])
+        self.assertFalse(result["target_task_woken_by_dev_mesh"])
 
     def test_pending_baseline_projection_names_the_only_digest_to_accept(self) -> None:
         compact = project(

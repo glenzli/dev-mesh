@@ -26,7 +26,11 @@ socket endpoint on every start. Only one process may publish `dev-mesh-observer-
 publication authority is serialized outside Discovery. Shutdown stops accepting requests, releases
 publication authority, leaves the stable manifest as a candidate entry, and removes only the
 process-unique socket. A successor binds a new endpoint and atomically replaces the manifest with a
-new generation; neither process periodically refreshes the manifest.
+new generation. The publisher does not periodically rewrite a valid manifest. It may perform a
+low-frequency integrity check and atomically restore the same generation and endpoint when the
+manifest is missing or invalid. During that check it may remove an old Dev Mesh socket only after
+proving that no registration references it and no listener accepts a connection on the unchanged
+owner-only socket inode.
 
 `INFRA_PROTOCOL_RUNTIME_DIR` may provide the final absolute runtime root. Otherwise the publisher
 uses the platform root defined by Infra Discovery. The Console may be started explicitly with

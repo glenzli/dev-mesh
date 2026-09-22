@@ -11,6 +11,7 @@ from dev_mesh_coord.lifecycle import (
     join_run,
     leave_run,
     release_claim,
+    status,
 )
 
 from helpers import GitWorkspaceTest
@@ -219,6 +220,89 @@ class CollaborationTest(GitWorkspaceTest):
                 run_id="run-b",
                 reason="a different retry reason",
             )
+
+    def test_delegated_wait_requires_exact_owner_cleanup_before_next_writer(self) -> None:
+        pending, opened = self._overlap()
+        contention.select_wait(
+            self.root, contention_id=str(opened["contention_id"]), scope="parallel",
+            owner="agent-b", run_id="run-b", reason="primary will include the requested change",
+        )
+        plane = resolve(self.root)
+        original_pending = (plane.state_root / "claims/parallel.json").read_bytes()
+        (self.root / "app.txt").write_text("base\nincluding delegated change\n")
+        work_results.complete_claim(
+            self.root, result_id="delegated-change", scope="primary", owner="agent-a", run_id="run-a",
+            summary="included delegated change", validation_evidence="bounded regression passed",
+        )
+        projected = status(self.root)
+        self.assertEqual(projected["claims"][0]["contention_decision"], "wait")
+        self.assertEqual((plane.state_root / "claims/parallel.json").read_bytes(), original_pending)
+        with self.assertRaisesRegex(ValueError, "claim-release if the work was delegated"):
+            create_claim(self.root, scope="follow-up", owner="agent-a", run_id="run-a",
+                         task="small follow-up", paths=["app.txt"])
+        with self.assertRaisesRegex(ValueError, "owner or run does not match"):
+            release_claim(self.root, scope="parallel", owner="agent-a", run_id="run-a", summary="wrong actor")
+        release_claim(self.root, scope="parallel", owner="agent-b", run_id="run-b",
+                      summary="requested change already included by primary")
+        self.assertEqual((self.root / "app.txt").read_text(), "base\nincluding delegated change\n")
+        following = create_claim(self.root, scope="follow-up", owner="agent-a", run_id="run-a",
+                                 task="small follow-up", paths=["app.txt"])
+        self.assertEqual(following["status"], "pending-baseline")
+        self.assertEqual(following["conflicts"], [])
+        self.assertEqual(pending["contention_id"], opened["contention_id"])
+
+    def test_exact_message_recipient_rejects_alias_without_persisting_a_notice(self) -> None:
+        plane = resolve(self.root)
+        arguments = dict(source_owner="agent-a", source_run_id="run-a", target_run_id="run-b",
+                         target_task_id="desktop-task-b", subject="delivered", body="checkpoint",
+                         interaction_kind="notice")
+        with self.assertRaisesRegex(ValueError, "target owner does not match"):
+            interactions.send(self.root, target_owner="b-alias", **arguments)
+        self.assertEqual(list((plane.state_root / "messages").glob("*.json")), [])
+        recorded = interactions.send(self.root, **arguments)
+        self.assertEqual(recorded["target_owner"], "agent-b")
+        self.assertEqual(recorded["target_identity_status"], "exact-run")
+        persisted = json.loads((plane.state_root / "messages" / f"{recorded['message_id']}.json").read_text())
+        self.assertEqual(persisted["target_run_id"], "run-b")
+        self.assertEqual(persisted["target_task_id"], "desktop-task-b")
+        self.assertNotIn("target_identity_status", persisted)
+        event = json.loads(next((plane.state_root / "events").glob("*-message-sent.json")).read_text())
+        self.assertEqual(event["source_run_id"], "run-a")
+        self.assertEqual(event["target_run_id"], "run-b")
+        self.assertEqual(event["authority_effect"], "none")
+        legacy = interactions.send(self.root, source_owner="agent-a", source_run_id="run-a",
+                                   target_owner="b-alias", subject="legacy", body="delivered separately",
+                                   interaction_kind="notice")
+        self.assertEqual(legacy["target_identity_status"], "unregistered-owner")
+        self.assertNotIn("target_run_id", legacy)
+
+    def test_bound_recipient_cannot_be_acknowledged_or_rejected_by_sibling_run(self) -> None:
+        join_run(self.root, owner="agent-b", run_id="run-b-other", task="another task")
+        offer = interactions.send(
+            self.root, source_owner="agent-a", source_run_id="run-a", target_run_id="run-b",
+            subject="delivered handoff", body="checkpoint", interaction_kind="handoff",
+            requires_ack=True, handoff_id="exact-recipient",
+        )
+        with self.assertRaisesRegex(ValueError, "another exact Run"):
+            interactions.acknowledge(self.root, message_id=str(offer["message_id"]),
+                                     target_owner="agent-b", target_run_id="run-b-other")
+        with self.assertRaisesRegex(ValueError, "another exact Run"):
+            interactions.reject(self.root, handoff_id="exact-recipient", target_owner="agent-b",
+                                target_run_id="run-b-other", reason_code="declined", reason="wrong task")
+        accepted = interactions.acknowledge(self.root, message_id=str(offer["message_id"]),
+                                           target_owner="agent-b", target_run_id="run-b")
+        self.assertEqual(accepted["run_id"], "run-b")
+        self.assertTrue((resolve(self.root).state_root / "claims/primary.json").exists())
+
+    def test_same_owner_distinct_runs_keep_collaboration_identity(self) -> None:
+        from dev_mesh_observer.collaboration_semantics import is_collaboration_record
+
+        join_run(self.root, owner="agent-a", run_id="run-a-other", task="independent sibling")
+        interactions.send(self.root, source_owner="agent-a", source_run_id="run-a",
+                          target_run_id="run-a-other", subject="delivered", body="checkpoint",
+                          interaction_kind="notice")
+        event = json.loads(next((resolve(self.root).state_root / "events").glob("*-message-sent.json")).read_text())
+        self.assertTrue(is_collaboration_record("message-sent", event))
 
     def test_branch_offload_requires_semantic_resources_from_every_claim(self) -> None:
         join_run(self.root, run_id="run-c", owner="agent-c", task="unclassified overlap")
@@ -481,6 +565,8 @@ class CollaborationTest(GitWorkspaceTest):
                     interaction_kind="handoff",
                     requires_ack=True,
                     handoff_id="stable-offer",
+                    target_run_id="run-b",
+                    target_task_id="host-task-b",
                 )
         plane = resolve(self.root)
         self.assertEqual(len(list((plane.state_root / "messages").glob("*.json"))), 1)
@@ -495,12 +581,21 @@ class CollaborationTest(GitWorkspaceTest):
             interaction_kind="handoff",
             requires_ack=True,
             handoff_id="stable-offer",
+            target_run_id="run-b",
+            target_task_id="host-task-b",
         )
         self.assertEqual(repaired["handoff_id"], "stable-offer")
         handoff = json.loads(
             (plane.state_root / "handoffs/stable-offer.json").read_text()
         )
         self.assertEqual(handoff["message_id"], repaired["message_id"])
+        with self.assertRaisesRegex(ValueError, "another message"):
+            interactions.send(
+                self.root, source_owner="agent-a", target_owner="agent-b", source_run_id="run-a",
+                subject="stable offer", body="bounded checkpoint", interaction_kind="handoff",
+                requires_ack=True, handoff_id="stable-offer", target_run_id="run-b",
+                target_task_id="different-host-task",
+            )
         events = [
             json.loads(path.read_text())
             for path in (plane.state_root / "events").glob("*.json")

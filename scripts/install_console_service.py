@@ -24,6 +24,7 @@ def launch_agent_payload(
     registry: Path,
     port: int,
     collect_interval: float,
+    discovery_maintenance_interval: float,
 ) -> dict[str, object]:
     logs = Path("~/Library/Logs").expanduser()
     return {
@@ -42,6 +43,8 @@ def launch_agent_payload(
             str(port),
             "--collect-interval",
             str(collect_interval),
+            "--discovery-maintenance-interval",
+            str(discovery_maintenance_interval),
         ],
         "EnvironmentVariables": {"PYTHONPATH": str(root / "runtime")},
         "WorkingDirectory": str(root),
@@ -86,6 +89,7 @@ def install(arguments: argparse.Namespace) -> int:
         registry=registry,
         port=arguments.port,
         collect_interval=arguments.collect_interval,
+        discovery_maintenance_interval=arguments.discovery_maintenance_interval,
     )
     encoded = plistlib.dumps(payload, fmt=plistlib.FMT_XML, sort_keys=True)
     descriptor, temporary_name = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
@@ -144,6 +148,7 @@ def parser() -> argparse.ArgumentParser:
     service.add_argument("--registry", type=Path)
     service.add_argument("--port", type=int, default=8765)
     service.add_argument("--collect-interval", type=float, default=15.0)
+    service.add_argument("--discovery-maintenance-interval", type=float, default=10 * 60)
     service.set_defaults(handler=install)
     inspect = subparsers.add_parser("status")
     inspect.set_defaults(handler=status)

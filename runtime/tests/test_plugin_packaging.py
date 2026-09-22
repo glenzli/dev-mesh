@@ -29,7 +29,7 @@ class PluginPackagingTest(unittest.TestCase):
                 revision="abcdef1234567890abcdef1234567890abcdef12",
                 require_clean=False,
             )
-            self.assertEqual(metadata["version"], "0.2.4")
+            self.assertEqual(metadata["version"], "0.2.5")
             self.assertEqual(
                 metadata["source_revision"],
                 "abcdef1234567890abcdef1234567890abcdef12",

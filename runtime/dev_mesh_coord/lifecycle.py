@@ -123,6 +123,28 @@ def _active_claims(plane: ControlPlane) -> list[dict[str, object]]:
     ]
 
 
+def _pending_decision(plane: ControlPlane, claim: dict[str, object]) -> dict[str, object]:
+    """Read terminal decision context without treating it as a Claim release."""
+    identifier = claim.get("contention_id")
+    if claim.get("status") != "pending-arbitration" or not isinstance(identifier, str):
+        return {}
+    identifier = require_identifier(identifier, "contention id")
+    path = plane.state_root / "contentions" / "archive" / f"{identifier}.json"
+    try:
+        decision = read_json(path, base=plane.state_root)
+    except FileNotFoundError:
+        return {}
+    if decision.get("contention_id") != identifier or not any(
+        isinstance(participant, dict)
+        and all(participant.get(field) == claim.get(field) for field in ("owner", "run_id", "scope"))
+        for participant in decision.get("participants", [])
+    ):
+        return {}
+    if decision.get("status") != "completed" or decision.get("decision") != "wait":
+        return {}
+    return {"contention_status": "completed", "contention_decision": "wait"}
+
+
 def _claim_conflicts(
     plane: ControlPlane,
     *,
@@ -302,7 +324,18 @@ def create_claim(
             in {"pending-arbitration", "pending-baseline", "completing", "transaction"}
         ]
         if in_flight:
-            raise ValueError(f"overlap already has an in-flight arbitration or transaction: {in_flight}")
+            waiting = [
+                item for item in _active_claims(plane)
+                if item.get("scope") in {conflict.get("scope") for conflict in in_flight}
+                and _pending_decision(plane, item)
+            ]
+            hint = (
+                "; completed wait decisions retain pending Claims: the exact pending owner/Run "
+                "must claim-activate after overlap release, or claim-release if the work was "
+                "delegated or is no longer needed"
+                if waiting else ""
+            )
+            raise ValueError(f"overlap already has an in-flight arbitration or transaction: {in_flight}{hint}")
         # ``allow_overlap`` remains accepted for callers from the unpublished
         # draft, but overlap is now always materialized as a non-authoritative
         # pending Claim.  Refusing before materialization left weaker callers
@@ -1599,7 +1632,7 @@ def recover_run_authority(
 def status(root: Path) -> dict[str, object]:
     plane = resolve(root)
     runs = [read_json(path, base=plane.state_root) for path in sorted((plane.state_root / "runs").glob("*.json"))]
-    claims = _active_claims(plane)
+    claims = [{**claim, **_pending_decision(plane, claim)} for claim in _active_claims(plane)]
     return {
         "protocol": plane.version,
         "runs": runs,

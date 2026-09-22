@@ -17,6 +17,25 @@ REPOSITORY = Path(__file__).parents[2]
 
 
 class CliTest(GitWorkspaceTest):
+    def test_record_message_can_derive_recipient_from_exact_run(self) -> None:
+        root = str(self.root)
+        for owner, run in (("sender", "sender-run"), ("receiver", "receiver-run")):
+            self._run("dev_mesh_coord", "--root", root, "join", "--owner", owner,
+                      "--run-id", run, "--task", "recipient correlation")
+        output = json.loads(self._run(
+            "dev_mesh_coord", "--root", root, "record-message",
+            "--source-owner", "sender", "--source-run-id", "sender-run",
+            "--target-run-id", "receiver-run", "--target-task-id", "host-task-1",
+            "--subject", "delivered checkpoint", "--body", "received through host task tool",
+            "--kind", "notice",
+        ).stdout)
+        self.assertEqual(output["target_owner"], "receiver")
+        self.assertEqual(output["target_run_id"], "receiver-run")
+        self.assertEqual(output["target_task_id"], "host-task-1")
+        self.assertEqual(output["target_identity_status"], "exact-run")
+        self.assertEqual(output["next_action"], "recording_complete")
+        self.assertFalse(output["target_task_woken_by_dev_mesh"])
+
     def test_record_message_and_legacy_send_share_the_same_passive_contract(self) -> None:
         root = str(self.root)
         self._run("dev_mesh_coord", "--root", root, "join", "--owner", "sender",
