@@ -29,7 +29,10 @@ class PluginPackagingTest(unittest.TestCase):
                 revision="abcdef1234567890abcdef1234567890abcdef12",
                 require_clean=False,
             )
-            self.assertEqual(metadata["version"], "0.2.5")
+            source_version = json.loads(
+                (REPOSITORY / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8")
+            )["version"]
+            self.assertEqual(metadata["version"], source_version)
             self.assertEqual(
                 metadata["source_revision"],
                 "abcdef1234567890abcdef1234567890abcdef12",

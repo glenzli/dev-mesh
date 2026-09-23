@@ -172,9 +172,20 @@ def staged_paths(root: Path) -> list[str]:
 def index_is_empty(root: Path) -> bool:
     completed = subprocess.run(
         ("git", "-C", str(root), "diff", "--cached", "--quiet", "--exit-code"),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
         check=False,
     )
-    return completed.returncode == 0
+    if completed.returncode == 0:
+        return True
+    if completed.returncode == 1:
+        return False
+    raise GitCommandError(
+        ("diff", "--cached", "--quiet", "--exit-code"),
+        completed.returncode,
+        completed.stderr,
+    )
 
 
 def normalize_paths(root: Path, values: list[str]) -> list[str]:

@@ -74,7 +74,7 @@ def main(argv: list[str] | None = None) -> int:
             facility = ObserverFacilityService(
                 lambda service, sequence: build_facility_snapshot(
                     database=state.database,
-                    collector=state.status(),
+                    collector=state.facility_status(),
                     console_url=console_url,
                     service=service,
                     sequence=sequence,

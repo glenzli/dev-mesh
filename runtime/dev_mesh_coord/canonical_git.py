@@ -249,7 +249,20 @@ def _complete(
     replace_json(path, record, base=plane.state_root)
     _ensure_exact_event(plane, record, "terminal_event")
     destination = _path(plane, direct_commit_id, active=False)
-    os.replace(path, destination)
+    # Full paths are needed during staging and committing.  Once completed,
+    # recovery can check the candidate Git tree and terminal event.  Compact
+    # the active record before its atomic move so the archive is byte-stable.
+    archived = {**record}
+    for field in ("actual_paths", "intended_paths", "staged_paths"):
+        archived.pop(field, None)
+    replace_json(path, archived, base=plane.state_root)
+    try:
+        os.replace(path, destination)
+    except OSError:
+        # Restore the full completed intent for the existing attention and
+        # reconciliation path if the archive move itself fails.
+        replace_json(path, record, base=plane.state_root)
+        raise
     return {**record, "archive": str(destination)}
 
 
@@ -269,6 +282,16 @@ def _advance(
     if git.branch(root) != branch:
         raise ValueError("canonical branch changed during direct commit")
     candidate_value = record.get("candidate_revision")
+    if status == "completed" and "staged_paths" not in record:
+        if (
+            not isinstance(candidate_value, str)
+            or current != candidate_value
+            or record.get("staged_tree") != expected_tree
+            or _tree(root, candidate_value) != expected_tree
+            or not git.index_is_empty(root)
+        ):
+            raise ValueError("completed direct commit Git facts disagree")
+        return _complete(plane, path, record)
     if isinstance(candidate_value, str) and current == candidate_value:
         recorded_paths = [
             item for item in record.get("staged_paths", []) if isinstance(item, str)

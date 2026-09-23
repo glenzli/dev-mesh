@@ -24,7 +24,11 @@ from dev_mesh_coord.lifecycle import (
 )
 from dev_mesh_observer.catalog import Catalog, workspace_id
 from dev_mesh_observer.reports import ACTIVE_STATUSES
-from dev_mesh_observer.source_validation import MAX_SNAPSHOT_BYTES, SNAPSHOT_STATUSES
+from dev_mesh_observer.source_validation import (
+    MAX_LEGACY_DIRECT_COMMIT_ARCHIVE_BYTES,
+    MAX_SNAPSHOT_BYTES,
+    SNAPSHOT_STATUSES,
+)
 
 from helpers import GitWorkspaceTest, git
 
@@ -34,6 +38,35 @@ FUTURE_EXPIRED = "2026-08-12T00:01:00.000000Z"
 
 
 class ObserverIntegrityTest(GitWorkspaceTest):
+    def test_legacy_large_completed_direct_commit_archive_is_collected(self) -> None:
+        initialize(self.root)
+        plane = resolve(self.root)
+        archive = plane.state_root / "direct-commits/archive/direct-commit-legacy.json"
+        paths = [f"generated/{index:04d}-{'x' * 100}.txt" for index in range(1800)]
+        archive.write_text(json.dumps({
+            "schema": 1,
+            "protocol": PROTOCOL,
+            "protocol_version": PROTOCOL_VERSION,
+            "direct_commit_id": "direct-commit-legacy",
+            "scope": "generated",
+            "owner": "agent-a",
+            "run_id": "run-a",
+            "canonical_branch": "main",
+            "base_revision": "a" * 40,
+            "created_at": OLD,
+            "status": "completed",
+            "actual_paths": paths,
+            "intended_paths": paths,
+            "staged_paths": paths,
+        }) + "\n", encoding="utf-8")
+        self.assertGreater(archive.stat().st_size, MAX_SNAPSHOT_BYTES)
+        self.assertLess(archive.stat().st_size, MAX_LEGACY_DIRECT_COMMIT_ARCHIVE_BYTES)
+        database = Path(self.temporary.name) / "observer.sqlite3"
+        with Catalog(database) as catalog:
+            collected = catalog.collect_workspace(self.root)
+        self.assertEqual(collected["invalid_count"], 0)
+        self.assertGreater(collected["snapshots"], 0)
+
     def test_contention_participants_are_not_reported_as_non_collaborative(self) -> None:
         initialize(self.root)
         join_run(self.root, run_id="run-active", owner="agent-active", task="first edit")

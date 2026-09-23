@@ -21,6 +21,9 @@ from dev_mesh_coord.storage import ensure_safe_target
 
 
 MAX_SNAPSHOT_BYTES = 512 * 1024
+# Older completed direct commits retained three full path arrays.  Bound the
+# legacy archive reader separately; new archives keep only path projections.
+MAX_LEGACY_DIRECT_COMMIT_ARCHIVE_BYTES = 8 * 1024 * 1024
 
 SNAPSHOT_STATUSES = {
     ("run", "current"): {"active", "closed"},
@@ -251,19 +254,24 @@ def snapshot_record(
     protocol_version: str = PROTOCOL_VERSION,
 ) -> dict[str, object]:
     ensure_safe_target(state_root, path, may_not_exist=False)
+    limit = (
+        MAX_LEGACY_DIRECT_COMMIT_ARCHIVE_BYTES
+        if (kind, lifecycle) == ("direct-commit", "archive")
+        else MAX_SNAPSHOT_BYTES
+    )
     try:
-        if path.stat().st_size > MAX_SNAPSHOT_BYTES:
+        if path.stat().st_size > limit:
             raise ProtocolError(
                 "marker_invalid",
-                f"snapshot exceeds the {MAX_SNAPSHOT_BYTES}-byte Observer limit: {path}",
+                f"snapshot exceeds the {limit}-byte Observer limit: {path}",
             )
         encoded = path.read_bytes()
     except OSError as error:
         raise ProtocolError("marker_invalid", f"cannot read snapshot {path}: {error}") from error
-    if len(encoded) > MAX_SNAPSHOT_BYTES:
+    if len(encoded) > limit:
         raise ProtocolError(
             "marker_invalid",
-            f"snapshot exceeds the {MAX_SNAPSHOT_BYTES}-byte Observer limit: {path}",
+            f"snapshot exceeds the {limit}-byte Observer limit: {path}",
         )
     try:
         value = json.loads(encoded.decode("utf-8"))
@@ -279,6 +287,11 @@ def snapshot_record(
         or record.get("status") not in SNAPSHOT_STATUSES[(kind, lifecycle)]
     ):
         raise ProtocolError("marker_invalid", f"unsupported {kind} snapshot envelope: {path}")
+    if len(encoded) > MAX_SNAPSHOT_BYTES and record.get("status") != "completed":
+        raise ProtocolError(
+            "marker_invalid",
+            f"snapshot exceeds the {MAX_SNAPSHOT_BYTES}-byte Observer limit: {path}",
+        )
     for field in SNAPSHOT_REQUIRED_FIELDS[kind]:
         if not isinstance(record.get(field), str) or not str(record[field]):
             raise ProtocolError("marker_invalid", f"{kind} snapshot lacks required {field}: {path}")

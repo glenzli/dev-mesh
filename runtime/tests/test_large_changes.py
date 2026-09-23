@@ -8,6 +8,7 @@ from dev_mesh_coord.constants import MAX_EVENT_BYTES
 from dev_mesh_coord.control_plane import initialize, resolve
 from dev_mesh_coord.lifecycle import create_claim, join_run
 from dev_mesh_coord.workspace_projection import declared_projection
+from dev_mesh_observer.source_validation import MAX_SNAPSHOT_BYTES
 from helpers import GitWorkspaceTest, git
 
 
@@ -54,6 +55,13 @@ class LargeChangesTest(GitWorkspaceTest):
                 self.assertLessEqual(len(event["actual_path_sample"]), 16)
                 self.assertNotIn("actual_paths", event)
         self.assertTrue(any(event["actual_path_count"] == len(paths) for event in projected_events))
+        archive = resolve(self.root).state_root / "direct-commits/archive" / f"{result['direct_commit_id']}.json"
+        self.assertLessEqual(archive.stat().st_size, MAX_SNAPSHOT_BYTES)
+        archived = json.loads(archive.read_text())
+        for field in ("actual_paths", "intended_paths", "staged_paths"):
+            self.assertNotIn(field, archived)
+        self.assertEqual(archived["actual_path_count"], len(paths))
+        self.assertEqual(archived["staged_path_count"], len(paths))
 
     def test_direct_commit_1093_long_paths_without_argv_limit(self) -> None:
         self._claim()

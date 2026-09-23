@@ -20,6 +20,15 @@ from helpers import GitWorkspaceTest, git
 
 
 class CanonicalGitTest(GitWorkspaceTest):
+    def test_index_probe_reports_git_failure_separately_from_staged_changes(self) -> None:
+        with mock.patch.object(
+            git_backend.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess([], 128, "", "fatal: index unreadable"),
+        ):
+            with self.assertRaisesRegex(git_backend.GitCommandError, "index unreadable"):
+                git_backend.index_is_empty(self.root)
+
     def setUp(self) -> None:
         super().setUp()
         initialize(self.root)
@@ -87,6 +96,20 @@ class CanonicalGitTest(GitWorkspaceTest):
             ),
             ["direct-commit-completed", "direct-commit-started"],
         )
+
+    def test_compacted_completed_intent_can_finish_interrupted_archive_move(self) -> None:
+        (self.root / "app.txt").write_text("base\ndirect\n", encoding="utf-8")
+        completed = self._commit()
+        plane = resolve(self.root)
+        direct_commit_id = str(completed["direct_commit_id"])
+        archive = plane.state_root / "direct-commits/archive" / f"{direct_commit_id}.json"
+        active = plane.state_root / "direct-commits/active" / f"{direct_commit_id}.json"
+        archived_bytes = archive.read_bytes()
+        archive.rename(active)
+        result = canonical_git.reconcile(self.root, steward="steward", steward_run_id="run-s")
+        self.assertEqual(len(result["completed"]), 1)
+        self.assertFalse(active.exists())
+        self.assertEqual(archive.read_bytes(), archived_bytes)
 
     def test_direct_commit_stages_only_materialized_claim_paths(self) -> None:
         create_claim(

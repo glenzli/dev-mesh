@@ -107,6 +107,32 @@ def _pending_event_count(
     return pending
 
 
+def build_facility_summary(catalog: Catalog) -> dict[str, int]:
+    """Compute catalog and source counts once per collection cycle."""
+
+    report = catalog.report()
+    workspaces = list(report["workspaces"])
+    registered = int(report["workspace_count"])
+    available = sum(
+        not item.get("last_error") and not item.get("not_observed_since")
+        for item in workspaces
+    )
+    return {
+        "registered": registered,
+        "available": available,
+        "unavailable": max(0, registered - available),
+        "integrity_issues": int(report["integrity"]["historical_total"]),
+        "mirrored_events": int(report["event_count"]),
+        "active_contentions": int(report["active"].get("contention", 0)),
+        "stalled_contentions": sum(
+            int(count)
+            for code, count in report["diagnostic_summary"]["counts"].items()
+            if code in {"contention.live-stalled", "contention.orphaned"}
+        ),
+        "pending_events": _pending_event_count(catalog.connection, workspaces),
+    }
+
+
 def build_facility_snapshot(
     *,
     database: Path,
@@ -121,25 +147,19 @@ def build_facility_snapshot(
     if sequence < 1:
         raise ValueError("facility snapshot sequence must be positive")
     now = (captured_at or datetime.now(UTC)).astimezone(UTC)
-    with Catalog(database) as catalog:
-        report = catalog.report()
-        workspaces = list(report["workspaces"])
-        pending_events = _pending_event_count(catalog.connection, workspaces)
+    summary = collector.get("facility_summary")
+    if not isinstance(summary, Mapping):
+        with Catalog(database) as catalog:
+            summary = build_facility_summary(catalog)
 
-    registered = int(report["workspace_count"])
-    available = sum(
-        not item.get("last_error") and not item.get("not_observed_since")
-        for item in workspaces
-    )
-    unavailable = max(0, registered - available)
-    integrity_issues = int(report["integrity"]["historical_total"])
-    mirrored_events = int(report["event_count"])
-    active_contentions = int(report["active"].get("contention", 0))
-    stalled_contentions = sum(
-        int(count)
-        for code, count in report["diagnostic_summary"]["counts"].items()
-        if code in {"contention.live-stalled", "contention.orphaned"}
-    )
+    registered = int(summary["registered"])
+    available = int(summary["available"])
+    unavailable = int(summary["unavailable"])
+    integrity_issues = int(summary["integrity_issues"])
+    mirrored_events = int(summary["mirrored_events"])
+    active_contentions = int(summary["active_contentions"])
+    stalled_contentions = int(summary["stalled_contentions"])
+    pending_events = int(summary["pending_events"])
 
     collector_enabled = bool(collector.get("enabled", True))
     collector_running = bool(collector.get("collecting"))

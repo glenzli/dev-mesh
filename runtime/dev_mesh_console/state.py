@@ -9,6 +9,7 @@ from pathlib import Path
 from dev_mesh_coord.storage import now
 from dev_mesh_observer.catalog import Catalog
 from dev_mesh_observer.dashboard import build_dashboard
+from dev_mesh_observer.facility_status import build_facility_summary
 
 from .recovery import ReviewedRecovery
 from .registry import RootRegistry
@@ -44,6 +45,7 @@ class ConsoleState:
         self._last_error: str | None = None
         self._last_attempt_at: str | None = None
         self._last_success_at: str | None = None
+        self._facility_summary: dict[str, int] | None = None
 
     def collect(self) -> dict[str, object]:
         if not self._collect_lock.acquire(blocking=False):
@@ -53,18 +55,20 @@ class ConsoleState:
                 self._collecting = True
                 self._last_attempt_at = now()
             roots = self.registry.roots()
-            if not roots:
-                result: dict[str, object] = {
-                    "workspace_count": 0,
-                    "inserted_events": 0,
-                    "workspaces": [],
-                    "discovery_issues": [],
-                }
-            else:
-                with Catalog(self.database) as catalog:
+            with Catalog(self.database) as catalog:
+                if roots:
                     result = catalog.collect_roots(roots, max_depth=self.max_depth)
+                else:
+                    result = {
+                        "workspace_count": 0,
+                        "inserted_events": 0,
+                        "workspaces": [],
+                        "discovery_issues": [],
+                    }
+                facility_summary = build_facility_summary(catalog)
             with self._status_lock:
                 self._last_result = result
+                self._facility_summary = facility_summary
                 self._last_error = None
                 self._last_success_at = now()
                 self._cycles += 1
@@ -92,6 +96,10 @@ class ConsoleState:
                 "collect_interval": self.collect_interval,
                 "max_depth": self.max_depth,
             }
+
+    def facility_status(self) -> dict[str, object]:
+        with self._status_lock:
+            return {**self.status(), "facility_summary": self._facility_summary}
 
     def add_root(self, path: str) -> dict[str, object]:
         roots = self.registry.add(path)

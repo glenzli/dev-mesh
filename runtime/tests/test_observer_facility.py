@@ -8,6 +8,7 @@ import tempfile
 import time
 from datetime import UTC, datetime
 from pathlib import Path
+from unittest import mock
 
 from dev_mesh_console.registry import RootRegistry
 from dev_mesh_console.state import ConsoleState
@@ -129,6 +130,28 @@ class ObserverFacilityStatusTest(GitWorkspaceTest):
         self.assertIn("collection_failed", degraded["status"]["reason_codes"])
         self.assertIn("integrity_issue", degraded["status"]["reason_codes"])
         self.assertNotIn(str(self.root), json.dumps(degraded))
+
+    def test_cached_facility_snapshot_does_not_reopen_catalog(self) -> None:
+        identity = {
+            "kind": SERVICE_KIND,
+            "instance_id": SERVICE_INSTANCE_ID,
+            "generation": "gen_0123456789abcdef0123456789abcdef",
+        }
+        with mock.patch(
+            "dev_mesh_observer.facility_status.Catalog",
+            side_effect=AssertionError("request must use collected summary"),
+        ):
+            snapshot = build_facility_snapshot(
+                database=self.database,
+                collector=self.state.facility_status(),
+                console_url="http://127.0.0.1:8765/",
+                service=identity,
+                sequence=7,
+            )
+        self.assertEqual(snapshot["status"], {"state": "healthy", "reason_codes": []})
+        metrics = {item["id"]: item["value"] for item in snapshot["metrics"]}
+        self.assertEqual(metrics["dev_mesh.workspaces.registered"], 1)
+        self.assertEqual(metrics["dev_mesh.workspaces.available"], 1)
 
     def test_publishes_registration_and_serves_strict_snapshot_frames(self) -> None:
         self.service = ObserverFacilityService(self._snapshot, runtime_root=self.runtime_root)
