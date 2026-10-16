@@ -77,8 +77,8 @@ python3 <skill>/scripts/coord.py --root ROOT claim-baseline-accept \
   is not resolved just by reducing file paths.
 - `wait_for_resume_condition`: preserve the Claim and follow its recorded condition.
 - `activate_after_overlap_release_or_release_if_work_delegated`: a completed wait decision still
-  retains a pending Claim. Activate if the work remains yours; release it when another task has
-  completed the requested change. Follow the contention reference for the exact commands.
+  retains a pending Claim. Activate if work remains yours; otherwise use the normal `claim-finish`
+  below. `claim-release` remains available for explicit cancellation.
 - `preserve_state_and_inspect_verbose_recovery_facts`: stop mutation and load
   [recovery-and-cutover.md](references/recovery-and-cutover.md).
 
@@ -93,14 +93,14 @@ python3 <skill>/scripts/coord.py --root ROOT leave \
   --owner OWNER --run-id RUN --outcome completed --summary "completed result"
 ```
 
-`claim-finish` records a Work Result only for a contribution, then releases the Claim. Clean paths or
-bytes equal to the accepted baseline release without a zero-change result. Work Results are
-attribution and validation evidence, not rollback checkpoints or private branches. A later writer
-must review and accept inherited dirty work. `claim-complete` remains the low-level recovery primitive.
+`claim-finish` records a Work Result only for a contribution, then releases the Claim. Unchanged work
+and unneeded pending Claims with a completed wait decision release without a result. It never
+attributes another writer's work to you. Work Results are evidence, not rollback checkpoints.
+A later writer must review and accept inherited dirty work.
 
-For shared integration, make required entry files, resources, and translations ready before enabling
-them in a shared catalog or build manifest. Reuse another task's validation only for unchanged inputs
-and an identified artifact; transient failures against unfinished peer work are not final validation.
+Prepare required files, resources, and translations before enabling a shared catalog or build entry.
+Dirty baselines include bounded `validation_context`; matches cover declared paths only. Reuse evidence
+only for unchanged dependencies/environment and an identified artifact; unfinished peer work is not final validation.
 
 If an immediate commit is already authorized, use
 [direct-publication.md](references/direct-publication.md) before finishing the active Claim. Building

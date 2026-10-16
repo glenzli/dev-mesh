@@ -62,7 +62,17 @@ def _current_record(path: Path) -> dict[str, object]:
         "activated_at": current.get("activated_at"),
     }
     if current != expected or not isinstance(current.get("activated_at"), str):
-        raise ProtocolError("unsupported_protocol", "unsupported current marker")
+        raise ProtocolError(
+            "unsupported_protocol",
+            "unsupported current marker",
+            details={
+                "producer_protocol": PROTOCOL,
+                "supported_writable_versions": [PROTOCOL_VERSION],
+                "workspace_protocol": str(current.get("protocol", ""))[:128],
+                "workspace_version": str(current.get("version", ""))[:128],
+                "workspace_state": str(current.get("state", ""))[:128],
+            },
+        )
     return current
 
 

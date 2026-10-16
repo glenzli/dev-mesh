@@ -194,6 +194,60 @@ class CliTest(GitWorkspaceTest):
         self.assertEqual(finished["completion_kind"], "released-unchanged")
         self.assertFalse(finished["work_result_created"])
 
+    def test_existing_finish_leave_path_also_finishes_an_unneeded_wait(self) -> None:
+        root = str(self.root)
+        for owner, run_id, scope in (("writer", "writer-run", "writer"), ("waiter", "waiter-run", "waiter")):
+            self._run("dev_mesh_coord", "--root", root, "join", "--owner", owner,
+                      "--run-id", run_id, "--task", "shared edit")
+            claim = json.loads(self._run(
+                "dev_mesh_coord", "--root", root, "claim", "--scope", scope,
+                "--owner", owner, "--run-id", run_id, "--task", "edit app", "--path", "app.txt",
+            ).stdout)
+        self._run(
+            "dev_mesh_coord", "--root", root, "contention-wait", "--scope", "waiter",
+            "--owner", "waiter", "--run-id", "waiter-run",
+            "--contention-id", claim["contention_id"], "--reason", "writer will handle this",
+        )
+        finish = (
+            "dev_mesh_coord", "--root", root, "claim-finish", "--scope", "waiter",
+            "--owner", "waiter", "--run-id", "waiter-run", "--result-id", "finished-wait",
+            "--summary", "pending scope no longer needed", "--validation-evidence", "reviewed scope",
+        )
+        finished = json.loads(self._run(*finish).stdout)
+        self.assertEqual(finished["completion_kind"], "released-pending")
+        self.assertFalse(finished["work_result_created"])
+        self.assertEqual(finished["next_action"], "leave_when_no_owned_authority_remains")
+        self.assertEqual(json.loads(self._run(*finish).stdout), finished)
+        closed = json.loads(self._run(
+            "dev_mesh_coord", "--root", root, "leave", "--owner", "waiter",
+            "--run-id", "waiter-run", "--outcome", "completed", "--summary", "done",
+        ).stdout)
+        self.assertEqual(closed["status"], "closed")
+        state = self.root / ".dev-mesh/coord/20260823.1"
+        self.assertTrue((state / "claims/writer.json").is_file())
+        self.assertFalse((state / "work-results/finished-wait.json").exists())
+        self.assertEqual((self.root / "app.txt").read_text(), "base\n")
+
+    def test_version_mismatch_explains_the_entrypoint_without_mutating_state(self) -> None:
+        root = str(self.root)
+        self._run("dev_mesh_coord", "--root", root, "init")
+        marker = self.root / ".dev-mesh/coord/current.json"
+        current = json.loads(marker.read_text())
+        current.update(version="20260814.1", state="20260814.1")
+        marker.write_text(json.dumps(current))
+        before = marker.read_bytes()
+        output = self._run(
+            "dev_mesh_coord", "--root", root, "join", "--owner", "new-agent",
+            "--run-id", "new-run", "--task", "must preserve old authority", expected=1,
+        )
+        error = json.loads(output.stderr)["error"]
+        self.assertEqual(error["code"], "unsupported_protocol")
+        self.assertEqual(error["details"]["workspace_version"], "20260814.1")
+        self.assertEqual(error["details"]["supported_writable_versions"], ["20260823.1"])
+        self.assertIn("matching_the_workspace_version", error["next_action"])
+        self.assertEqual(marker.read_bytes(), before)
+        self.assertFalse((marker.parent / "20260823.1/runs/new-run.json").exists())
+
     def test_json_cli_and_observer_vertical_slice(self) -> None:
         root = str(self.root)
         initialized = self._run("dev_mesh_coord", "--root", root, "init")

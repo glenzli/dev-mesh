@@ -29,6 +29,8 @@ from .workspace_projection import (
 
 
 MAX_RELATED_RESULTS = 16
+MAX_VALIDATION_CONTEXT_RESULTS = 3
+MAX_VALIDATION_EXCERPT_CHARS = 240
 
 
 def _claim_path(plane: ControlPlane, scope: str) -> Path:
@@ -83,6 +85,40 @@ def _projection_mode(record: dict[str, object]) -> str:
     return str(value)
 
 
+def _validation_context(
+    plane: ControlPlane,
+    paths: list[str],
+    projection: dict[str, object],
+    result_ids: list[str],
+) -> dict[str, object]:
+    """Reuse recorded evidence without treating it as a fresh test execution."""
+
+    results: list[dict[str, object]] = []
+    for result_id in result_ids[:MAX_VALIDATION_CONTEXT_RESULTS]:
+        record = read_json(_result_path(plane, result_id), base=plane.state_root)
+        matches = (
+            record.get("projection_mode", "git-tree") == projection["projection_mode"]
+            and record.get("paths") == paths
+            and record.get("declared_content_sha256") == projection["declared_content_sha256"]
+        )
+        item: dict[str, object] = {
+            "result_id": result_id,
+            "declared_inputs_match": matches,
+        }
+        evidence = record.get("validation_evidence")
+        if matches and isinstance(evidence, str):
+            item["validation_evidence"] = evidence[:MAX_VALIDATION_EXCERPT_CHARS]
+            item["validation_evidence_truncated"] = len(evidence) > MAX_VALIDATION_EXCERPT_CHARS
+        results.append(item)
+    return {
+        "input_scope": "declared_paths_at_baseline",
+        "evidence_kind": "owner_reported",
+        "reuse_requires": "unchanged_dependencies_and_environment",
+        "results": results,
+        "truncated": len(result_ids) > MAX_VALIDATION_CONTEXT_RESULTS,
+    }
+
+
 def _baseline(
     projection: dict[str, object],
     *,
@@ -90,6 +126,7 @@ def _baseline(
     branch: str,
     dirty: list[str],
     related_result_ids: list[str],
+    validation_context: dict[str, object] | None = None,
 ) -> dict[str, object]:
     baseline = {
         "projection_mode": projection["projection_mode"],
@@ -102,6 +139,8 @@ def _baseline(
         "actual_path_sample": projection["actual_path_sample"],
         "related_result_ids": related_result_ids,
     }
+    if validation_context is not None:
+        baseline["validation_context"] = validation_context
     for field in (
         "workspace_bytes_sha256",
         "workspace_file_count",
@@ -140,12 +179,17 @@ def required_baseline(
             return None
     else:
         raise ValueError(f"unsupported Claim projection mode: {projection_mode}")
+    related_result_ids = _related_results(plane, paths)
     return _baseline(
         projection,
         revision=revision,
         branch=branch,
         dirty=dirty,
-        related_result_ids=_related_results(plane, paths),
+        related_result_ids=related_result_ids,
+        validation_context=(
+            _validation_context(plane, paths, projection, related_result_ids)
+            if related_result_ids else None
+        ),
     )
 
 
@@ -423,6 +467,34 @@ def validate_completion_intent(
     return result, terminal_event
 
 
+def _finish_without_result(
+    root: Path,
+    plane: ControlPlane,
+    claim_path: Path,
+    claim: dict[str, object],
+    *,
+    result_id: str,
+    summary: str,
+    validation_evidence: str,
+    completion_kind: str,
+) -> dict[str, object]:
+    from .lifecycle import _finish_claim_release
+
+    if _result_path(plane, result_id).exists():
+        raise ValueError("finish id already names a Work Result")
+    claim.update(
+        {
+            "finish_id": result_id,
+            "finish_validation_evidence": validation_evidence,
+            "finish_completion_kind": completion_kind,
+        }
+    )
+    released = _finish_claim_release(
+        root, plane, path=claim_path, record=claim, summary=summary,
+    )
+    return {**released, "completion_kind": completion_kind, "work_result_created": False}
+
+
 def complete_claim(
     root: Path,
     *,
@@ -466,11 +538,11 @@ def complete_claim(
                     or released.get("finish_validation_evidence") != validation_evidence
                     or released.get("status") != "released"
                 ):
-                    raise ValueError("unchanged Claim finish retry differs from its archived facts")
+                    raise ValueError("Claim finish retry differs from its archived facts")
                 return {
                     **released,
                     "archive": str(archive_path),
-                    "completion_kind": "released-unchanged",
+                    "completion_kind": released.get("finish_completion_kind", "released-unchanged"),
                     "work_result_created": False,
                 }
             result = read_json(result_path, base=plane.state_root)
@@ -495,6 +567,18 @@ def complete_claim(
             if result.get("result_id") != result_id:
                 raise ValueError("Claim completion is already bound to another result id")
             return _finish_completion(plane, claim_path, claim, result, terminal_event)
+        if release_if_unchanged and claim.get("status") == "pending-arbitration":
+            from .lifecycle import _pending_decision
+
+            if not _pending_decision(plane, claim):
+                raise ValueError("pending Claim finish requires its exact completed wait decision")
+            if git.branch(root) != claim.get("canonical_branch"):
+                raise ValueError("canonical branch changed while the Claim was pending")
+            return _finish_without_result(
+                root, plane, claim_path, claim,
+                result_id=result_id, summary=summary, validation_evidence=validation_evidence,
+                completion_kind="released-pending",
+            )
         if claim.get("status") != "active":
             raise ValueError("only an active writable Claim can complete")
         paths = [item for item in claim.get("paths", []) if isinstance(item, str)]
@@ -527,26 +611,11 @@ def complete_claim(
             projection.get("actual_path_count") == 0
             or unchanged_from_accepted_baseline
         ):
-            from .lifecycle import _finish_claim_release
-
-            claim.update(
-                {
-                    "finish_id": result_id,
-                    "finish_validation_evidence": validation_evidence,
-                }
+            return _finish_without_result(
+                root, plane, claim_path, claim,
+                result_id=result_id, summary=summary, validation_evidence=validation_evidence,
+                completion_kind="released-unchanged",
             )
-            released = _finish_claim_release(
-                root,
-                plane,
-                path=claim_path,
-                record=claim,
-                summary=summary,
-            )
-            return {
-                **released,
-                "completion_kind": "released-unchanged",
-                "work_result_created": False,
-            }
         completed_at = now()
         terminal_event = build_event(
             "claim-completed",

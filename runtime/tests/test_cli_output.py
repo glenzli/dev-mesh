@@ -246,7 +246,38 @@ class CliOutputTest(GitWorkspaceTest):
         self.assertEqual(action["status"], "pending-arbitration")
         self.assertEqual(action["write_authority"], "none")
         self.assertEqual(action["next_action"], "activate_after_overlap_release_or_release_if_work_delegated")
-        self.assertEqual(action["if_work_delegated_or_unneeded"], "claim-release_by_exact_owner_and_run")
+        self.assertEqual(
+            action["if_work_delegated_or_unneeded"],
+            "claim-finish_or_claim-release_by_exact_owner_and_run",
+        )
+
+    def test_baseline_exposes_bounded_reported_validation_without_changing_the_action(self) -> None:
+        initialize(self.root)
+        join_run(self.root, run_id="run-a", owner="agent-a", task="first edit")
+        create_claim(self.root, scope="first", owner="agent-a", run_id="run-a",
+                     task="edit app", paths=["app.txt"])
+        (self.root / "app.txt").write_text("base\ncompleted edit\n")
+        work_results.complete_claim(
+            self.root, result_id="result-a", scope="first", owner="agent-a", run_id="run-a",
+            summary="done", validation_evidence="focused check passed",
+        )
+        continued = create_claim(
+            self.root, scope="continued", owner="agent-a", run_id="run-a",
+            task="continue", paths=["app.txt"],
+        )
+        compact = project("claim", continued, verbose=False)
+        self.assertEqual(compact["next_action"], "review_and_accept_inherited_baseline")
+        self.assertEqual(compact["write_authority"], "none")
+        context = compact["baseline"]["validation_context"]
+        self.assertEqual(context["evidence_kind"], "owner_reported")
+        self.assertEqual(context["results"]["count"], 1)
+        self.assertEqual(context["results"]["sample"][0]["validation_evidence"], "focused check passed")
+        self.assertTrue(context["results"]["sample"][0]["declared_inputs_match"])
+        self.assertNotIn("related_result_ids", compact["baseline"])
+        without_context = {**continued, "baseline": {
+            key: value for key, value in continued["baseline"].items() if key != "validation_context"
+        }}
+        self.assertNotIn("validation_context", project("claim", without_context, verbose=False)["baseline"])
 
     def test_message_identity_candidates_are_bounded_without_claiming_delivery(self) -> None:
         result = project("record-message", {

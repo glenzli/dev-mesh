@@ -160,6 +160,13 @@ class WorkResultTest(GitWorkspaceTest):
         self.assertEqual(claim["status"], "pending-baseline")
         baseline = claim["baseline"]
         self.assertEqual(baseline["related_result_ids"], ["result-a"])
+        context = baseline["validation_context"]
+        self.assertEqual(context["input_scope"], "declared_paths_at_baseline")
+        self.assertEqual(context["evidence_kind"], "owner_reported")
+        self.assertEqual(context["reuse_requires"], "unchanged_dependencies_and_environment")
+        self.assertEqual(context["results"][0]["result_id"], "result-a")
+        self.assertTrue(context["results"][0]["declared_inputs_match"])
+        self.assertEqual(context["results"][0]["validation_evidence"], "focused checks passed")
         accepted = work_results.accept_baseline(
             self.root,
             scope="continued-edit",
@@ -193,6 +200,9 @@ class WorkResultTest(GitWorkspaceTest):
         self.assertEqual(refreshed["status"], "pending-baseline")
         self.assertTrue(refreshed["baseline_changed"])
         self.assertFalse(refreshed["baseline_accepted"])
+        context = refreshed["baseline"]["validation_context"]
+        self.assertFalse(context["results"][0]["declared_inputs_match"])
+        self.assertNotIn("validation_evidence", context["results"][0])
         new_digest = str(refreshed["baseline"]["baseline_sha256"])
         self.assertNotEqual(new_digest, digest)
         uncertain_retry = work_results.accept_baseline(
@@ -247,6 +257,9 @@ class WorkResultTest(GitWorkspaceTest):
         self.assertTrue(refreshed["baseline_changed"])
         self.assertEqual(refreshed["baseline"]["baseline_sha256"], digest)
         self.assertNotEqual(refreshed["baseline"]["observed_revision"], old_revision)
+        self.assertTrue(
+            refreshed["baseline"]["validation_context"]["results"][0]["declared_inputs_match"]
+        )
 
         accepted = work_results.accept_baseline(
             self.root,
@@ -257,6 +270,41 @@ class WorkResultTest(GitWorkspaceTest):
         )
         self.assertEqual(accepted["status"], "active")
         self.assertTrue(accepted["baseline_accepted"])
+
+    def test_validation_context_does_not_extend_evidence_to_a_wider_scope(self) -> None:
+        (self.root / "app.txt").write_text("completed dirty\n")
+        self._complete()
+        continued = create_claim(
+            self.root, scope="wider-scope", owner="agent-a", run_id="run-a",
+            task="inspect additional inputs", paths=["app.txt", "other.txt"],
+        )
+        context = continued["baseline"]["validation_context"]
+        self.assertFalse(context["results"][0]["declared_inputs_match"])
+        self.assertNotIn("validation_evidence", context["results"][0])
+
+    def test_validation_context_is_bounded_and_does_not_duplicate_full_evidence(self) -> None:
+        (self.root / "app.txt").write_text("completed dirty\n")
+        self._complete()
+        plane = resolve(self.root)
+        record = json.loads((plane.state_root / "work-results/result-a.json").read_text())
+        for index in range(work_results.MAX_VALIDATION_CONTEXT_RESULTS + 2):
+            result_id = f"historical-{index}"
+            (plane.state_root / "work-results" / f"{result_id}.json").write_text(json.dumps({
+                **record, "result_id": result_id,
+                "completed_at": f"2027-01-01T00:00:0{index}Z",
+                "validation_evidence": "x" * 2000,
+            }))
+        continued = create_claim(
+            self.root, scope="continued", owner="agent-a", run_id="run-a",
+            task="continue", paths=["app.txt"],
+        )
+        context = continued["baseline"]["validation_context"]
+        self.assertEqual(len(context["results"]), work_results.MAX_VALIDATION_CONTEXT_RESULTS)
+        self.assertTrue(context["truncated"])
+        for item in context["results"]:
+            self.assertTrue(item["declared_inputs_match"])
+            self.assertEqual(len(item["validation_evidence"]), work_results.MAX_VALIDATION_EXCERPT_CHARS)
+            self.assertTrue(item["validation_evidence_truncated"])
 
     def test_baseline_activation_event_gap_retries_once(self) -> None:
         (self.root / "app.txt").write_text("base\ninherited\n", encoding="utf-8")
@@ -550,6 +598,9 @@ class WorkspaceBytesWorkResultTest(GitWorkspaceTest):
         self.assertEqual(
             continued["baseline"]["related_result_ids"], ["local-data-result"]
         )
+        context = continued["baseline"]["validation_context"]
+        self.assertTrue(context["results"][0]["declared_inputs_match"])
+        self.assertEqual(context["results"][0]["validation_evidence"], "JSON decoded successfully")
         accepted_next = work_results.accept_baseline(
             self.root,
             scope="continued-local-data",

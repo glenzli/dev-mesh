@@ -105,8 +105,15 @@ class ControlPlaneTest(GitWorkspaceTest):
         value = json.loads(current.read_text())
         value["version"] = "20260812.2"
         current.write_text(json.dumps(value), encoding="utf-8")
-        with self.assertRaisesRegex(ProtocolError, "unsupported current marker"):
+        before = current.read_bytes()
+        with self.assertRaisesRegex(ProtocolError, "unsupported current marker") as raised:
             resolve(self.root)
+        error = json.loads(error_json(raised.exception))["error"]
+        self.assertEqual(error["code"], "unsupported_protocol")
+        self.assertEqual(error["details"]["workspace_version"], "20260812.2")
+        self.assertEqual(error["details"]["supported_writable_versions"], [PROTOCOL_VERSION])
+        self.assertIn("matching_the_workspace_version", error["next_action"])
+        self.assertEqual(current.read_bytes(), before)
 
     def test_environment_failures_keep_stable_non_contention_classification(self) -> None:
         read_only = json.loads(error_json(OSError(errno.EROFS, "read-only filesystem")))
@@ -115,6 +122,12 @@ class ControlPlaneTest(GitWorkspaceTest):
         self.assertEqual(read_only["error"]["code"], "read_only_filesystem")
         self.assertEqual(permission["error"]["code"], "permission_denied")
         self.assertEqual(timeout["error"]["code"], "lock_busy")
+        self.assertEqual(
+            permission["error"]["next_action"],
+            "restore_environment_access_then_retry_the_same_operation",
+        )
+        self.assertEqual(read_only["error"]["next_action"], permission["error"]["next_action"])
+        self.assertNotIn("contention", timeout["error"]["next_action"])
 
     def test_large_nested_overlap_is_compressed_and_events_use_exact_byte_limit(self) -> None:
         initialize(self.root)

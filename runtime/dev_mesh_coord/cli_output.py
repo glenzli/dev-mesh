@@ -91,6 +91,7 @@ _FIELDS = (
     "completion_kind",
     "work_result_created",
     "physical_overlap_count",
+    "declared_inputs_match",
     "next_action",
 )
 
@@ -119,6 +120,13 @@ _COLLECTION_KEYS = {
 
 def _record(value: Mapping[str, object]) -> dict[str, object]:
     projected = {field: value[field] for field in _FIELDS if field in value}
+    if value.get("declared_inputs_match") is True:
+        evidence = value.get("validation_evidence")
+        if isinstance(evidence, str):
+            projected["validation_evidence"] = evidence[:240]
+            projected["validation_evidence_truncated"] = (
+                len(evidence) > 240 or value.get("validation_evidence_truncated") is True
+            )
     candidates = value.get("target_run_candidates")
     if isinstance(candidates, list):
         projected["target_run_candidates"] = _collection(candidates)
@@ -171,6 +179,15 @@ def _record(value: Mapping[str, object]) -> dict[str, object]:
             )
             if key in baseline
         }
+        context = baseline.get("validation_context")
+        if isinstance(context, Mapping) and isinstance(context.get("results"), list):
+            projected["baseline"]["validation_context"] = {
+                "input_scope": context.get("input_scope"),
+                "evidence_kind": context.get("evidence_kind"),
+                "reuse_requires": context.get("reuse_requires"),
+                "results": _collection(context["results"]),
+                "truncated": context.get("truncated", False),
+            }
     status = value.get("status")
     if status in {"pending-arbitration", "pending-baseline"}:
         projected["write_authority"] = "none"
@@ -182,7 +199,7 @@ def _record(value: Mapping[str, object]) -> dict[str, object]:
         if value.get("baseline_changed") is True:
             projected["retry_required"] = True
     if status == "pending-arbitration" and value.get("contention_decision") == "wait":
-        projected["if_work_delegated_or_unneeded"] = "claim-release_by_exact_owner_and_run"
+        projected["if_work_delegated_or_unneeded"] = "claim-finish_or_claim-release_by_exact_owner_and_run"
     return projected
 
 
@@ -422,7 +439,7 @@ def project(
         if command == "contention-wait":
             result["write_authority"] = "none"
             result["decision_releases_claim"] = False
-            result["if_work_delegated_or_unneeded"] = "claim-release_by_exact_owner_and_run"
+            result["if_work_delegated_or_unneeded"] = "claim-finish_or_claim-release_by_exact_owner_and_run"
         if command in {"send", "record-message"}:
             result["next_action"] = _next_action(command, selected)
             result["dev_mesh_effect"] = "record_persisted"
@@ -433,7 +450,7 @@ def project(
     if command == "contention-wait":
         result["write_authority"] = "none"
         result["decision_releases_claim"] = False
-        result["if_work_delegated_or_unneeded"] = "claim-release_by_exact_owner_and_run"
+        result["if_work_delegated_or_unneeded"] = "claim-finish_or_claim-release_by_exact_owner_and_run"
     for key, item in selected.items():
         if key in _COLLECTION_KEYS and isinstance(item, list):
             result[key] = _collection(item)

@@ -31,11 +31,12 @@ STABLE_ERROR_CODES = frozenset(
 
 
 class ProtocolError(ValueError):
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(self, code: str, message: str, *, details: dict[str, object] | None = None) -> None:
         if code not in STABLE_ERROR_CODES:
             raise ValueError(f"unregistered stable protocol error code: {code}")
         super().__init__(message)
         self.code = code
+        self.details = details
 
 
 def error_json(error: BaseException) -> str:
@@ -54,13 +55,23 @@ def error_json(error: BaseException) -> str:
         code = "operation_failed"
     if code not in STABLE_ERROR_CODES:
         code = "operation_failed"
+    record: dict[str, object] = {"code": code, "message": str(error)}
+    next_actions = {
+        "unsupported_protocol": "use_a_producer_matching_the_workspace_version_or_review_explicit_cutover",
+        "permission_denied": "restore_environment_access_then_retry_the_same_operation",
+        "read_only_filesystem": "restore_environment_access_then_retry_the_same_operation",
+        "lock_busy": "retry_the_same_operation_after_the_current_operation_finishes",
+        "git_fact_unavailable": "restore_git_inspection_before_retrying",
+        "split_brain": "preserve_state_and_inspect_exact_protocol_markers",
+        "marker_invalid": "preserve_state_and_inspect_exact_protocol_markers",
+    }
+    if code in next_actions:
+        record["next_action"] = next_actions[code]
+    details = getattr(error, "details", None)
+    if isinstance(details, dict):
+        record["details"] = details
     return json.dumps(
-        {
-            "error": {
-                "code": code,
-                "message": str(error),
-            }
-        },
+        {"error": record},
         ensure_ascii=False,
         sort_keys=True,
     )

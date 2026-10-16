@@ -251,6 +251,71 @@ class CollaborationTest(GitWorkspaceTest):
         self.assertEqual(following["conflicts"], [])
         self.assertEqual(pending["contention_id"], opened["contention_id"])
 
+    def test_routine_finish_closes_delegated_wait_without_attributing_peer_work(self) -> None:
+        pending, opened = self._overlap()
+        contention.select_wait(
+            self.root, contention_id=str(opened["contention_id"]), scope="parallel",
+            owner="agent-b", run_id="run-b", reason="primary will incorporate the change",
+        )
+        (self.root / "app.txt").write_text("base\nincluding delegated change\n")
+        work_results.complete_claim(
+            self.root, result_id="delegated-change", scope="primary", owner="agent-a", run_id="run-a",
+            summary="included delegated change", validation_evidence="bounded regression passed",
+        )
+        plane = resolve(self.root)
+        finish = dict(
+            result_id="finish-delegated", scope="parallel", owner="agent-b", run_id="run-b",
+            summary="reviewed the change incorporated by primary",
+            validation_evidence="reviewed delegated-change", release_if_unchanged=True,
+        )
+        released = work_results.complete_claim(self.root, **finish)
+        self.assertEqual(released["completion_kind"], "released-pending")
+        self.assertFalse(released["work_result_created"])
+        self.assertFalse((plane.state_root / "claims/parallel.json").exists())
+        self.assertFalse((plane.state_root / "work-results/finish-delegated.json").exists())
+        self.assertEqual((self.root / "app.txt").read_text(), "base\nincluding delegated change\n")
+        leave_run(self.root, owner="agent-b", run_id="run-b", outcome="completed", summary="done")
+        before = sorted((plane.state_root / "events").glob("*.json"))
+        retried = work_results.complete_claim(self.root, **finish)
+        self.assertEqual(retried["archive"], released["archive"])
+        self.assertEqual(retried["completion_kind"], "released-pending")
+        self.assertEqual(sorted((plane.state_root / "events").glob("*.json")), before)
+        with self.assertRaisesRegex(ValueError, "retry differs"):
+            work_results.complete_claim(self.root, **{**finish, "summary": "changed retry"})
+        following = create_claim(
+            self.root, scope="follow-up", owner="agent-a", run_id="run-a",
+            task="small follow-up", paths=["app.txt"],
+        )
+        self.assertEqual(following["status"], "pending-baseline")
+        self.assertEqual(following["conflicts"], [])
+        self.assertEqual(pending["contention_id"], opened["contention_id"])
+
+    def test_pending_finish_preserves_writer_and_requires_exact_owner_run_and_wait(self) -> None:
+        _pending, opened = self._overlap()
+        plane = resolve(self.root)
+        finish = dict(
+            result_id="finish-pending", scope="parallel", owner="agent-b", run_id="run-b",
+            summary="pending work no longer needed", validation_evidence="reviewed scope",
+            release_if_unchanged=True,
+        )
+        before = (plane.state_root / "claims/parallel.json").read_bytes()
+        with self.assertRaisesRegex(ValueError, "completed wait decision"):
+            work_results.complete_claim(self.root, **finish)
+        self.assertEqual((plane.state_root / "claims/parallel.json").read_bytes(), before)
+        contention.select_wait(
+            self.root, contention_id=str(opened["contention_id"]), scope="parallel",
+            owner="agent-b", run_id="run-b", reason="primary remains the writer",
+        )
+        join_run(self.root, run_id="sibling-run", owner="agent-b", task="different task")
+        for identity in ({"owner": "agent-a", "run_id": "run-a"}, {"run_id": "sibling-run"}):
+            with self.assertRaisesRegex(ValueError, "owner or run does not match"):
+                work_results.complete_claim(self.root, **{**finish, **identity})
+        writer = (plane.state_root / "claims/primary.json").read_bytes()
+        (self.root / "app.txt").write_text("writer still editing\n")
+        work_results.complete_claim(self.root, **finish)
+        self.assertEqual((plane.state_root / "claims/primary.json").read_bytes(), writer)
+        self.assertEqual((self.root / "app.txt").read_text(), "writer still editing\n")
+
     def test_exact_message_recipient_rejects_alias_without_persisting_a_notice(self) -> None:
         plane = resolve(self.root)
         arguments = dict(source_owner="agent-a", source_run_id="run-a", target_run_id="run-b",
