@@ -79,6 +79,28 @@ All cooperative canonical Git mutations pass through the managed direct-commit o
 publication boundary. Both share a workspace-wide inherited-FD fence, while each transaction keeps
 its own exact materialization and cleanup facts.
 
+## Platform primitives
+
+`runtime/dev_mesh_coord/file_locks.py` owns lock acquisition and release. POSIX uses `flock`;
+Windows opens a regular file with no sharing, retaining exclusion until the last inherited handle
+closes. Byte-range Windows locks are not used because children do not inherit their ownership.
+`process_runner.py` passes POSIX descriptors or an explicit Windows handle list, restoring Windows
+handle inheritability immediately after spawning. Only a sharing violation is contention; access
+denial remains an environment failure.
+
+Storage flushes JSON content before publishing it. Exclusive publication uses a hard link on POSIX
+and a non-overwriting atomic rename on Windows. Directory fsync is retained on POSIX; the Windows
+CRT has no directory fsync, so Windows does not claim the same directory-metadata power-loss
+durability. Win32 device/stream aliases and case aliases are rejected for state records.
+
+The Windows Git command enables long paths locally, batches read-only path lists below the Windows
+command-line limit, and streams staging pathspecs through stdin. Projection entries are deduplicated
+and ordered before hashing, preserving the exact projection identity across batches.
+
+Console HTTP and catalog collection run on both platforms. Unix Infra Discovery remains the existing
+macOS/Linux binding; Windows reports it as unsupported and starts without publication. This does not
+invent a new transport binding or weaken Unix ownership/peer checks.
+
 ## Navigation
 
 - Normative behavior: `contracts/dev-mesh-coordination-20260823.1.md`

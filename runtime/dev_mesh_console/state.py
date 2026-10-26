@@ -86,6 +86,7 @@ class ConsoleState:
         with self._status_lock:
             return {
                 "enabled": True,
+                "infra_discovery": self._discovery_repair is not None,
                 "collecting": self._collecting,
                 "cycles": self._cycles,
                 "last_attempt_at": self._last_attempt_at,

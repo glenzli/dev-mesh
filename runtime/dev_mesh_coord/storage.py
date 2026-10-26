@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import errno
 import json
 import os
 import re
@@ -13,11 +12,7 @@ from pathlib import Path
 from typing import Iterator
 
 from .errors import ProtocolError
-
-try:
-    import fcntl
-except ImportError:  # pragma: no cover - the release target is POSIX.
-    fcntl = None  # type: ignore[assignment]
+from . import file_locks
 
 
 SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,95}$")
@@ -51,7 +46,10 @@ def require_text(value: str, label: str, limit: int = 1000) -> str:
 
 
 def ensure_regular_directory(path: Path, label: str) -> None:
-    if path.is_symlink() or not path.is_dir():
+    if (
+        path.is_symlink() or not path.is_dir()
+        or getattr(path.lstat(), "st_file_attributes", 0) & 0x400
+    ):
         raise ProtocolError("marker_invalid", f"{label} must be a regular directory: {path}")
 
 
@@ -59,6 +57,8 @@ def ensure_safe_target(base: Path, path: Path, *, may_not_exist: bool = True) ->
     """Reject path escape and symlinks from the owned state root to the target."""
 
     ensure_regular_directory(base, "state root")
+    for part in path.relative_to(base).parts:
+        file_locks.validate_filename(Path(part))
     base_real = base.resolve(strict=True)
     parent_real = path.parent.resolve(strict=True)
     try:
@@ -68,11 +68,12 @@ def ensure_safe_target(base: Path, path: Path, *, may_not_exist: bool = True) ->
     current = base
     for part in path.parent.relative_to(base).parts:
         current = current / part
-        if current.is_symlink() or not current.is_dir():
-            raise ProtocolError("marker_invalid", f"unsafe state parent: {current}")
+        ensure_regular_directory(current, "state parent")
     if path.exists() or path.is_symlink():
         if path.is_symlink() or not path.is_file():
             raise ProtocolError("marker_invalid", f"state record is not a regular file: {path}")
+        if os.name == "nt" and path.name != path.resolve(strict=True).name:
+            raise ProtocolError("marker_invalid", f"state path uses a different filename case: {path}")
     elif not may_not_exist:
         raise FileNotFoundError(path)
 
@@ -98,6 +99,10 @@ def json_bytes(value: dict[str, object]) -> bytes:
 
 
 def _fsync_directory(path: Path) -> None:
+    # Windows cannot open/fsync directories through the CRT. File content is
+    # flushed before atomic publication; directory fsync remains POSIX-only.
+    if os.name == "nt":
+        return
     descriptor = os.open(path, os.O_RDONLY)
     try:
         os.fsync(descriptor)
@@ -133,7 +138,12 @@ def write_json_exclusive(path: Path, value: dict[str, object], *, base: Path) ->
             stream.flush()
             os.fsync(stream.fileno())
         try:
-            os.link(temporary, path)
+            # Windows rename is atomic and refuses an existing destination.
+            # POSIX rename overwrites, so retain link's exclusive publication.
+            if os.name == "nt":
+                os.rename(temporary, path)
+            else:
+                os.link(temporary, path)
         except FileExistsError as error:
             raise FileExistsError(f"coordination record already exists: {path}") from error
         _fsync_directory(path.parent)
@@ -163,24 +173,17 @@ def advisory_lock(path: Path, *, timeout_seconds: float = 5.0) -> Iterator[None]
         raise ProtocolError("marker_invalid", f"lock parent is unsafe: {path.parent}")
     if path.is_symlink() or (path.exists() and not path.is_file()):
         raise ProtocolError("marker_invalid", f"lock path is unsafe: {path}")
-    descriptor = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
-    acquired = False
+    descriptor: int | None = None
     deadline = time.monotonic() + timeout_seconds
     try:
-        if fcntl is None:  # pragma: no cover
-            raise RuntimeError("Dev Mesh coordination requires POSIX advisory locks")
-        while not acquired:
+        while descriptor is None:
             try:
-                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                acquired = True
-            except OSError as error:
-                if error.errno not in {errno.EACCES, errno.EAGAIN}:
-                    raise
+                descriptor = file_locks.acquire(path)
+            except BlockingIOError as error:
                 if time.monotonic() >= deadline:
                     raise TimeoutError(f"coordination lock is busy: {path}") from error
                 time.sleep(0.05)
         yield
     finally:
-        if acquired and fcntl is not None:
-            fcntl.flock(descriptor, fcntl.LOCK_UN)
-        os.close(descriptor)
+        if descriptor is not None:
+            file_locks.release(descriptor)

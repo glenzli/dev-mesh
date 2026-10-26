@@ -13,12 +13,13 @@ from pathlib import Path
 from .constants import LEGACY_DIRECTORY, PROTOCOL, PROTOCOL_VERSION, TOMBSTONE_NAME
 from .control_plane import initialize, install_tombstone, resolve
 from .errors import ProtocolError
+from .git_backend import command
 from .storage import now, read_json, replace_json
 
 
 def _run_git(root: Path, *arguments: str) -> str:
     completed = subprocess.run(
-        ("git", "-C", str(root), *arguments),
+        command(root, *arguments),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         check=False,

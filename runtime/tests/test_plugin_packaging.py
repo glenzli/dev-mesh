@@ -9,6 +9,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from helpers import git
+
 
 REPOSITORY = Path(__file__).parents[2]
 MODULE_PATH = REPOSITORY / "scripts" / "plugin_dist.py"
@@ -60,6 +62,8 @@ class PluginPackagingTest(unittest.TestCase):
                 "runtime/dev_mesh_coord/cli.py",
                 "runtime/dev_mesh_coord/cli_output.py",
                 "runtime/dev_mesh_coord/cross_project.py",
+                "runtime/dev_mesh_coord/file_locks.py",
+                "runtime/dev_mesh_coord/process_runner.py",
                 "skills/coordinate-shared-workspace/SKILL.md",
                 "skills/coordinate-shared-workspace/references/claim-options.md",
                 "skills/coordinate-shared-workspace/references/communication.md",
@@ -76,6 +80,35 @@ class PluginPackagingTest(unittest.TestCase):
             )
             self.assertEqual(help_result.returncode, 0, help_result.stderr)
             self.assertIn("--source-run-id", help_result.stdout)
+
+            workspace = root / "packaged-workspace"
+            workspace.mkdir()
+            git(workspace, "init", "-b", "main")
+            git(workspace, "config", "user.name", "Dev Mesh Test")
+            git(workspace, "config", "user.email", "dev-mesh@example.invalid")
+            (workspace / "app.txt").write_text("base\n", encoding="utf-8")
+            git(workspace, "add", "app.txt")
+            git(workspace, "commit", "-m", "base")
+
+            def packaged_cli(*arguments: str) -> dict:
+                result = subprocess.run(
+                    [sys.executable, str(launcher), "--root", str(workspace), *arguments],
+                    cwd=root, env=environment, capture_output=True, text=True,
+                    encoding="utf-8", check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                return json.loads(result.stdout)
+
+            identity = ("--owner", "packaged", "--run-id", "packaged-run")
+            packaged_cli("join", *identity, "--task", "packaged lifecycle")
+            packaged_cli("claim", *identity, "--scope", "package-edit", "--task", "edit app", "--path", "app.txt")
+            (workspace / "app.txt").write_text("updated\n", encoding="utf-8")
+            packaged_cli(
+                "claim-finish", *identity, "--scope", "package-edit", "--result-id", "packaged-result",
+                "--summary", "packaged edit", "--validation-evidence", "packaged producer lifecycle",
+            )
+            packaged_cli("leave", *identity, "--outcome", "completed", "--summary", "packaged workflow complete")
+            self.assertTrue((workspace / ".dev-mesh/coord/20260823.1/work-results/packaged-result.json").is_file())
 
             marketplace = root / "marketplace"
             catalog = marketplace / ".agents" / "plugins" / "marketplace.json"

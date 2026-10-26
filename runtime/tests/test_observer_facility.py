@@ -9,6 +9,7 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest import mock
+from unittest import skipUnless
 
 from dev_mesh_console.registry import RootRegistry
 from dev_mesh_console.state import ConsoleState
@@ -29,6 +30,7 @@ from dev_mesh_observer.infra_discovery import (
     DISCOVERY_VERSION,
     ObserverFacilityService,
     UNIX_SOCKET_BINDING,
+    supported_platform,
 )
 
 from helpers import GitWorkspaceTest
@@ -59,7 +61,9 @@ class ObserverFacilityStatusTest(GitWorkspaceTest):
         )
         self.state.collect()
         self.service: ObserverFacilityService | None = None
-        self.runtime_directory = tempfile.TemporaryDirectory(prefix="dm-fac-", dir="/tmp")
+        self.runtime_directory = tempfile.TemporaryDirectory(
+            prefix="dm-fac-", dir="/tmp" if os.name == "posix" else None,
+        )
         self.runtime_root = Path(self.runtime_directory.name) / "infra-protocol"
 
     def tearDown(self) -> None:
@@ -153,6 +157,7 @@ class ObserverFacilityStatusTest(GitWorkspaceTest):
         self.assertEqual(metrics["dev_mesh.workspaces.registered"], 1)
         self.assertEqual(metrics["dev_mesh.workspaces.available"], 1)
 
+    @skipUnless(supported_platform(), "Unix discovery binding requires macOS/Linux")
     def test_publishes_registration_and_serves_strict_snapshot_frames(self) -> None:
         self.service = ObserverFacilityService(self._snapshot, runtime_root=self.runtime_root)
         try:
@@ -196,6 +201,7 @@ class ObserverFacilityStatusTest(GitWorkspaceTest):
         self.assertEqual(invalid["schema"], ERROR_SCHEMA)
         self.assertEqual(invalid["error"], {"code": "invalid_request"})
 
+    @skipUnless(supported_platform(), "Unix discovery binding requires macOS/Linux")
     def test_manual_repair_restores_missing_live_registration(self) -> None:
         self.service = ObserverFacilityService(self._snapshot, runtime_root=self.runtime_root)
         try:
@@ -215,6 +221,7 @@ class ObserverFacilityStatusTest(GitWorkspaceTest):
         self.assertEqual(json.loads(self.service.manifest_path.read_text(encoding="utf-8")), expected)
         self.assertTrue(self.service.socket_path.exists())
 
+    @skipUnless(supported_platform(), "Unix discovery binding requires macOS/Linux")
     def test_low_frequency_maintenance_restores_deleted_registration(self) -> None:
         reports: list[dict[str, object]] = []
         self.service = ObserverFacilityService(
@@ -236,6 +243,7 @@ class ObserverFacilityStatusTest(GitWorkspaceTest):
         self.assertTrue(self.service.manifest_path.is_file())
         self.assertTrue(any(report.get("publication") == "restored" for report in reports))
 
+    @skipUnless(supported_platform(), "Unix discovery binding requires macOS/Linux")
     def test_start_removes_only_old_unreferenced_unbound_dev_mesh_sockets(self) -> None:
         self.service = ObserverFacilityService(
             self._snapshot,
@@ -289,6 +297,7 @@ class ObserverFacilityStatusTest(GitWorkspaceTest):
                 except FileNotFoundError:
                     pass
 
+    @skipUnless(supported_platform(), "Unix discovery binding requires macOS/Linux")
     def test_restart_rotates_generation_and_endpoint_but_keeps_manifest(self) -> None:
         self.service = ObserverFacilityService(self._snapshot, runtime_root=self.runtime_root)
         try:

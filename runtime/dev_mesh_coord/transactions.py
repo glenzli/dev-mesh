@@ -18,6 +18,7 @@ from .contention import get_decision
 from .constants import MAX_TRANSACTION_CHANGED_PATHS
 from .control_plane import ControlPlane, operation
 from .events import emit, materialized
+from .process_runner import run as run_process
 from .storage import (
     advisory_lock,
     now,
@@ -129,14 +130,18 @@ def _run_git(
     *arguments: str,
     check: bool = True,
     pass_fds: tuple[int, ...] = (),
+    input: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    completed = subprocess.run(
-        ("git", "-C", str(root), *arguments),
+    completed = run_process(
+        git.command(root, *arguments),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        encoding="utf-8",
+        errors="surrogateescape",
         check=False,
         pass_fds=pass_fds,
+        input=input,
     )
     if check and completed.returncode != 0:
         raise git.GitCommandError(arguments, completed.returncode, completed.stderr)
@@ -285,7 +290,10 @@ def prepare(
         if state == "conflicted" and observed:
             raise ValueError("finish or abort the Git rebase in the isolated checkout before prepare")
         if state == "active" and observed:
-            _run_git(checkout, "add", "--", *declared)
+            _run_git(
+                checkout, "--literal-pathspecs", "add", "--pathspec-from-file=-", "--pathspec-file-nul",
+                input="".join(path + "\0" for path in declared),
+            )
             _run_git(checkout, "commit", "-m", summary)
         candidate = git.head(checkout)
         base = str(record.get("refresh_target") if state == "conflicted" else record["base_revision"])

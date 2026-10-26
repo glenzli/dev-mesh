@@ -23,6 +23,12 @@ full protocol, event directory, Observer catalog, or other Runs' complete state.
 Use `python3 <skill>/scripts/coord.py` from this plugin. Replace uppercase placeholders with stable,
 bounded identifiers; reuse a Run id only for this Agent task in this workspace.
 
+On Windows use `python` (or `py -3`) with Python 3.11 or newer. Write commands on one line in
+PowerShell; the `\` continuations below are Bash syntax. Windows uses native exclusive file
+handles, including inherited Git-effect fences. Use portable record ids: avoid `:`, Win32 device
+names such as `CON`/`NUL`/`COM1`, and case-only id differences. Semantic resource names may still
+contain `:` because they are JSON values, not filenames.
+
 1. Find the exact Git root, read repository instructions, and inspect dirty state without changing it.
    Read-only inspection alone does not require a Run or Claim; join when recording collaboration or
    preparing to write.

@@ -2,20 +2,13 @@
 
 from __future__ import annotations
 
-import errno
-import os
-import stat
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable, TypeVar
 
 from .control_plane import ControlPlane
 from .storage import require_identifier
-
-try:
-    import fcntl
-except ImportError:  # pragma: no cover - the release target is POSIX.
-    fcntl = None  # type: ignore[assignment]
+from . import file_locks
 
 
 Result = TypeVar("Result")
@@ -39,43 +32,23 @@ def _open_path(path: Path) -> int:
         raise RuntimeError("transaction Git effect lock parent is unsafe")
     if path.is_symlink() or (path.exists() and not path.is_file()):
         raise RuntimeError("transaction Git effect lock path is unsafe")
-    flags = os.O_RDWR | os.O_CREAT
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    descriptor = os.open(path, flags, 0o600)
-    if not stat.S_ISREG(os.fstat(descriptor).st_mode):
-        os.close(descriptor)
-        raise RuntimeError("transaction Git effect lock is not a regular file")
-    return descriptor
+    return file_locks.acquire(path)
 
 
-def _open(plane: ControlPlane, transaction_id: str) -> int:
-    return _open_path(_path(plane, transaction_id))
-
-
-def _try_lock(descriptor: int, message: str) -> None:
+def _acquire(path: Path, message: str) -> int:
     try:
-        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError as error:
-        if error.errno in {errno.EACCES, errno.EAGAIN}:
-            raise GitEffectInFlight(message) from error
-        raise
+        return _open_path(path)
+    except BlockingIOError as error:
+        raise GitEffectInFlight(message) from error
 
 
 @contextmanager
 def _fence(path: Path, message: str):
-    if fcntl is None:  # pragma: no cover
-        raise RuntimeError("Git effect fencing requires POSIX advisory locks")
-    descriptor = _open_path(path)
-    acquired = False
+    descriptor = _acquire(path, message)
     try:
-        _try_lock(descriptor, message)
-        acquired = True
         yield descriptor
     finally:
-        if acquired:
-            fcntl.flock(descriptor, fcntl.LOCK_UN)
-        os.close(descriptor)
+        file_locks.release(descriptor)
 
 
 def transaction_fence(plane: ControlPlane, transaction_id: str):
@@ -96,23 +69,16 @@ def canonical_fence(plane: ControlPlane):
 def is_in_flight(plane: ControlPlane, transaction_id: str) -> bool:
     """Probe without taking authority; a surviving child keeps the FD lock."""
 
-    if fcntl is None:  # pragma: no cover
-        raise RuntimeError("Git effect fencing requires POSIX advisory locks")
-    descriptor = _open(plane, transaction_id)
-    acquired = False
+    return _is_locked(_path(plane, transaction_id))
+
+
+def _is_locked(path: Path) -> bool:
     try:
-        try:
-            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            acquired = True
-            return False
-        except OSError as error:
-            if error.errno in {errno.EACCES, errno.EAGAIN}:
-                return True
-            raise
-    finally:
-        if acquired:
-            fcntl.flock(descriptor, fcntl.LOCK_UN)
-        os.close(descriptor)
+        descriptor = _open_path(path)
+    except BlockingIOError:
+        return True
+    file_locks.release(descriptor)
+    return False
 
 
 def require_idle(plane: ControlPlane, transaction_id: str) -> None:
@@ -123,23 +89,7 @@ def require_idle(plane: ControlPlane, transaction_id: str) -> None:
 
 
 def is_canonical_in_flight(plane: ControlPlane) -> bool:
-    if fcntl is None:  # pragma: no cover
-        raise RuntimeError("Git effect fencing requires POSIX advisory locks")
-    descriptor = _open_path(_canonical_path(plane))
-    acquired = False
-    try:
-        try:
-            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            acquired = True
-            return False
-        except OSError as error:
-            if error.errno in {errno.EACCES, errno.EAGAIN}:
-                return True
-            raise
-    finally:
-        if acquired:
-            fcntl.flock(descriptor, fcntl.LOCK_UN)
-        os.close(descriptor)
+    return _is_locked(_canonical_path(plane))
 
 
 def require_canonical_idle(plane: ControlPlane) -> None:
@@ -157,8 +107,6 @@ def run(
 ) -> Result:
     """Run one mutation while the child inherits the transaction fence FD."""
 
-    if fcntl is None:  # pragma: no cover
-        raise RuntimeError("Git effect fencing requires POSIX advisory locks")
     inherited = tuple(kwargs.pop("pass_fds", ()))
     with transaction_fence(plane, transaction_id) as descriptor:
         return runner(

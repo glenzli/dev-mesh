@@ -9,7 +9,7 @@ from pathlib import Path
 
 from dev_mesh_coord.errors import error_json
 from dev_mesh_observer.facility_status import build_facility_snapshot
-from dev_mesh_observer.infra_discovery import ObserverFacilityService
+from dev_mesh_observer.infra_discovery import ObserverFacilityService, supported_platform
 
 from .registry import RootRegistry
 from .server import ConsoleServer
@@ -38,7 +38,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument(
         "--no-infra-discovery",
         action="store_true",
-        help="run without publishing dev-mesh.observer.status",
+        help="run without publishing dev-mesh.observer.status (automatic on Windows)",
     )
     return result
 
@@ -48,6 +48,9 @@ def main(argv: list[str] | None = None) -> int:
     facility: ObserverFacilityService | None = None
     try:
         arguments = parser().parse_args(argv)
+        discovery_enabled = not arguments.no_infra_discovery and supported_platform()
+        if arguments.infra_runtime_dir and not arguments.no_infra_discovery and not discovery_enabled:
+            raise ValueError("--infra-runtime-dir requires the macOS/Linux Unix discovery binding")
         database = Path(arguments.db).expanduser().resolve()
         registry_path = (
             Path(arguments.registry).expanduser().resolve()
@@ -65,7 +68,7 @@ def main(argv: list[str] | None = None) -> int:
         state.start()
         address, port = server.server_address[:2]
         console_url = f"http://{address}:{port}/"
-        if not arguments.no_infra_discovery:
+        if discovery_enabled:
             runtime_root = (
                 Path(arguments.infra_runtime_dir).expanduser()
                 if arguments.infra_runtime_dir
@@ -100,7 +103,11 @@ def main(argv: list[str] | None = None) -> int:
                     "url": console_url,
                     "database": str(database),
                     "roots": [str(item) for item in registry.roots()],
-                    "infra_discovery": not arguments.no_infra_discovery,
+                    "infra_discovery": discovery_enabled,
+                    "infra_discovery_reason": (
+                        "enabled" if discovery_enabled else
+                        "disabled_by_option" if arguments.no_infra_discovery else "unsupported_platform"
+                    ),
                 },
                 ensure_ascii=False,
                 sort_keys=True,

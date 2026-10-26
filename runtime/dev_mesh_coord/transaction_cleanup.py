@@ -9,6 +9,7 @@ from pathlib import Path
 
 from . import git_backend as git
 from . import git_effects
+from .process_runner import run as run_process
 from .control_plane import ControlPlane, resolve
 from .events import emit, materialized
 from .storage import (
@@ -29,8 +30,8 @@ def _run_git(
     check: bool = True,
     pass_fds: tuple[int, ...] = (),
 ) -> subprocess.CompletedProcess[bytes]:
-    completed = subprocess.run(
-        ("git", "-C", str(root), *arguments),
+    completed = run_process(
+        git.command(root, *arguments),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         check=False,

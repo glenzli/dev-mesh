@@ -8,9 +8,34 @@ import tempfile
 from pathlib import Path
 
 from .constants import MAX_CLAIM_PATHS
+from .process_runner import run as run_process
 
 
 MAX_GIT_ERROR_DETAIL = 1600
+
+
+def command(root: Path, *arguments: str) -> tuple[str, ...]:
+    options = ("-c", "core.longpaths=true") if os.name == "nt" else ()
+    return ("git", *options, "-C", str(root), *arguments)
+
+
+def path_batches(paths: list[str]):
+    """Bound Windows command lines without reducing the declared path limit."""
+
+    if os.name != "nt":
+        yield paths
+        return
+    batch: list[str] = []
+    size = 0
+    for path in paths:
+        cost = len(path.encode("utf-16-le", errors="surrogatepass")) // 2 + 3
+        if batch and size + cost > 12000:
+            yield batch
+            batch, size = [], 0
+        batch.append(path)
+        size += cost
+    if batch:
+        yield batch
 
 
 class GitCommandError(RuntimeError):
@@ -39,11 +64,13 @@ def run(
     binary: bool = False,
     pass_fds: tuple[int, ...] = (),
 ) -> str | bytes:
-    completed = subprocess.run(
-        ("git", "-C", str(root), *arguments),
+    completed = run_process(
+        command(root, *arguments),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=not binary,
+        encoding=None if binary else "utf-8",
+        errors=None if binary else "surrogateescape",
         check=False,
         pass_fds=pass_fds,
     )
@@ -124,8 +151,9 @@ def branch(root: Path) -> str:
 def status_entries(root: Path, paths: list[str] | None = None) -> list[tuple[str, str]]:
     arguments = ["status", "--porcelain=v1", "-z", "--untracked-files=all"]
     if paths:
-        arguments.extend(("--", *paths))
-    raw = run(root, *arguments, binary=True)
+        raw = b"".join(run(root, *arguments, "--", *batch, binary=True) for batch in path_batches(paths))
+    else:
+        raw = run(root, *arguments, binary=True)
     assert isinstance(raw, bytes)
     values = [item for item in raw.split(b"\0") if item]
     entries: list[tuple[str, str]] = []
@@ -138,7 +166,7 @@ def status_entries(root: Path, paths: list[str] | None = None) -> list[tuple[str
         if status[0] in {"R", "C"}:
             index += 1
         index += 1
-    return entries
+    return list(dict.fromkeys(entries))
 
 
 def dirty_paths(root: Path, paths: list[str] | None = None) -> list[str]:
@@ -147,7 +175,7 @@ def dirty_paths(root: Path, paths: list[str] | None = None) -> list[str]:
 
 def path_is_tracked(root: Path, path: str) -> bool:
     completed = subprocess.run(
-        ("git", "-C", str(root), "ls-files", "--error-unmatch", "--", path),
+        command(root, "ls-files", "--error-unmatch", "--", path),
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         check=False,
@@ -157,7 +185,7 @@ def path_is_tracked(root: Path, path: str) -> bool:
 
 def path_is_ignored(root: Path, path: str) -> bool:
     completed = subprocess.run(
-        ("git", "-C", str(root), "check-ignore", "--quiet", "--no-index", "--", path),
+        command(root, "check-ignore", "--quiet", "--no-index", "--", path),
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         check=False,
@@ -171,7 +199,7 @@ def staged_paths(root: Path) -> list[str]:
 
 def index_is_empty(root: Path) -> bool:
     completed = subprocess.run(
-        ("git", "-C", str(root), "diff", "--cached", "--quiet", "--exit-code"),
+        command(root, "diff", "--cached", "--quiet", "--exit-code"),
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
         text=True,
@@ -218,7 +246,7 @@ def changed_paths(root: Path, base: str, candidate: str) -> list[str]:
 
 def is_ancestor(root: Path, ancestor: str, descendant: str) -> bool:
     completed = subprocess.run(
-        ("git", "-C", str(root), "merge-base", "--is-ancestor", ancestor, descendant),
+        command(root, "merge-base", "--is-ancestor", ancestor, descendant),
         check=False,
     )
     return completed.returncode == 0

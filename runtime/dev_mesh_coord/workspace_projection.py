@@ -21,7 +21,7 @@ def _run_git(
     input: bytes | None = None,
 ) -> subprocess.CompletedProcess[bytes]:
     completed = subprocess.run(
-        ("git", "-C", str(root), *arguments),
+        git.command(root, *arguments),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         check=False,
@@ -61,19 +61,15 @@ def _git_projection_pathspecs(
 ) -> list[str]:
     """Return exact tracked/untracked files, omitting future absent pathspecs."""
 
-    tracked = _run_git(
-        root, "ls-files", "-z", "--", *declared, environment=environment
-    ).stdout
-    untracked = _run_git(
-        root,
-        "ls-files",
-        "--others",
-        "--exclude-standard",
-        "-z",
-        "--",
-        *declared,
-        environment=environment,
-    ).stdout
+    tracked = b"".join(
+        _run_git(root, "ls-files", "-z", "--", *batch, environment=environment).stdout
+        for batch in git.path_batches(declared)
+    )
+    untracked = b"".join(
+        _run_git(root, "ls-files", "--others", "--exclude-standard", "-z", "--", *batch,
+                 environment=environment).stdout
+        for batch in git.path_batches(declared)
+    )
     return sorted(
         {
             item.decode("utf-8", errors="surrogateescape")
@@ -93,7 +89,9 @@ def _workspace_file(root: Path, relative: str) -> dict[str, object]:
     if not git.path_is_ignored(root, relative):
         raise ValueError(f"workspace-bytes path must be explicitly ignored by Git: {relative}")
     try:
-        descriptor = os.open(candidate, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        descriptor = os.open(
+            candidate, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0),
+        )
     except FileNotFoundError:
         return {"path": relative, "state": "missing", "size": 0, "sha256": None}
     except OSError as error:
@@ -247,15 +245,16 @@ def declared_projection(
             for path in raw_paths.split(b"\0")
             if path
         )
-        index_entries = _run_git(
-            root,
-            "ls-files",
-            "-s",
-            "-z",
-            "--",
-            *declared,
-            environment=environment,
-        ).stdout
+        entries = {
+            entry
+            for batch in git.path_batches(declared)
+            for entry in _run_git(root, "ls-files", "-s", "-z", "--", *batch,
+                                  environment=environment).stdout.split(b"\0")
+            if entry
+        }
+        index_entries = b"".join(
+            entry + b"\0" for entry in sorted(entries, key=lambda entry: entry.split(b"\t", 1)[-1])
+        )
     finally:
         try:
             temporary.unlink()

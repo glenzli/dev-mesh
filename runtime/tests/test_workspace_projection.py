@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import hashlib
+from unittest import mock
+
 from dev_mesh_coord.control_plane import initialize
 from dev_mesh_coord.workspace_projection import (
     declared_projection,
@@ -10,6 +13,27 @@ from helpers import GitWorkspaceTest, git
 
 
 class WorkspaceProjectionTest(GitWorkspaceTest):
+    def test_batched_path_queries_preserve_the_exact_projection_digest(self) -> None:
+        plane = initialize(self.root)
+        declared = ["app.txt", "other.txt"]
+        (self.root / "app.txt").write_text("changed\n", encoding="utf-8")
+        base = git(self.root, "rev-parse", "HEAD")
+        expected = declared_projection(self.root, plane, declared, base, require_changes=True)
+        with mock.patch(
+            "dev_mesh_coord.git_backend.path_batches", side_effect=lambda paths: ([path] for path in paths),
+        ):
+            observed = declared_projection(self.root, plane, declared, base, require_changes=True)
+        self.assertEqual(observed, expected)
+
+    def test_workspace_bytes_hashes_crlf_and_control_z_as_raw_bytes(self) -> None:
+        (self.root / ".gitignore").write_text("raw.bin\n", encoding="utf-8")
+        content = b"first\r\nsecond\x1a\x00\xff\n"
+        (self.root / "raw.bin").write_bytes(content)
+        projection = workspace_bytes_projection(self.root, ["raw.bin"])
+        entry = projection["workspace_entries"][0]
+        self.assertEqual(entry["size"], len(content))
+        self.assertEqual(entry["sha256"], hashlib.sha256(content).hexdigest())
+
     def test_declared_digest_ignores_unrelated_head_changes(self) -> None:
         plane = initialize(self.root)
         (self.root / "app.txt").write_text("base\nshared\n", encoding="utf-8")

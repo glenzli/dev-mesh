@@ -27,6 +27,12 @@ diagnostics. It follows the browser's light/dark preference, supports Chinese an
 the user add durable scan roots from the UI. Root configuration is stored next to the external
 catalog unless `--registry` selects another external path.
 
+On Windows use Python 3.11+ through `python` (or `py -3`) and put the command on one PowerShell
+line. The Console and catalog work normally; the macOS/Linux Unix Infra Discovery binding is
+automatically disabled. The ready record reports `infra_discovery: false` and
+`infra_discovery_reason: unsupported_platform`. Do not pass `--infra-runtime-dir` on Windows or
+try to create a Unix socket there. The repository LaunchAgent installer is macOS-only.
+
 ## Collect
 
 Choose a catalog outside every observed workspace, then scan one or more roots:

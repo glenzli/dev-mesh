@@ -8,6 +8,7 @@ from pathlib import Path
 
 from . import git_backend as git
 from . import git_effects
+from .process_runner import run as run_process
 from .control_plane import ControlPlane
 from .events import emit
 from .storage import now, read_json, replace_json
@@ -18,11 +19,13 @@ def _run_git(
     *arguments: str,
     pass_fds: tuple[int, ...] = (),
 ) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ("git", "-C", str(root), *arguments),
+    return run_process(
+        git.command(root, *arguments),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        encoding="utf-8",
+        errors="surrogateescape",
         check=False,
         pass_fds=pass_fds,
     )

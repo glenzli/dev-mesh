@@ -11,6 +11,7 @@ from pathlib import Path
 
 from . import git_backend as git
 from . import git_effects
+from .process_runner import run as run_process
 from .constants import MAX_CLAIM_PATHS, MAX_WORK_RESULTS_PER_COMMIT
 from .control_plane import ControlPlane, operation
 from .events import build_event, materialized, write_event
@@ -34,8 +35,8 @@ def _run_git(
     environment: dict[str, str] | None = None,
     input: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    completed = subprocess.run(
-        ("git", "-C", str(root), *arguments),
+    completed = run_process(
+        git.command(root, *arguments),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,

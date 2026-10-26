@@ -28,6 +28,26 @@ codex plugin add dev-mesh@glenzli-marketplace
 The marketplace needs to be registered only once. Use a new task after installing or updating the
 plugin.
 
+## Platform support
+
+Windows and macOS require Python 3.11+ and Git. Both support Runs, Claims, Work Results, managed
+commits, short transactions, Observer collection, and the Web Console. Windows uses native exclusive
+file handles; macOS uses `flock`. Git children inherit the fence so a surviving child still excludes
+another publication after its caller exits.
+
+On Windows use `python` (or `py -3`) and write each command on one PowerShell line. The `python3`
+and `\` continuations below use Bash syntax. Use portable record ids without colons, reserved device
+names such as `CON`/`NUL`/`COM1`, or case-only differences. Semantic resource names remain JSON
+values and can contain colons.
+
+```powershell
+python skills/observe-dev-mesh/scripts/console.py --db "$env:LOCALAPPDATA/DevMesh/observer.sqlite3" --root "D:/Lab" --host 127.0.0.1 --port 8765
+```
+
+Windows automatically disables the macOS/Linux Unix Infra Discovery publication; HTTP and collection
+continue normally, and the ready record reports the reason. macOS retains Unix discovery and its
+LaunchAgent. The existing service installer does not manage Windows background startup.
+
 ## Working model
 
 - **Run** — one Agent task in the current workspace.
@@ -141,6 +161,9 @@ historical state, and caches are excluded. The packaged icon is
 - [`contracts/`](contracts/) and [`schemas/`](schemas/) — public protocols and data structures.
 
 ## Validation
+
+CI covers Windows, macOS, and Linux with Python 3.11 and 3.13. Unix transport tests run only on
+supported platforms; inherited child fencing has cross-platform coverage.
 
 Run the full gate for protocol or cross-boundary changes:
 

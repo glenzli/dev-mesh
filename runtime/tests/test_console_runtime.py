@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import threading
@@ -391,7 +392,8 @@ class ConsoleRuntimeTest(GitWorkspaceTest):
         registry = RootRegistry(registry_path, [self.root])
         self.assertEqual(registry.roots(), [self.root.resolve()])
         self.assertEqual(RootRegistry(registry_path).roots(), [self.root.resolve()])
-        self.assertEqual(registry_path.stat().st_mode & 0o777, 0o600)
+        if os.name == "posix":
+            self.assertEqual(registry_path.stat().st_mode & 0o777, 0o600)
         payload = json.loads(registry_path.read_text(encoding="utf-8"))
         self.assertEqual(payload, {"roots": [str(self.root.resolve())], "schema": 1})
 
@@ -418,6 +420,7 @@ class ConsoleRuntimeTest(GitWorkspaceTest):
 
         self.assertEqual(result["workspace_count"], 1)
         self.assertFalse(status["collecting"])
+        self.assertFalse(status["infra_discovery"])
         self.assertEqual(status["cycles"], 1)
         self.assertIsNotNone(status["last_success_at"])
         self.assertIsNone(status["last_error"])

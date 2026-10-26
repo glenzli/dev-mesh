@@ -44,6 +44,12 @@ class InfraDiscoveryError(RuntimeError):
     """The local discovery or publication boundary is unsafe."""
 
 
+def supported_platform() -> bool:
+    """The Unix binding requires POSIX ownership checks and peer credentials."""
+
+    return sys.platform == "darwin" or sys.platform.startswith("linux")
+
+
 def _strict_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, value in pairs:
@@ -257,6 +263,8 @@ class ObserverFacilityService:
         stale_socket_min_age: float = DEFAULT_STALE_SOCKET_MIN_AGE_SECONDS,
         maintenance_reporter: Callable[[dict[str, object]], None] | None = None,
     ) -> None:
+        if not supported_platform():
+            raise InfraDiscoveryError("Infra Discovery Unix binding is unavailable on this platform")
         if maintenance_interval < 0:
             raise ValueError("maintenance interval must be non-negative")
         if stale_socket_min_age < 0:

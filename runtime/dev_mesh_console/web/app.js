@@ -179,6 +179,7 @@ function updateTopbarActions() {
   nodes.refresh.setAttribute("aria-busy", String(state.collecting));
   nodes["repair-discovery"].classList.toggle("is-loading", state.repairingDiscovery);
   nodes["repair-discovery"].setAttribute("aria-busy", String(state.repairingDiscovery));
+  nodes["repair-discovery"].hidden = state.dashboard?.collector?.infra_discovery === false;
 }
 
 function renderMetrics(presentation) {

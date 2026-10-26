@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 from dev_mesh_coord import canonical_git, contention, transactions, work_results
@@ -32,8 +33,9 @@ class LargeChangesTest(GitWorkspaceTest):
         directory.mkdir(parents=True, exist_ok=True)
         paths = []
         for index in range(count):
-            # Literal pathspec handling must preserve brackets, spaces and newlines.
-            path = directory / f"page [{index:04d}]\noutput.txt"
+            # Win32 forbids newlines in names; retain literal metacharacters on both.
+            separator = " " if os.name == "nt" else "\n"
+            path = directory / f"page [{index:04d}]{separator}output.txt"
             path.write_text(f"page {index}\n")
             paths.append(path.relative_to(root).as_posix())
         return sorted(paths)

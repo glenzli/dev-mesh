@@ -26,6 +26,26 @@ codex plugin add dev-mesh@glenzli-marketplace
 
 marketplace 只需登记一次。安装或更新插件后，请在新任务中使用新版本。
 
+## 平台支持
+
+Windows 和 macOS 均使用 Python 3.11+ 与 Git，支持 Run、Claim、Work Result、受管 Git 提交、
+短事务、Observer 采集和 Web Console。Windows 使用原生排他文件句柄，macOS 使用 `flock`；
+Git 子进程继承对应的保护，即使发起进程退出，也不会提前放开仍在执行的 Git 操作。
+
+Windows 使用 `python`（或 `py -3`）；下文 `python3` 和 `\` 续行示例适用于 Bash，PowerShell
+中请将命令写成一行。记录 id 避免冒号、`CON`／`NUL`／`COM1` 等保留名称，以及仅大小写不同的
+名称；语义资源名作为 JSON 值保存，仍可使用冒号。
+
+Windows 下可以直接启动 Console，例如：
+
+```powershell
+python skills/observe-dev-mesh/scripts/console.py --db "$env:LOCALAPPDATA/DevMesh/observer.sqlite3" --root "D:/Lab" --host 127.0.0.1 --port 8765
+```
+
+Console 在 Windows 自动关闭仅支持 macOS/Linux 的 Unix Infra Discovery 发布，HTTP 界面与采集
+照常运行；启动结果会注明原因。macOS 保留 Unix 服务发现和 LaunchAgent，Windows 后台自启动
+不由现有安装脚本管理。
+
 ## 工作模型
 
 - **Run** — 一个 Agent 任务在当前工作区中的执行身份。
@@ -135,3 +155,6 @@ python3 skills/observe-dev-mesh/scripts/console.py --help
 ```
 
 文档和展示修改只需运行与改动相关的检查。
+
+CI 在 Windows、macOS、Linux 上分别验证 Python 3.11 和 3.13；Unix 传输专属测试仅在支持的
+平台运行，进程退出后的锁保护使用跨平台测试覆盖。

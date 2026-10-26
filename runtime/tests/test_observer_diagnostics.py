@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
@@ -629,7 +630,7 @@ class ObserverIntegrityTest(GitWorkspaceTest):
 
     def test_unpublished_catalog_rebuilds_only_replaceable_snapshot_projection(self) -> None:
         database = Path(self.temporary.name) / "old-observer.sqlite3"
-        with sqlite3.connect(database) as connection:
+        with closing(sqlite3.connect(database)) as connection:
             connection.executescript(
                 """
                 CREATE TABLE events (
